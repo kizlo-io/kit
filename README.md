@@ -26,7 +26,7 @@ This lives outside the Kizlo monorepo so the kits release on their own cadence, 
 | Package | Covers |
 | --- | --- |
 | [`@kizlo/kit`](./packages/kit) | Shared primitives the kits build on. |
-| [`@kizlo/woocommerce-kit`](./packages/woocommerce-kit) | WooCommerce storefronts: product collection, with cart and checkout to follow. |
+| [`@kizlo/woocommerce-kit`](./packages/woocommerce-kit) | WooCommerce storefronts: product collection and cart, with checkout to follow. |
 
 More integrations get their own kit as they land, named by appending `-kit` to the integration package they wrap:
 `@kizlo/cf7` is wrapped by `@kizlo/cf7-kit`, `@kizlo/acf` by `@kizlo/acf-kit`.

@@ -102,8 +102,9 @@ Before adding a component, check it against these:
   down, and the client half re-runs that component with a `shallow: false` URL write rather than fetching itself — the
   product collection. Browser-session and ephemeral state has no page to hang off, so it is fetched in the client through
   an optional query-library peer — the cart, the search typeahead. Both shapes are still headless and still fail soft.
-- **One hook per component.** A single provider value means every consumer re-renders together anyway, so per-slice hooks
-  would only be naming sugar.
+- **One hook per subject.** One provider value means every consumer re-renders together anyway, so slicing it into several
+  hooks is only naming sugar. A feature whose hooks address different things — the cart, one of its lines, its coupons —
+  gets one per thing, because a per-entity hook takes the key and does the lookup its consumer would otherwise repeat.
 - **Fail soft.** A dead request degrades the component, it does not blank the page.
 
 ### Providers
@@ -181,8 +182,10 @@ Two rules that are easy to break:
   `react`, `nuqs` and `@tanstack/react-query` are all carried this way: `peerDependencies` plus
   `peerDependenciesMeta.optional`, and `devDependencies` from the catalog.
 - **Any entry reachable from client code needs `"use client"` on its built chunk.** The bundler drops the source
-  directive, so `tsdown.config.ts` re-adds it by chunk name. A server entry importing a provider chunk without it turns
-  that provider into a server component, which fails at the first hook.
+  directive, so `tsdown.config.ts` re-adds it to every chunk one of the package's client modules lands in — listed by
+  module, not matched on the chunk name, because a name is emergent: it can miss a new entry and it misses the shared
+  chunk two entries split. A server entry importing a provider chunk without the directive turns that provider into a
+  server component, which fails at the first hook.
 
 ### One grammar, two implementations
 

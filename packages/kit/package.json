@@ -32,6 +32,12 @@
 				"types": "./dist/index.d.ts",
 				"default": "./dist/index.js"
 			}
+		},
+		"./react": {
+			"import": {
+				"types": "./dist/react.d.ts",
+				"default": "./dist/react.js"
+			}
 		}
 	},
 	"files": [
@@ -50,8 +56,18 @@
 	"devDependencies": {
 		"@tooling/typescript": "workspace:*",
 		"@types/node": "catalog:",
+		"@types/react": "catalog:react19",
+		"react": "catalog:react19",
 		"tsdown": "catalog:",
 		"typescript": "catalog:",
 		"vitest": "catalog:"
+	},
+	"peerDependencies": {
+		"react": ">=19.0.0"
+	},
+	"peerDependenciesMeta": {
+		"react": {
+			"optional": true
+		}
 	}
 }
