@@ -14,7 +14,7 @@ pnpm add @kizlo/woocommerce-kit
 ```
 
 Peer dependencies: `@kizlo/woocommerce` 0.8+ always, plus `react` 19+ if you import a React entry, `nuqs` 2.10+ for the
-collection and `@tanstack/react-query` 5.102+ for the cart and checkout. All three are optional peers, so a different
+collection and `@tanstack/react-query` 5.102+ for the cart, checkout and search. All three are optional peers, so a different
 framework's adapter does not drag React in and a collection-only storefront installs no query library. Your app supplies the Kizlo client, through
 [`KizloProvider`](../kit#kizloprovider-and-usekizloclient) for client components and as a prop for server components.
 
@@ -309,18 +309,103 @@ first, and one throwing does not suppress the other callback or phase:
 
 The checkout fetch and `refresh()` do not emit action callbacks. Only confirmation does.
 
+## Search
+
+A product typeahead: the field state, the debounce, the store request and the link to the full results. One hook, no provider,
+and no markup.
+
+Search is browser state for the same reason the cart is — it lives in the app shell and fetches per keystroke — but it writes no
+URL of its own. It sends the shopper to the collection's `q` parameter, so the results *page* is the server-rendered
+`ProductCollection` you already have, and the panel is the only client half.
+
+```tsx
+"use client"
+import { useProductSearch } from "@kizlo/woocommerce-kit/react/search"
+import { useState } from "react"
+
+export function ProductSearch({ category }: { category: string | null }) {
+	const [isOpen, setOpen] = useState(false)
+	const collectionPath = category ? `/collections/${category}` : "/collections"
+	const { clear, inputProps, isLoading, isRefreshing, products, resultsHref, unavailable } = useProductSearch({
+		active: isOpen,
+		browseSort: { order: "desc", orderBy: "popularity" },
+		collectionPath,
+		filters: { category: category || undefined },
+		onQueryChange: () => setOpen(true),
+		onResults: (results, query) => track("view_search_results", { count: results.length, query }),
+	})
+
+	return (
+		<search>
+			<input aria-expanded={isOpen} onChange={inputProps.onChange} placeholder="Search products" value={inputProps.value} />
+			<button onClick={clear} type="button">Clear</button>
+			{isOpen ? (
+				<div aria-busy={isRefreshing}>
+					{isLoading ? <ResultSkeletons /> : products.map((product) => <Result key={product.id} product={product} />)}
+					{unavailable ? <p role="alert">Search is unavailable right now.</p> : null}
+					<a href={resultsHref ?? collectionPath}>View all results</a>
+				</div>
+			) : null}
+		</search>
+	)
+}
+```
+
+| Returns | Is |
+| --- | --- |
+| `query`, `setQuery`, `inputProps` | What is in the field. `inputProps` is `{ onChange, value }` — the id, the aria attributes and the placeholder stay yours, because you own the panel they describe. |
+| `debouncedQuery` | The term the visible results answer. |
+| `products` | The store's products, raw. Empty until there is something to show. |
+| `isLoading` / `isRefreshing` | Nothing on screen yet, versus the previous results still up while the next arrive. |
+| `unavailable` | There is nothing to show and the last request is why. A failure behind results already on screen does not set it. |
+| `resultsHref` | The full results page for what is in the field **now**, or `null` when it is empty. It follows the field rather than the debounce, so submitting straight after typing reaches the typed term. Render it, push it, or prefetch it on hover — it names a destination, not a use. |
+| `clear` | Empties the field and the settled term. |
+
+`collectionPath` is the only required option, and it is required rather than configured: a scope control changes it between
+renders, so a single route value could not describe it. Everything else is behaviour — `active` (pass your open state; a closed
+panel asks the store nothing), `browseSort`, `debounceMs` (240), `filters`, `perPage` (10), `staleTime`, and a `client` to use
+instead of the one from `KizloProvider`.
+
+**An empty field asks the store nothing unless you say otherwise.** Leave `browseSort` out and a panel stays blank until
+someone types; pass an ordering and the empty field browses in it — `{ order: "desc", orderBy: "popularity" }` for the best
+sellers. There is no default, because whether a resting panel shows products at all is a storefront's decision, not this
+package's. Once a term arrives the ordering is dropped and the store sorts by relevance, which is the only sensible ranking for
+a search.
+
+`filters` is what keeps a scope control working: it narrows the request and separates the cache entry, so a category's results
+never land in the unnarrowed one. The kit knows nothing about categories beyond that passthrough — the control, its labels and
+its navigation are yours.
+
+Needs `KizloProvider` and your `QueryClientProvider` above it. It reads no kit configuration, so a storefront that only wants
+search mounts no `WooCommerceProvider`.
+
+### Search events
+
+| Callback | Fires |
+| --- | --- |
+| `onQueryChange(query)` | On every change to the field, **before** the debounce. This is what opens a panel on the first keystroke instead of on the first result. |
+| `onSearchStart(query)` | Once per request that leaves, including a refetch and one that supersedes a request still in flight. |
+| `onResults(products, query)` | When results for a settled term arrive — a `view_search_results` event, or a live-region count. |
+| `onError(error, query)` | On every failed request, including one whose results are still on screen. Check `unavailable` instead if you only want to complain when the panel is empty. |
+| `onClear()` | When `clear` runs. |
+
+A throwing listener is re-raised on its own, so it reaches your error handling without breaking the hook. A hook with
+`active: false` reports nothing and never claims to be refreshing, so a second panel sharing the cache entry — a mobile drawer
+beside a desktop header — does not narrate the open one's requests.
+
 ## Entry points
 
 | Import | Contents |
 | --- | --- |
-| `@kizlo/woocommerce-kit` | The core. Collection grammar and model, the client contracts, cart and checkout cache keys and events, quantity and money helpers, and every type. No framework. |
+| `@kizlo/woocommerce-kit` | The core. Collection grammar and model, client contracts, cart and checkout cache keys and events, search request, href and cache helpers, quantity and money helpers, and every type. No framework. |
 | `@kizlo/woocommerce-kit/react` | `ProductCollectionProvider`, `useProductCollection`, and the model types it returns. Carries `"use client"`. |
 | `@kizlo/woocommerce-kit/react/cart` | `useCart`, `useCartItem`, `useCartCoupon`, `useQuantityInput`. Carries `"use client"`. Needs `@tanstack/react-query`. |
 | `@kizlo/woocommerce-kit/react/checkout` | `useCheckout` and its callback types. Carries `"use client"`. Needs `@tanstack/react-query`. |
 | `@kizlo/woocommerce-kit/react/provider` | `WooCommerceProvider`, this kit's app-level configuration. Carries `"use client"`. Imports no peer but React. |
+| `@kizlo/woocommerce-kit/react/search` | `useProductSearch`. Carries `"use client"`. Needs `@tanstack/react-query`. |
 | `@kizlo/woocommerce-kit/react/server` | `ProductCollection`, the server component. |
 
-The React split into two entries is an RSC constraint rather than a preference. A `"use client"` module imported by a
+The React split across feature entries is an RSC constraint rather than a preference. A `"use client"` module imported by a
 server component becomes a client reference, so anything both halves need at runtime has to sit in a module with no
 directive at all, which is what the core is.
 
