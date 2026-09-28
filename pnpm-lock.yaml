@@ -9,6 +9,9 @@ catalogs:
     '@kizlo/woocommerce':
       specifier: ^0.8.0
       version: 0.8.0
+    '@tanstack/react-query':
+      specifier: ^5.102.0
+      version: 5.104.0
     '@types/node':
       specifier: ^22.18.12
       version: 22.20.4
@@ -63,6 +66,12 @@ importers:
       '@types/node':
         specifier: 'catalog:'
         version: 22.20.4
+      '@types/react':
+        specifier: catalog:react19
+        version: 19.3.0
+      react:
+        specifier: catalog:react19
+        version: 19.3.0
       tsdown:
         specifier: 'catalog:'
         version: 0.15.12(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)(typescript@5.9.3)
@@ -82,6 +91,9 @@ importers:
       '@kizlo/woocommerce':
         specifier: 'catalog:'
         version: 0.8.0(kizlo@0.22.0(react@19.3.0)(typescript@5.9.3))
+      '@tanstack/react-query':
+        specifier: 'catalog:'
+        version: 5.104.0(react@19.3.0)
       '@tooling/typescript':
         specifier: workspace:*
         version: link:../../tooling/typescript
@@ -817,6 +829,14 @@ packages:
 
   '@standard-schema/spec@1.1.0':
     resolution: {integrity: sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w==}
+
+  '@tanstack/query-core@5.104.0':
+    resolution: {integrity: sha512-JrC2r/JQlXt7khBSdUpsgxNvybzOg+aITa+ARRMlP2AFo93Y8vIqz077rp+e61mJetSZ0T6AJbwW1JHer1vrPQ==}
+
+  '@tanstack/react-query@5.104.0':
+    resolution: {integrity: sha512-e1TZmDCQnWIfiDVryIHeA6Idj+Lfx1hORLOhXS/l5wcgvtVD4yYqbTDl378sGQKIi2cSgb0TEMC9cKK8GGoJEw==}
+    peerDependencies:
+      react: ^18 || ^19
 
   '@turbo/darwin-64@2.11.4':
     resolution: {integrity: sha512-fEmcQVa95k79tZjcay5b2A4cpR/VrlNUki4AN7EbA+32vj5C5rBUE1q3i2yOFxsB2n01sOlzIZ+s2p2zADCTig==}
@@ -2707,6 +2727,13 @@ snapshots:
   '@stablelib/base64@1.0.1': {}
 
   '@standard-schema/spec@1.1.0': {}
+
+  '@tanstack/query-core@5.104.0': {}
+
+  '@tanstack/react-query@5.104.0(react@19.3.0)':
+    dependencies:
+      '@tanstack/query-core': 5.104.0
+      react: 19.3.0
 
   '@turbo/darwin-64@2.11.4':
     optional: true

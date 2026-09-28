@@ -8,6 +8,7 @@ allowBuilds:
 
 catalog:
   '@kizlo/woocommerce': ^0.8.0
+  '@tanstack/react-query': ^5.102.0
   '@types/node': ^22.18.12
   nuqs: ^2.10.0
   tsdown: ^0.15.6

@@ -1,14 +1,36 @@
 import { defineConfig } from "tsdown"
 
+/**
+ * The source modules that declare `"use client"`.
+ *
+ * The bundler drops the source directive, so it is re-added to every chunk one of these reaches: the entry itself, and the
+ * shared chunk `react/server` pulls the collection provider out of. Matched on modules rather than on the chunk name, because a
+ * name is emergent — `react/cart` does not contain the word "client", and a shared chunk is named after whichever module it
+ * happened to come from.
+ */
+const clientModules = ["src/react/cart.tsx", "src/react/client.tsx", "src/react/config.tsx", "src/react/provider.tsx"]
+
+function isClientModule(id: string | null) {
+	if (!id) return false
+
+	const path = id.replaceAll("\\", "/")
+	return clientModules.some((module) => path.endsWith(module))
+}
+
 export default defineConfig({
 	format: ["esm"],
-	entry: { index: "src/index.ts", "react/client": "src/react/client.tsx", "react/server": "src/react/server.tsx" },
+	entry: {
+		index: "src/index.ts",
+		"react/cart": "src/react/cart.tsx",
+		"react/client": "src/react/client.tsx",
+		"react/provider": "src/react/provider.tsx",
+		"react/server": "src/react/server.tsx",
+	},
 	outputOptions: {
 		legalComments: "inline",
-		// The bundler drops the source directive, and a framework's server entry importing a chunk without it would turn the
-		// provider into a server component. Every module reachable from a `client` entry is a client module, so the banner goes
-		// on those chunks.
-		banner: (chunk) => (chunk.name.includes("client") ? '"use client"' : ""),
+		// A server entry importing a provider chunk without the directive turns that provider into a server component, which
+		// fails at its first hook.
+		banner: (chunk) => (isClientModule(chunk.facadeModuleId) || chunk.moduleIds.some(isClientModule) ? '"use client"' : ""),
 	},
 	dts: { tsconfig: "tsconfig.build.json" },
 })

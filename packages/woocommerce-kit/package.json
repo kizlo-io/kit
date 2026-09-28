@@ -41,6 +41,18 @@
 				"default": "./dist/react/client.js"
 			}
 		},
+		"./react/cart": {
+			"import": {
+				"types": "./dist/react/cart.d.ts",
+				"default": "./dist/react/cart.js"
+			}
+		},
+		"./react/provider": {
+			"import": {
+				"types": "./dist/react/provider.d.ts",
+				"default": "./dist/react/provider.js"
+			}
+		},
 		"./react/server": {
 			"import": {
 				"types": "./dist/react/server.d.ts",
@@ -66,6 +78,7 @@
 	},
 	"devDependencies": {
 		"@kizlo/woocommerce": "catalog:",
+		"@tanstack/react-query": "catalog:",
 		"@tooling/typescript": "workspace:*",
 		"@types/node": "catalog:",
 		"@types/react": "catalog:react19",
@@ -77,10 +90,14 @@
 	},
 	"peerDependencies": {
 		"@kizlo/woocommerce": ">=0.8.0",
+		"@tanstack/react-query": ">=5.102.0",
 		"nuqs": ">=2.10.0",
 		"react": ">=19.0.0"
 	},
 	"peerDependenciesMeta": {
+		"@tanstack/react-query": {
+			"optional": true
+		},
 		"nuqs": {
 			"optional": true
 		},
