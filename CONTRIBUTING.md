@@ -98,11 +98,26 @@ Before adding a component, check it against these:
 
 - **Headless.** Render `children` and expose state through a hook. No Tailwind classes, no design decisions, no `div` you
   did not need.
-- **Server-first.** Fetch in a server component and pass the payload down. The client half writes the URL and reads
-  context; it does not fetch.
+- **Fetch where the data lives.** Page data is server-rendered: an RSC reads the URL, loads the payload and passes it
+  down, and the client half re-runs that component with a `shallow: false` URL write rather than fetching itself — the
+  product collection. Browser-session and ephemeral state has no page to hang off, so it is fetched in the client through
+  an optional query-library peer — the cart, the search typeahead. Both shapes are still headless and still fail soft.
 - **One hook per component.** A single provider value means every consumer re-renders together anyway, so per-slice hooks
   would only be naming sugar.
 - **Fail soft.** A dead request degrades the component, it does not blank the page.
+
+### Providers
+
+A provider carries **app configuration** — one per kit, mounted by the app — or **server data**, page-scoped and mounted
+by the RSC that loaded it. Feature state never gets one: a hook reads the client, the kit's configuration and the app's
+cache, so adding a feature to a storefront mounts nothing new.
+
+The Kizlo client reaches client components through `KizloProvider` (`@kizlo/kit/react`) and server components as a prop,
+because a server component cannot read React context. The browser client and the server client are different instances,
+so neither half may hold the other's.
+
+The app owns `QueryClientProvider`. No kit creates a `QueryClient` or sets global react-query defaults: one cache per app
+is what lets a checkout seed the cart's own cache entry instead of racing a second copy of it.
 
 ## Code style
 
@@ -137,7 +152,7 @@ is the package; an adapter is a subdirectory, because it is a binding.
 
 ```
 src/*.ts       no React, no URL-state library, no JSX. The contract, the requests, the model, the client contract.
-src/react/     the adapter: hooks in, one write callback out.
+src/react/     the adapter: hooks in, one write callback out. It may own a data client.
 src/<other>/   the next adapter, built on the same core.
 ```
 
@@ -145,12 +160,26 @@ The core is the component minus the rendering. If logic can be written without k
 and "it is easier with hooks" is not an exception. An adapter that is more than a thin binding means something is in the
 wrong place.
 
-Entry points follow the layout: `.` is the core, `./react` is the client-side binding, `./react/server` is the server
-component. Add them to `tsdown.config.ts`, the `exports` map and `tooling/typescript/base.json` together.
+A client-data feature gets its own `src/react/<feature>.tsx` entry instead of joining `react/client.tsx`, because its
+query library would otherwise be resolved by a consumer that only uses the page-data half.
+
+Entry points follow that split:
+
+| Entry | Holds | Peers |
+| -- | -- | -- |
+| `@kizlo/kit/react` | `KizloProvider`, `useKizloClient` | react |
+| `@kizlo/<integration>-kit/react/provider` | the kit's one configuration provider | react |
+| `@kizlo/<integration>-kit/react` | page-scoped, URL-driven features | react, nuqs |
+| `@kizlo/<integration>-kit/react/<feature>` | client-data features | react, a query library |
+
+`.` is the core and `./react/server` is the server component. Add every new entry to `tsdown.config.ts`, the `exports`
+map and `tooling/typescript/base.json` together.
 
 Two rules that are easy to break:
 
 - **A framework is an optional peer dependency.** A Solid app installing the package must not be told React is missing.
+  `react`, `nuqs` and `@tanstack/react-query` are all carried this way: `peerDependencies` plus
+  `peerDependenciesMeta.optional`, and `devDependencies` from the catalog.
 - **Any entry reachable from client code needs `"use client"` on its built chunk.** The bundler drops the source
   directive, so `tsdown.config.ts` re-adds it by chunk name. A server entry importing a provider chunk without it turns
   that provider into a server component, which fails at the first hook.
