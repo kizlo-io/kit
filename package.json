@@ -1,0 +1,41 @@
+{
+	"name": "kit",
+	"private": true,
+	"description": "Opinionated React components for headless WordPress. Monorepo.",
+	"license": "Apache-2.0",
+	"author": "Kizlo",
+	"homepage": "https://github.com/kizlo-io/kit#readme",
+	"bugs": "https://github.com/kizlo-io/kit/issues",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/kizlo-io/kit.git"
+	},
+	"engines": {
+		"node": ">=22.14.0",
+		"pnpm": ">=9.6.0"
+	},
+	"packageManager": "pnpm@11.2.2",
+	"scripts": {
+		"build": "turbo run build",
+		"dev": "turbo watch dev --continue",
+		"typecheck": "turbo run typecheck",
+		"test": "turbo run test",
+		"test:watch": "vitest",
+		"check": "biome check .",
+		"check:fix": "biome check . --write",
+		"changeset:version": "changeset version",
+		"lint:ws": "pnpm dlx sherif@latest",
+		"lint:ws:fix": "pnpm dlx sherif@latest --fix",
+		"clean:workspaces": "turbo run clean",
+		"clean": "git clean -xdf .turbo node_modules",
+		"clean:all": "pnpm clean && pnpm clean:workspaces"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "2.5.14",
+		"@changesets/changelog-github": "^0.7.0",
+		"@changesets/cli": "^2.31.0",
+		"turbo": "^2.5.8",
+		"typescript": "catalog:",
+		"vitest": "catalog:"
+	}
+}

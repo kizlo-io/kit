@@ -1,0 +1,37 @@
+{
+	"$schema": "https://turborepo.dev/schema.json",
+	"ui": "tui",
+	"tasks": {
+		"topo": {
+			"dependsOn": ["^topo"]
+		},
+		"build": {
+			"dependsOn": ["topo", "^build"],
+			"outputs": [".cache/tsbuildinfo.json", "dist/**"]
+		},
+		"dev": {
+			"dependsOn": ["^build"],
+			"cache": false,
+			"persistent": true,
+			"interactive": true
+		},
+		"typecheck": {
+			"dependsOn": ["topo", "^build"],
+			"outputs": []
+		},
+		"test": {
+			"dependsOn": ["topo"],
+			"outputs": [],
+			"cache": false
+		},
+		"clean": {
+			"cache": false
+		},
+		"//#check": {},
+		"//#check:fix": {
+			"cache": false
+		}
+	},
+	"concurrency": "20",
+	"globalPassThroughEnv": ["NODE_ENV", "CI", "npm_lifecycle_event"]
+}

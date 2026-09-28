@@ -1,0 +1,91 @@
+{
+	"name": "@kizlo/woocommerce-kit",
+	"version": "0.1.0",
+	"type": "module",
+	"description": "Headless WooCommerce storefront components for Kizlo, with framework-agnostic bones.",
+	"keywords": [
+		"wordpress",
+		"woocommerce",
+		"headless",
+		"react",
+		"ecommerce",
+		"kizlo"
+	],
+	"license": "Apache-2.0",
+	"author": "Kizlo",
+	"sideEffects": false,
+	"homepage": "https://github.com/kizlo-io/kit/tree/main/packages/woocommerce-kit#readme",
+	"bugs": "https://github.com/kizlo-io/kit/issues",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/kizlo-io/kit.git",
+		"directory": "packages/woocommerce-kit"
+	},
+	"engines": {
+		"node": ">=22.14.0"
+	},
+	"main": "./dist/index.js",
+	"module": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"exports": {
+		"./package.json": "./package.json",
+		".": {
+			"import": {
+				"types": "./dist/index.d.ts",
+				"default": "./dist/index.js"
+			}
+		},
+		"./react": {
+			"import": {
+				"types": "./dist/react/client.d.ts",
+				"default": "./dist/react/client.js"
+			}
+		},
+		"./react/server": {
+			"import": {
+				"types": "./dist/react/server.d.ts",
+				"default": "./dist/react/server.js"
+			}
+		}
+	},
+	"files": [
+		"dist"
+	],
+	"publishConfig": {
+		"access": "public"
+	},
+	"scripts": {
+		"build": "tsdown",
+		"dev": "tsdown -w",
+		"typecheck": "tsc --noEmit",
+		"test": "vitest run --passWithNoTests",
+		"clean": "git clean -xdf .cache .turbo dist node_modules"
+	},
+	"dependencies": {
+		"@kizlo/kit": "workspace:*"
+	},
+	"devDependencies": {
+		"@kizlo/woocommerce": "catalog:",
+		"@tooling/typescript": "workspace:*",
+		"@types/node": "catalog:",
+		"@types/react": "catalog:react19",
+		"nuqs": "catalog:",
+		"react": "catalog:react19",
+		"tsdown": "catalog:",
+		"typescript": "catalog:",
+		"vitest": "catalog:"
+	},
+	"peerDependencies": {
+		"@kizlo/woocommerce": ">=0.8.0",
+		"nuqs": ">=2.10.0",
+		"react": ">=19.0.0"
+	},
+	"peerDependenciesMeta": {
+		"nuqs": {
+			"optional": true
+		},
+		"react": {
+			"optional": true
+		}
+	}
+}

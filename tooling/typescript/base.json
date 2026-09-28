@@ -1,0 +1,12 @@
+{
+	"$schema": "https://json.schemastore.org/tsconfig",
+	"extends": "./build.json",
+	"compilerOptions": {
+		"paths": {
+			"@kizlo/kit": ["${configDir}/../kit/src/index.ts"],
+			"@kizlo/woocommerce-kit": ["${configDir}/../woocommerce-kit/src/index.ts"],
+			"@kizlo/woocommerce-kit/react": ["${configDir}/../woocommerce-kit/src/react/client.tsx"],
+			"@kizlo/woocommerce-kit/react/server": ["${configDir}/../woocommerce-kit/src/react/server.tsx"]
+		}
+	}
+}

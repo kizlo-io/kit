@@ -1,0 +1,31 @@
+# dependencies
+node_modules
+.pnpm-store/
+
+# testing
+coverage
+
+# build output
+dist/
+.cache
+*.tsbuildinfo
+
+# turbo
+.turbo
+
+# local env files
+.env
+.env*.local
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+.pnpm-debug.log*
+
+# agent worktrees (one isolated checkout per session)
+.worktrees/
+.agents/worktrees/
+.claude/worktrees/

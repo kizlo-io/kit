@@ -1,0 +1,57 @@
+{
+	"name": "@kizlo/kit",
+	"version": "0.1.0",
+	"type": "module",
+	"description": "Shared primitives for the Kizlo component kits.",
+	"keywords": [
+		"wordpress",
+		"headless",
+		"react",
+		"kizlo"
+	],
+	"license": "Apache-2.0",
+	"author": "Kizlo",
+	"sideEffects": false,
+	"homepage": "https://github.com/kizlo-io/kit/tree/main/packages/kit#readme",
+	"bugs": "https://github.com/kizlo-io/kit/issues",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/kizlo-io/kit.git",
+		"directory": "packages/kit"
+	},
+	"engines": {
+		"node": ">=22.14.0"
+	},
+	"main": "./dist/index.js",
+	"module": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"exports": {
+		"./package.json": "./package.json",
+		".": {
+			"import": {
+				"types": "./dist/index.d.ts",
+				"default": "./dist/index.js"
+			}
+		}
+	},
+	"files": [
+		"dist"
+	],
+	"publishConfig": {
+		"access": "public"
+	},
+	"scripts": {
+		"build": "tsdown",
+		"dev": "tsdown -w",
+		"typecheck": "tsc --noEmit",
+		"test": "vitest run --passWithNoTests",
+		"clean": "git clean -xdf .cache .turbo dist node_modules"
+	},
+	"devDependencies": {
+		"@tooling/typescript": "workspace:*",
+		"@types/node": "catalog:",
+		"tsdown": "catalog:",
+		"typescript": "catalog:",
+		"vitest": "catalog:"
+	}
+}

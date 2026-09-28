@@ -1,0 +1,26 @@
+packages:
+  - packages/*
+  - tooling/*
+
+allowBuilds:
+  esbuild: true
+  unrs-resolver: true
+
+catalog:
+  '@kizlo/woocommerce': ^0.8.0
+  '@types/node': ^22.18.12
+  nuqs: ^2.10.0
+  tsdown: ^0.15.6
+  typescript: ^5.9.3
+  vitest: ^3.2.4
+
+catalogs:
+  react19:
+    react: ^19.2.3
+    react-dom: ^19.2.3
+    '@types/react': ^19.2.3
+    '@types/react-dom': ^19.2.3
+
+onlyBuiltDependencies:
+  - esbuild
+  - unrs-resolver
