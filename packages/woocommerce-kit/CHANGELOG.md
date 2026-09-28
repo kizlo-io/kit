@@ -1,5 +1,16 @@
 # @kizlo/woocommerce-kit
 
+## 0.3.0
+
+### Minor Changes
+
+- [#4](https://github.com/kizlo-io/kit/pull/4) [`d754720`](https://github.com/kizlo-io/kit/commit/d754720af622f7da05339771a410055ea737d46c) Thanks [@IDJGILL](https://github.com/IDJGILL)! - Add cart bones: `useCart`, `useCartItem`, `useCartCoupon` and `useQuantityInput` at `@kizlo/woocommerce-kit/react/cart`, configured by `WooCommerceProvider`.
+
+### Patch Changes
+
+- Updated dependencies [[`d754720`](https://github.com/kizlo-io/kit/commit/d754720af622f7da05339771a410055ea737d46c)]:
+  - @kizlo/kit@0.2.0
+
 ## 0.2.0
 
 ### Minor Changes
