@@ -27,7 +27,24 @@ import {
 import { buildCollectionModel, type CollectionModel } from "../model"
 import { collectionSearchParams } from "./params"
 
-export type { CollectionModel } from "../model"
+/**
+ * The model's types, re-exported so a component reads its hook and the types it returns from one specifier. Type-only, so
+ * nothing reaches the bundle.
+ */
+export type {
+	CollectionFilterGroup,
+	CollectionFilterGroupKind,
+	CollectionFiltersApi,
+	CollectionFilterTerm,
+	CollectionModel,
+	CollectionPriceFilter,
+	CollectionProduct,
+	CollectionProductsApi,
+	CollectionScopeApi,
+	CollectionScopeTerm,
+	CollectionSortApi,
+	CollectionSortOption,
+} from "../model"
 
 /** @deprecated Use `CollectionModel`. */
 export type ProductCollectionContextValue = CollectionModel
