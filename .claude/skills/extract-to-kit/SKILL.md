@@ -44,6 +44,9 @@ with a `className` in it is a failed extraction.
 
 ## Where each piece lands
 
+A **page-data** feature is server-rendered and re-fetched by a `shallow: false` URL write — the product
+collection. It lands like this:
+
 ```
 src/contract.ts      URL grammar: parse, serialize, the shared vocabulary and defaults. No framework.
 src/store.ts         The structural slice of the Kizlo client this feature calls. Nothing else.
@@ -54,9 +57,27 @@ src/react/server.tsx The RSC: parse, load, provide. Takes the client as a prop.
 src/react/params.ts  The same grammar as nuqs parsers, mirroring contract.ts.
 ```
 
+A **client-data** feature is browser-session or ephemeral state with no page to hang off — a cart, a
+typeahead. It has no RSC half and usually no URL grammar, and fetches in the browser through an
+optional query-library peer:
+
+```
+src/<feature>.ts        The client slice, the cache identity, the event vocabulary, the pure
+                        derivations. No framework and no query library.
+src/react/<feature>.tsx "use client". The hooks, running on the app's query client. Its own entry
+                        point, so a consumer of the other half never resolves the query library.
+```
+
 The core is the component minus the rendering. "It is easier with hooks" is not grounds for putting
-logic in an adapter directory. If the adapter is more than hooks-in-one-callback-out, something landed
-wrong.
+logic in an adapter directory. An adapter holds the binding and, for a client-data feature, the query
+that drives it; anything more than that landed wrong.
+
+**Providers.** A provider carries app configuration — one per kit, mounted by the app — or server
+data, page-scoped and mounted by the RSC. Feature state never gets one, so a new feature adds hooks
+and no new mount. The Kizlo client reaches client components through `KizloProvider`
+(`@kizlo/kit/react`) and server components as a prop, because a server component cannot read React
+context. The app owns `QueryClientProvider`; no kit creates a `QueryClient` or sets global react-query
+defaults.
 
 ## Procedure
 
@@ -65,11 +86,14 @@ wrong.
    is.
 2. **Name the URL tokens** before writing anything else, if the feature has URL state. They are
    public API forever — see the versioning note below.
-3. **Write the core bottom-up**: `contract.ts` → `store.ts` → `request.ts` → `model.ts`. Each file
-   must typecheck with no framework in scope.
-4. **Write the adapter.** For React, `react/client.tsx` gets `"use client"` and the hook,
-   `react/server.tsx` gets the async component. Anything both halves need at runtime sits in the core,
-   because a `"use client"` module imported by a server component becomes a client reference.
+3. **Write the core bottom-up**: page data goes `contract.ts` → `store.ts` → `request.ts` →
+   `model.ts`; client data goes into the feature's own `src/<feature>.ts`. Each file must typecheck
+   with no framework in scope.
+4. **Write the adapter.** For React, a page-data feature gets `react/client.tsx` with `"use client"`
+   and the hook plus `react/server.tsx` with the async component; a client-data feature gets a single
+   `react/<feature>.tsx` with `"use client"` and its hooks. Anything both halves need at runtime sits
+   in the core, because a `"use client"` module imported by a server component becomes a client
+   reference.
 5. **Register a new entry point in three places at once**: `tsdown.config.ts`, the `exports` map in
    `package.json`, and `tooling/typescript/base.json`. Missing one fails late and confusingly.
 6. **Export from `src/index.ts`**, and re-export the model's *types* from the adapter's client module
@@ -84,12 +108,16 @@ wrong.
 ## Traps
 
 - **Never import the app's client.** A Kizlo client is generated per app, wherever that app keeps it.
-  The server component takes the client as a prop, typed against the structural slice in `store.ts`. A
-  server component cannot read context, which is why it is a prop and not a provider.
+  A client component reads it from `KizloProvider` through `useKizloClient`, narrowed to the structural
+  slice in `store.ts`; a server component takes it as a prop, because it cannot read context.
 - **Types come from the integration package** (`@kizlo/woocommerce`, `@kizlo/cf7`), never from the
   app's generated client directory.
-- **The framework is an optional peer.** `react`, `nuqs` and their equivalents go in
-  `peerDependencies` + `peerDependenciesMeta.optional`, and in `devDependencies` from the catalog.
+- **The framework is an optional peer.** `react`, `nuqs`, `@tanstack/react-query` and their
+  equivalents go in `peerDependencies` + `peerDependenciesMeta.optional`, and in `devDependencies`
+  from the catalog.
+- **The app owns the `QueryClient`.** A client-data feature uses the app's, through the query library
+  as a peer. A package that creates its own, or sets global defaults, splits the cache and stops a
+  checkout from seeding the cart entry.
 - **`"use client"` is re-added by chunk name** in `tsdown.config.ts` — the bundler drops the source
   directive. A new client-side entry that does not match the banner predicate ships without it.
 - **Two encodings of one grammar drift.** Any new URL parameter needs a case in the adapter's
