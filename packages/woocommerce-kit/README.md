@@ -97,7 +97,7 @@ The scope is not in here. The page *is* its taxonomy term, so moving between ter
 | Import | Contents |
 | --- | --- |
 | `@kizlo/woocommerce-kit` | The core. `parseCollectionQuery`, `serializeCollectionQuery`, `loadProductCollection`, `buildCollectionModel`, the sort presets, the client contract and every type. No framework. |
-| `@kizlo/woocommerce-kit/react` | `ProductCollectionProvider`, `useProductCollection`. Carries `"use client"`. |
+| `@kizlo/woocommerce-kit/react` | `ProductCollectionProvider`, `useProductCollection`, and the model types it returns. Carries `"use client"`. |
 | `@kizlo/woocommerce-kit/react/server` | `ProductCollection`, the server component. |
 
 The React split into two entries is an RSC constraint rather than a preference. A `"use client"` module imported by a
