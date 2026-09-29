@@ -14,6 +14,7 @@ const clientModules = [
 	"src/react/client.tsx",
 	"src/react/config.tsx",
 	"src/react/provider.tsx",
+	"src/react/search.tsx",
 ]
 
 function isClientModule(id: string | null) {
@@ -31,6 +32,7 @@ export default defineConfig({
 		"react/checkout": "src/react/checkout.tsx",
 		"react/client": "src/react/client.tsx",
 		"react/provider": "src/react/provider.tsx",
+		"react/search": "src/react/search.tsx",
 		"react/server": "src/react/server.tsx",
 	},
 	outputOptions: {

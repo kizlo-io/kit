@@ -59,6 +59,12 @@
 				"default": "./dist/react/provider.js"
 			}
 		},
+		"./react/search": {
+			"import": {
+				"types": "./dist/react/search.d.ts",
+				"default": "./dist/react/search.js"
+			}
+		},
 		"./react/server": {
 			"import": {
 				"types": "./dist/react/server.d.ts",
