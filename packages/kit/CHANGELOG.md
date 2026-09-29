@@ -1,5 +1,11 @@
 # @kizlo/kit
 
+## 0.3.0
+
+### Minor Changes
+
+- [#11](https://github.com/kizlo-io/kit/pull/11) [`15176b3`](https://github.com/kizlo-io/kit/commit/15176b3ca4fef044dd5dd68b5c5e05e088055ef9) Thanks [@IDJGILL](https://github.com/IDJGILL)! - Type the hooks from the Kizlo client your app registered: `useKizloContext` replaces `useKizloClient`, the `*StoreClient` types and each hook's `client` option are gone, and `KizloProvider` is now required.
+
 ## 0.2.0
 
 ### Minor Changes
