@@ -47,6 +47,12 @@
 				"default": "./dist/react/cart.js"
 			}
 		},
+		"./react/checkout": {
+			"import": {
+				"types": "./dist/react/checkout.d.ts",
+				"default": "./dist/react/checkout.js"
+			}
+		},
 		"./react/provider": {
 			"import": {
 				"types": "./dist/react/provider.d.ts",
