@@ -12,7 +12,7 @@ const clientModules = [
 	"src/react/cart.tsx",
 	"src/react/checkout.tsx",
 	"src/react/client.tsx",
-	"src/react/config.tsx",
+	"src/react/context.tsx",
 	"src/react/provider.tsx",
 	"src/react/search.tsx",
 ]

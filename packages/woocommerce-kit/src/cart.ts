@@ -1,23 +1,12 @@
 /**
- * Cart bones: the client slice, the cache identity, the event vocabulary and the two derivations that are worth testing.
+ * Cart bones: the cache identity, the event vocabulary and the two derivations that are worth testing.
  *
  * No React and no query library. The cart has no URL grammar and no response derivation, so unlike the collection it gets no
- * `contract`/`request`/`model` triple — what is framework-agnostic here is the shape of the calls, the identity of the cache
- * entry every consumer shares, and the arithmetic behind a quantity control.
+ * `contract`/`request`/`model` triple — what is framework-agnostic here is the identity of the cache entry every consumer
+ * shares, the vocabulary its actions report themselves in, and the arithmetic behind a quantity control.
  */
 
-import type {
-	AddCartItemInput,
-	ApplyCouponInput,
-	Cart,
-	CartError,
-	CartItem,
-	RemoveCartItemInput,
-	RemoveCouponInput,
-	SelectCartShippingRateInput,
-	UpdateCartInput,
-	UpdateCartItemInput,
-} from "@kizlo/woocommerce"
+import type { AddCartItemInput, Cart, CartError, CartItem, UpdateCartInput } from "@kizlo/woocommerce"
 
 /**
  * The store's own error shape, re-exported so a consumer reads a hook and the type of its `error` from one specifier. Its
@@ -25,47 +14,6 @@ import type {
  * words, so the code has to survive the trip out of the client.
  */
 export type { CartError } from "@kizlo/woocommerce"
-
-/**
- * The slice of a Kizlo client the cart calls: eight procedures, split into params and body exactly as the contract does.
- *
- * Structural for the same reason `ProductStoreClient` is. The real client is generated per app from its own WordPress
- * introspection, so typing the prop against that would tie this package to one app's contract; anything that answers these
- * calls satisfies it, and a stub satisfies it in a test.
- *
- * It is the app's *browser* client. The cart is session state behind a cookie, not page data, so there is no server half. The
- * hooks read it from `KizloProvider`, so a storefront never passes it to them; this type is what `useKizloClient` narrows to.
- *
- * @example
- * ```tsx
- * import { useKizloClient } from "@kizlo/kit/react"
- * import type { CartStoreClient } from "@kizlo/woocommerce-kit"
- *
- * // What every cart hook does internally. The generated client satisfies this structurally; nothing is adapted.
- * const client = useKizloClient<CartStoreClient>("woocommerce.cart")
- * await client.woocommerce.cart.get.call()
- * ```
- */
-export type CartStoreClient = {
-	woocommerce: {
-		cart: {
-			get: { call(): Promise<Cart> }
-			update: { call(input: { body: UpdateCartInput }): Promise<Cart> }
-			selectShippingRate: { call(input: { body: SelectCartShippingRateInput }): Promise<Cart> }
-			items: {
-				add: { call(input: { body: AddCartItemInput }): Promise<Cart> }
-				update: {
-					call(input: { body: Pick<UpdateCartItemInput, "quantity">; params: Pick<UpdateCartItemInput, "key"> }): Promise<Cart>
-				}
-				remove: { call(input: { params: Pick<RemoveCartItemInput, "key"> }): Promise<Cart> }
-			}
-			coupons: {
-				apply: { call(input: { body: ApplyCouponInput }): Promise<Cart> }
-				remove: { call(input: { params: Pick<RemoveCouponInput, "code"> }): Promise<Cart> }
-			}
-		}
-	}
-}
 
 /**
  * The one cache entry the whole cart shares. Exported because an app that obtains a cart by another route — a checkout

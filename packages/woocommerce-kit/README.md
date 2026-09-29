@@ -13,10 +13,11 @@ derived model and the cart and checkout contracts, with no React and no URL-stat
 pnpm add @kizlo/woocommerce-kit
 ```
 
-Peer dependencies: `@kizlo/woocommerce` 0.8+ always, plus `react` 19+ if you import a React entry, `nuqs` 2.10+ for the
-collection and `@tanstack/react-query` 5.102+ for the cart, checkout and search. All three are optional peers, so a different
-framework's adapter does not drag React in and a collection-only storefront installs no query library. Your app supplies the Kizlo client, through
-[`KizloProvider`](../kit#kizloprovider-and-usekizloclient) for client components and as a prop for server components.
+Peer dependencies: `@kizlo/woocommerce` 0.8+ and `kizlo` 0.23+ always, plus `react` 19+ if you import a React entry, `nuqs`
+2.10+ for the collection and `@tanstack/react-query` 5.102+ for the cart, checkout and search. Those last three are optional
+peers, so a different framework's adapter does not drag React in and a collection-only storefront installs no query library.
+Your app supplies the Kizlo client, through [`KizloProvider`](../kit#kizloprovider-and-usekizlocontext) for client components
+and as a prop for server components.
 
 ## Product collection
 
@@ -196,8 +197,8 @@ export function CartLine({ itemKey }: { itemKey: string }) {
 | `useCartCoupon(options?)` | `{ coupons, isPending, error, apply, remove, reset }`. |
 | `useQuantityInput(options)` | `{ input, inputProps, increment, decrement, canIncrement, canDecrement }` — the behaviour of a quantity control, no markup. Commits on blur and Enter, abandons on Escape. |
 
-Every hook takes one optional argument: its own [callbacks](#cart-events), plus a `client` to use instead of the one from
-`KizloProvider` — a stub in a test, or a second store. A storefront passes neither.
+Every hook takes one optional argument: its own [callbacks](#cart-events). The client comes from `KizloProvider` and the
+configuration from `WooCommerceProvider`, so there is nothing else to pass.
 
 `format` is the store's currency and your locale already applied, so a line total is `format(item.totals.total)`. `isMutating`
 is true while any cart action anywhere in the tree is in flight, which is what a page disables its controls on;
@@ -363,8 +364,8 @@ export function ProductSearch({ category }: { category: string | null }) {
 
 `collectionPath` is the only required option, and it is required rather than configured: a scope control changes it between
 renders, so a single route value could not describe it. Everything else is behaviour — `active` (pass your open state; a closed
-panel asks the store nothing), `browseSort`, `debounceMs` (240), `filters`, `perPage` (10), `staleTime`, and a `client` to use
-instead of the one from `KizloProvider`.
+panel asks the store nothing), `browseSort`, `debounceMs` (240), `filters`, `perPage` (10) and `staleTime`. The client comes
+from `KizloProvider`.
 
 **An empty field asks the store nothing unless you say otherwise.** Leave `browseSort` out and a panel stays blank until
 someone types; pass an ordering and the empty field browses in it — `{ order: "desc", orderBy: "popularity" }` for the best
@@ -397,7 +398,7 @@ beside a desktop header — does not narrate the open one's requests.
 
 | Import | Contents |
 | --- | --- |
-| `@kizlo/woocommerce-kit` | The core. Collection grammar and model, client contracts, cart and checkout cache keys and events, search request, href and cache helpers, quantity and money helpers, and every type. No framework. |
+| `@kizlo/woocommerce-kit` | The core. Collection grammar and model, cart and checkout cache keys and events, search request, href and cache helpers, quantity and money helpers, and every type. No framework. |
 | `@kizlo/woocommerce-kit/react` | `ProductCollectionProvider`, `useProductCollection`, and the model types it returns. Carries `"use client"`. |
 | `@kizlo/woocommerce-kit/react/cart` | `useCart`, `useCartItem`, `useCartCoupon`, `useQuantityInput`. Carries `"use client"`. Needs `@tanstack/react-query`. |
 | `@kizlo/woocommerce-kit/react/checkout` | `useCheckout` and its callback types. Carries `"use client"`. Needs `@tanstack/react-query`. |

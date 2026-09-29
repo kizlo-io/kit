@@ -7,7 +7,7 @@
  * `KizloProvider`, and seeds the cart's existing cache entry so checkout and every cart consumer see one cart.
  */
 
-import { useKizloClient } from "@kizlo/kit/react"
+import { useKizloContext } from "@kizlo/kit/react"
 import type { Checkout, ConfirmCheckoutInput } from "@kizlo/woocommerce"
 import { isServer, useIsMutating, useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
@@ -17,11 +17,10 @@ import {
 	type CheckoutError,
 	type CheckoutErrorEvent,
 	type CheckoutStartEvent,
-	type CheckoutStoreClient,
 	type CheckoutSuccessEvent,
 	checkoutQueryKey,
 } from "../checkout"
-import { useWooCommerceConfig } from "./config"
+import { useWooCommerceContext } from "./context"
 
 /** The core checkout types, available beside the hook that returns them. */
 export type {
@@ -31,14 +30,10 @@ export type {
 	CheckoutErrorEvent,
 	CheckoutSettledEvent,
 	CheckoutStartEvent,
-	CheckoutStoreClient,
 	CheckoutSuccessEvent,
 } from "../checkout"
 
-export type CheckoutHookOptions = CheckoutCallbacks & {
-	/** A client override for a test or a second store. A storefront normally reads its client from `KizloProvider`. */
-	client?: CheckoutStoreClient
-}
+export type CheckoutHookOptions = CheckoutCallbacks
 
 export type CheckoutApi = {
 	/** The store's raw checkout snapshot, or `null` before it loads and when loading failed. */
@@ -136,15 +131,15 @@ function useCheckoutQueryClient() {
  * ```
  */
 export function useCheckout(options?: CheckoutHookOptions): CheckoutApi {
-	const { callbacks: providerCallbacks } = useWooCommerceConfig()
-	const client = useKizloClient<CheckoutStoreClient>("woocommerce.checkout", options?.client)
+	const { callbacks: providerCallbacks } = useWooCommerceContext()
+	const { client } = useKizloContext()
 	const queryClient = useCheckoutQueryClient()
 	const hookCallbacks = useLatest<CheckoutCallbacks | undefined>(options)
 	const [error, setError] = useState<CheckoutError | null>(null)
 
 	const checkoutQuery = useQuery({
 		enabled: !isServer,
-		queryFn: async () => {
+		queryFn: async (): Promise<Checkout> => {
 			const checkout = await client.woocommerce.checkout.get.call()
 			queryClient.setQueryData(cartQueryKey, checkout.cart)
 			return checkout
@@ -153,7 +148,7 @@ export function useCheckout(options?: CheckoutHookOptions): CheckoutApi {
 	})
 
 	const mutation = useMutation({
-		mutationFn: (input: ConfirmCheckoutInput) => client.woocommerce.checkout.confirm.call({ body: input }),
+		mutationFn: (input: ConfirmCheckoutInput): Promise<Checkout> => client.woocommerce.checkout.confirm.call({ body: input }),
 		mutationKey: checkoutMutationKey,
 	})
 	const mutateAsync = useLatest(mutation.mutateAsync)

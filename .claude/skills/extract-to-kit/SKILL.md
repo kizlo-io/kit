@@ -49,7 +49,6 @@ collection. It lands like this:
 
 ```
 src/contract.ts      URL grammar: parse, serialize, the shared vocabulary and defaults. No framework.
-src/store.ts         The structural slice of the Kizlo client this feature calls. Nothing else.
 src/request.ts       The store calls, built from one shared input, dispatched together, failing soft.
 src/model.ts         Pure derivation: responses + query + a `write` callback in, the model out.
 src/react/client.tsx "use client". Context, hooks, URL writers, `useTransition`. Adapter only.
@@ -86,9 +85,9 @@ defaults.
    is.
 2. **Name the URL tokens** before writing anything else, if the feature has URL state. They are
    public API forever — see the versioning note below.
-3. **Write the core bottom-up**: page data goes `contract.ts` → `store.ts` → `request.ts` →
-   `model.ts`; client data goes into the feature's own `src/<feature>.ts`. Each file must typecheck
-   with no framework in scope.
+3. **Write the core bottom-up**: page data goes `contract.ts` → `request.ts` → `model.ts`; client
+   data goes into the feature's own `src/<feature>.ts`. Each file must typecheck with no framework in
+   scope.
 4. **Write the adapter.** For React, a page-data feature gets `react/client.tsx` with `"use client"`
    and the hook plus `react/server.tsx` with the async component; a client-data feature gets a single
    `react/<feature>.tsx` with `"use client"` and its hooks. Anything both halves need at runtime sits
@@ -107,9 +106,10 @@ defaults.
 
 ## Traps
 
-- **Never import the app's client.** A Kizlo client is generated per app, wherever that app keeps it.
-  A client component reads it from `KizloProvider` through `useKizloClient`, narrowed to the structural
-  slice in `store.ts`; a server component takes it as a prop, because it cannot read context.
+- **Never import the app's client, and never restate its shape.** A client component reads it from
+  `KizloProvider` through `useKizloContext()`; a server component takes it as a prop, because it cannot
+  read context. Both are typed `ActiveKizloClient` from `kizlo`, which each app resolves from the
+  procedures it registered — so a feature declares no client type of its own and a hook takes no client.
 - **Types come from the integration package** (`@kizlo/woocommerce`, `@kizlo/cf7`), never from the
   app's generated client directory.
 - **The framework is an optional peer.** `react`, `nuqs`, `@tanstack/react-query` and their

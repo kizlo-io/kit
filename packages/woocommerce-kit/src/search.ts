@@ -1,44 +1,17 @@
 /**
- * Search bones: the client slice, the cache identity, the request shape and the results href.
+ * Search bones: the cache identity, the request shape and the results href.
  *
  * No React and no query library. Search has no URL grammar of its own — it writes the collection's `q`, so `contract.ts` stays
  * the only place that knows the grammar — and no server half, which is why unlike the collection it gets no
- * `contract`/`request`/`model` triple. What is framework-agnostic here is which call a typeahead makes, what it sends for a
- * given input, the identity of the cache entry one search state occupies, and where the full results live.
+ * `contract`/`request`/`model` triple. What is framework-agnostic here is what a typeahead sends for a given input, the
+ * identity of the cache entry one search state occupies, and where the full results live.
  *
  * A typeahead is browser state: it lives in the app shell and fetches per keystroke, so there is nothing for an RSC to load.
  * The results *page* is the existing product collection, reading `q` from its own search params.
  */
 
-import type { ListProductInput, ProductList } from "@kizlo/woocommerce"
+import type { ListProductInput } from "@kizlo/woocommerce"
 import { type CollectionSortPreset, serializeCollectionQuery } from "./contract"
-
-/**
- * The slice of a Kizlo client a typeahead calls: one product listing and nothing else.
- *
- * Narrower than `ProductStoreClient`, which also demands `products.filters` — a search panel counts nothing, so requiring the
- * aggregation endpoint would refuse a client that cannot facet. Structural for the same reason: the real client is generated per
- * app from its own WordPress introspection, so anything that answers this call satisfies it, and a stub satisfies it in a test.
- *
- * It is the app's *browser* client. The hook reads it from `KizloProvider`, so a storefront never passes it.
- *
- * @example
- * ```tsx
- * import { useKizloClient } from "@kizlo/kit/react"
- * import type { ProductSearchStoreClient } from "@kizlo/woocommerce-kit"
- *
- * // What the hook does internally. The generated client satisfies this structurally; nothing is adapted.
- * const client = useKizloClient<ProductSearchStoreClient>("woocommerce.products.list")
- * await client.woocommerce.products.list.call({ query: { perPage: 10, search: "tote" } })
- * ```
- */
-export type ProductSearchStoreClient = {
-	woocommerce: {
-		products: {
-			list: { call(input: { query: ListProductInput }): Promise<ProductList> }
-		}
-	}
-}
 
 /**
  * How to order an empty field, for a panel that shows products before anything is typed.

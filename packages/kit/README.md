@@ -8,18 +8,19 @@ Install it only to use it directly; the kits depend on it themselves.
 pnpm add @kizlo/kit
 ```
 
-Peer dependency: `react` 19+, and only if you import `@kizlo/kit/react`. It is an optional peer, so a kit's framework-agnostic
-core does not drag React into an app that uses another framework.
+Peer dependencies: `kizlo` 0.23+, which is where the client's type comes from, and `react` 19+ — both only if you import
+`@kizlo/kit/react`, and both optional, so this package's framework-agnostic core drags neither into an app that wants
+`decodeHtmlEntities` and nothing else.
 
 | Import | Contents |
 | --- | --- |
-| `@kizlo/kit` | `decodeHtmlEntities`, `assertKizloClient`. No framework. |
-| `@kizlo/kit/react` | `KizloProvider`, `useKizloClient`. Carries `"use client"`. |
+| `@kizlo/kit` | `decodeHtmlEntities`. No framework. |
+| `@kizlo/kit/react` | `KizloProvider`, `useKizloContext`. Carries `"use client"`. |
 
-## `KizloProvider` and `useKizloClient`
+## `KizloProvider` and `useKizloContext`
 
-Your Kizlo client is generated from your own WordPress introspection, so no kit can name its type. Mount it once and every
-kit's client-side hooks read it from there — no client prop on a hook, no kit importing your client singleton:
+Mount your Kizlo client once and every kit's client-side hooks read it from there — no client prop on a hook, no kit importing
+your client singleton:
 
 ```tsx
 // app/providers.tsx
@@ -39,26 +40,23 @@ export function Providers({ children }) {
 ```
 
 Server components cannot read React context, so they keep taking the client as a prop. That is why a kit's server entry has a
-`client` prop and its hooks do not.
+`client` prop and its hooks do not. The browser client and the server client are different instances, so neither half holds the
+other's.
 
-A hook reads the slice it needs with `useKizloClient<T>(path)`, where `path` is the dotted procedure path it is about to call:
+A hook reads it with `useKizloContext()`:
 
 ```tsx
-const client = useKizloClient<CartStoreClient>("woocommerce.cart")
+const { client } = useKizloContext()
+await client.woocommerce.cart.get.call()
 ```
 
-The generic is an assertion the compiler cannot check, so the check happens at runtime. A client built from an introspection
-that does not include the integration fails here, naming what is absent —
+No path and no type argument, because there is nothing left to assert: `client` is typed `ActiveKizloClient`, which `kizlo`
+resolves from the procedures your generated barrel registered. A call your contract does not carry is a compile error, and the
+integration you forgot to install shows up in `tsc` rather than in a request.
 
-```
-Error: the client passed to <KizloProvider> has no woocommerce.cart procedures
-```
-
-— instead of a `Cannot read properties of undefined` from somewhere inside the request. `assertKizloClient(client, path)` is the
-same check as a plain function, for a framework binding that has no React context to read.
-
-Pass a second argument to use a client directly, for a test stub or a second store: `useKizloClient(path, stub)` needs no
-provider.
+The hook returns the context object rather than the client itself, so a locale, a session or kit-wide configuration can join it
+later without changing a signature. It throws when no provider is mounted — the client is not optional, so every kit hook needs
+`KizloProvider` above it.
 
 ## `decodeHtmlEntities(text)`
 
