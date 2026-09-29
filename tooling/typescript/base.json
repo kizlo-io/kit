@@ -8,6 +8,7 @@
 			"@kizlo/woocommerce-kit": ["${configDir}/../woocommerce-kit/src/index.ts"],
 			"@kizlo/woocommerce-kit/react": ["${configDir}/../woocommerce-kit/src/react/client.tsx"],
 			"@kizlo/woocommerce-kit/react/cart": ["${configDir}/../woocommerce-kit/src/react/cart.tsx"],
+			"@kizlo/woocommerce-kit/react/checkout": ["${configDir}/../woocommerce-kit/src/react/checkout.tsx"],
 			"@kizlo/woocommerce-kit/react/provider": ["${configDir}/../woocommerce-kit/src/react/provider.tsx"],
 			"@kizlo/woocommerce-kit/react/server": ["${configDir}/../woocommerce-kit/src/react/server.tsx"]
 		}

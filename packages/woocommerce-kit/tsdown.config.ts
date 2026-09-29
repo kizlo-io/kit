@@ -8,7 +8,13 @@ import { defineConfig } from "tsdown"
  * name is emergent — `react/cart` does not contain the word "client", and a shared chunk is named after whichever module it
  * happened to come from.
  */
-const clientModules = ["src/react/cart.tsx", "src/react/client.tsx", "src/react/config.tsx", "src/react/provider.tsx"]
+const clientModules = [
+	"src/react/cart.tsx",
+	"src/react/checkout.tsx",
+	"src/react/client.tsx",
+	"src/react/config.tsx",
+	"src/react/provider.tsx",
+]
 
 function isClientModule(id: string | null) {
 	if (!id) return false
@@ -22,6 +28,7 @@ export default defineConfig({
 	entry: {
 		index: "src/index.ts",
 		"react/cart": "src/react/cart.tsx",
+		"react/checkout": "src/react/checkout.tsx",
 		"react/client": "src/react/client.tsx",
 		"react/provider": "src/react/provider.tsx",
 		"react/server": "src/react/server.tsx",

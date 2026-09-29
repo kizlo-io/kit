@@ -6,7 +6,7 @@ Behaviour, not markup. Each component owns the hard parts (the URL contract, the
 pending state) and renders nothing but `children`, so the design is entirely yours.
 
 The bones are framework-agnostic. `@kizlo/woocommerce-kit` itself is plain TypeScript: the URL grammar, the store requests, the
-derived model and the cart's own contract, with no React and no URL-state library. Framework bindings are separate
+derived model and the cart and checkout contracts, with no React and no URL-state library. Framework bindings are separate
 [entry points](#entry-points) — one per feature, so you resolve only what you use — and each is a thin adapter over that core.
 
 ```bash
@@ -14,8 +14,8 @@ pnpm add @kizlo/woocommerce-kit
 ```
 
 Peer dependencies: `@kizlo/woocommerce` 0.8+ always, plus `react` 19+ if you import a React entry, `nuqs` 2.10+ for the
-collection and `@tanstack/react-query` 5.102+ for the cart. All three are optional peers, so a different framework's adapter
-does not drag React in and a collection-only storefront installs no query library. Your app supplies the Kizlo client, through
+collection and `@tanstack/react-query` 5.102+ for the cart and checkout. All three are optional peers, so a different
+framework's adapter does not drag React in and a collection-only storefront installs no query library. Your app supplies the Kizlo client, through
 [`KizloProvider`](../kit#kizloprovider-and-usekizloclient) for client components and as a prop for server components.
 
 ## Product collection
@@ -232,17 +232,91 @@ action reports `onStart` → `onSuccess` | `onError` → `onSettled`, and every 
 makes these worth having: `remove_from_cart` carries the item that is already gone from `cart` by the time a listener runs, and
 the item tokens match GA4's, since analytics is usually the reason to want them.
 
-`WooCommerceProvider`'s callbacks fire for every cart action below it, which is where an analytics or drawer concern belongs —
-once, rather than at each call site. `onStart` is synchronous and cannot cancel the action; it is what lets a drawer open
-immediately instead of after the round trip.
+`WooCommerceProvider`'s callbacks fire for every cart and checkout action below it, which is where an analytics or drawer
+concern belongs — once, rather than at each call site. `onStart` is synchronous and cannot cancel the action; it is what lets a
+drawer open immediately instead of after the round trip.
+
+## Checkout
+
+Checkout loads the store's checkout snapshot, confirms an order and keeps the cart hooks on the same cache entry. It owns no
+form state and performs no navigation: validation, copy, fields, routes and payment redirects stay in the storefront.
+
+On the checkout route, disable the cart's own fetch through `WooCommerceProvider` so checkout can seed `cartQueryKey` without
+racing a second request. Then use the live cart from `useCart()` for customer details, shipping rates and coupons:
+
+```tsx
+"use client"
+import type { ConfirmCheckoutInput } from "@kizlo/woocommerce"
+import { useCart, useCartCoupon } from "@kizlo/woocommerce-kit/react/cart"
+import { useCheckout } from "@kizlo/woocommerce-kit/react/checkout"
+
+export function CheckoutForm({ values }: { values: ConfirmCheckoutInput }) {
+	const { cart, selectShippingRate, updateCustomer } = useCart()
+	const { apply: applyCoupon } = useCartCoupon()
+	const { checkout, confirm, error, isLoading, isPending, refresh, reset } = useCheckout({
+		onSuccess: ({ checkout }) => track("purchase", { orderId: checkout.orderId }),
+	})
+
+	if (isLoading) return <Spinner />
+	if (!checkout || !cart) {
+		return <button onClick={() => void refresh()}>Try checkout again</button>
+	}
+
+	return (
+		<form
+			onSubmit={(event) => {
+				event.preventDefault()
+				reset()
+				void confirm(values).then((result) => {
+					if (result?.paymentResult?.redirectUrl) window.location.assign(result.paymentResult.redirectUrl)
+				})
+			}}
+		>
+			<p>{cart.itemCount} items</p>
+			<button onClick={() => void updateCustomer({ shippingAddress: values.shippingAddress })} type="button">
+				Calculate shipping
+			</button>
+			<button onClick={() => void selectShippingRate("flat_rate:1", 0)} type="button">
+				Choose shipping
+			</button>
+			<button onClick={() => void applyCoupon("WELCOME10")} type="button">
+				Apply coupon
+			</button>
+			{error ? <p role="alert">{error.message}</p> : null}
+			<button disabled={isPending} type="submit">Place order</button>
+		</form>
+	)
+}
+```
+
+`confirm(input)` resolves to the new checkout, or `null` when it fails; it never rejects. The last fetch or confirmation
+failure is on `error`, including its store code and validation data. `reset()` clears a confirmation failure.
+
+Confirmation uses the cart callback lifecycle: `onStart` → `onSuccess` | `onError` → `onSettled`. Pass callbacks to
+`useCheckout` for one form, or to `WooCommerceProvider` for every cart and checkout action in the tree. Hook callbacks run
+first, and one throwing does not suppress the other callback or phase:
+
+```tsx
+<WooCommerceProvider
+	cartEnabled={!checkoutSeedsCart}
+	onSuccess={(event) => {
+		if (event.type === "confirm_checkout") track("purchase", { orderId: event.checkout.orderId })
+	}}
+>
+	{children}
+</WooCommerceProvider>
+```
+
+The checkout fetch and `refresh()` do not emit action callbacks. Only confirmation does.
 
 ## Entry points
 
 | Import | Contents |
 | --- | --- |
-| `@kizlo/woocommerce-kit` | The core. `parseCollectionQuery`, `serializeCollectionQuery`, `loadProductCollection`, `buildCollectionModel`, the sort presets, the client contracts, `cartQueryKey`, `cartStaleTime`, `cartItemLimits`, `resolveQuantity`, `formatStoreMoney` and every type. No framework. |
+| `@kizlo/woocommerce-kit` | The core. Collection grammar and model, the client contracts, cart and checkout cache keys and events, quantity and money helpers, and every type. No framework. |
 | `@kizlo/woocommerce-kit/react` | `ProductCollectionProvider`, `useProductCollection`, and the model types it returns. Carries `"use client"`. |
 | `@kizlo/woocommerce-kit/react/cart` | `useCart`, `useCartItem`, `useCartCoupon`, `useQuantityInput`. Carries `"use client"`. Needs `@tanstack/react-query`. |
+| `@kizlo/woocommerce-kit/react/checkout` | `useCheckout` and its callback types. Carries `"use client"`. Needs `@tanstack/react-query`. |
 | `@kizlo/woocommerce-kit/react/provider` | `WooCommerceProvider`, this kit's app-level configuration. Carries `"use client"`. Imports no peer but React. |
 | `@kizlo/woocommerce-kit/react/server` | `ProductCollection`, the server component. |
 

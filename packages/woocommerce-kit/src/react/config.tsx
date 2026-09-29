@@ -9,13 +9,13 @@
  */
 
 import { createContext, type RefObject, useContext } from "react"
-import type { CartCallbacks } from "../cart"
+import type { WooCommerceCallbacks } from "../checkout"
 
 export type WooCommerceConfig = {
 	/** Whether the cart may fetch itself. False on a route that seeds `cartQueryKey` instead. */
 	cartEnabled: boolean
-	/** The kit-level cart listeners, behind a ref so an inline callback does not change the context value. */
-	callbacks: RefObject<CartCallbacks>
+	/** The kit-level action listeners, behind a ref so an inline callback does not change the context value. */
+	callbacks: RefObject<WooCommerceCallbacks>
 	/** Locale for money formatting. Decides grouping and symbol placement, never the currency. */
 	locale: string | undefined
 }
