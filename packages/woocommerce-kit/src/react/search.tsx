@@ -17,14 +17,13 @@
  * consumer.
  */
 
-import { useKizloClient } from "@kizlo/kit/react"
+import { useKizloContext } from "@kizlo/kit/react"
 import type { ListProductInput, Product } from "@kizlo/woocommerce"
 import { isServer, keepPreviousData, skipToken, useQuery } from "@tanstack/react-query"
 import { type ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
 	defaultProductSearchPerPage,
 	type ProductSearchSort,
-	type ProductSearchStoreClient,
 	productSearchHref,
 	productSearchQueryKey,
 	productSearchStaleTime,
@@ -35,7 +34,7 @@ import {
  * The core's search types, re-exported so a component reads its hook and the types around it from one specifier. Type-only, so
  * nothing reaches the bundle.
  */
-export type { ProductSearchHrefInput, ProductSearchSort, ProductSearchState, ProductSearchStoreClient } from "../search"
+export type { ProductSearchHrefInput, ProductSearchSort, ProductSearchState } from "../search"
 
 /** Stable empty, so a consumer mapping `products` before the first result does not see a new array every render. */
 const noProducts: readonly Product[] = []
@@ -98,11 +97,6 @@ export type ProductSearchOptions = ProductSearchCallbacks & {
 	 * browses in it. There is no default, because what a resting panel shows is a storefront's decision.
 	 */
 	browseSort?: ProductSearchSort
-	/**
-	 * A client for this hook instead of the one from `KizloProvider`. For a test stub or a second store; a storefront does not
-	 * pass it.
-	 */
-	client?: ProductSearchStoreClient
 	/**
 	 * Where the results live, as this render resolved it: `"/collections"`, or `"/collections/bags"` while a scope control has a
 	 * category. Required, because a route literal belongs to the app.
@@ -211,7 +205,6 @@ export type ProductSearchApi = {
 export function useProductSearch({
 	active = true,
 	browseSort,
-	client: clientOverride,
 	collectionPath,
 	debounceMs = 240,
 	filters,
@@ -219,7 +212,7 @@ export function useProductSearch({
 	staleTime = productSearchStaleTime,
 	...callbacks
 }: ProductSearchOptions): ProductSearchApi {
-	const client = useKizloClient<ProductSearchStoreClient>("woocommerce.products.list", clientOverride)
+	const { client } = useKizloContext()
 	const listeners = useLatest<ProductSearchCallbacks>(callbacks)
 	const [query, setQueryState] = useState("")
 	const [debouncedQuery, setDebouncedQuery] = useState("")

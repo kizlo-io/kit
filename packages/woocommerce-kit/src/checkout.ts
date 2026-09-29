@@ -1,5 +1,5 @@
 /**
- * Checkout bones: the client slice, cache identity and confirmation event vocabulary.
+ * Checkout bones: the cache identity and the confirmation event vocabulary.
  *
  * No React, query library, form state or navigation. Checkout is browser-session state, so the React adapter owns the
  * request while this module keeps the integration contract and events available to every framework.
@@ -7,30 +7,6 @@
 
 import type { Checkout, ConfirmCheckoutInput } from "@kizlo/woocommerce"
 import type { CartErrorEvent, CartSettledEvent, CartStartEvent, CartSuccessEvent } from "./cart"
-
-/**
- * The slice of a Kizlo browser client used by checkout.
- *
- * The generated app client satisfies this structurally. Only the two procedures used by the reference checkout are
- * required; updating a checkout and retrying an order stay out until a consumer needs them.
- *
- * @example
- * ```tsx
- * import { useKizloClient } from "@kizlo/kit/react"
- * import type { CheckoutStoreClient } from "@kizlo/woocommerce-kit"
- *
- * const client = useKizloClient<CheckoutStoreClient>("woocommerce.checkout")
- * const checkout = await client.woocommerce.checkout.get.call()
- * ```
- */
-export type CheckoutStoreClient = {
-	woocommerce: {
-		checkout: {
-			get: { call(): Promise<Checkout> }
-			confirm: { call(input: { body: ConfirmCheckoutInput }): Promise<Checkout> }
-		}
-	}
-}
 
 /** The one checkout snapshot shared by every checkout consumer in the app's query client. */
 export const checkoutQueryKey = ["kizlo", "woocommerce", "checkout"] as const

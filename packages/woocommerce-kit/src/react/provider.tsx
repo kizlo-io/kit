@@ -13,7 +13,7 @@
 
 import { type ReactNode, useEffect, useMemo, useRef } from "react"
 import type { WooCommerceCallbacks } from "../checkout"
-import { type WooCommerceConfig, WooCommerceConfigContext } from "./config"
+import { WooCommerceContext, type WooCommerceContextValue } from "./context"
 
 export type WooCommerceProviderProps = WooCommerceCallbacks & {
 	/**
@@ -71,7 +71,7 @@ export function WooCommerceProvider({ cartEnabled = true, children, locale, ...c
 	})
 
 	// Only the configuration is in the value, so it changes when the app changes it and not when the cart does.
-	const config = useMemo<WooCommerceConfig>(() => ({ callbacks: callbacksRef, cartEnabled, locale }), [cartEnabled, locale])
+	const value = useMemo<WooCommerceContextValue>(() => ({ callbacks: callbacksRef, cartEnabled, locale }), [cartEnabled, locale])
 
-	return <WooCommerceConfigContext.Provider value={config}>{children}</WooCommerceConfigContext.Provider>
+	return <WooCommerceContext.Provider value={value}>{children}</WooCommerceContext.Provider>
 }

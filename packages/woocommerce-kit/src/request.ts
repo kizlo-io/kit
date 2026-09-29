@@ -25,6 +25,7 @@
  */
 
 import type { ProductFilters, ProductList } from "@kizlo/woocommerce"
+import type { ActiveKizloClient } from "kizlo"
 import {
 	type CollectionQuery,
 	type CollectionScope,
@@ -33,7 +34,6 @@ import {
 	defaultNavigationTaxonomy,
 	resolveSortPreset,
 } from "./contract"
-import type { ProductStoreClient } from "./store"
 
 type SelectedTermGroup = { taxonomy: string; terms: string[] }
 
@@ -135,7 +135,7 @@ function filterQuery(request: CollectionFilterRequest) {
 	}
 }
 
-async function fetchProducts(client: ProductStoreClient, request: ProductRequest) {
+async function fetchProducts(client: ActiveKizloClient, request: ProductRequest) {
 	try {
 		return await client.woocommerce.products.list.call({
 			query: {
@@ -152,7 +152,7 @@ async function fetchProducts(client: ProductStoreClient, request: ProductRequest
 }
 
 async function fetchFilters(
-	client: ProductStoreClient,
+	client: ActiveKizloClient,
 	request: CollectionFilterRequest,
 	attributeTaxonomies: readonly string[],
 	navigationTaxonomy: string,
@@ -186,7 +186,7 @@ export type LoadProductCollectionInput = {
 	 */
 	attributeTaxonomies: readonly string[]
 	/** A Kizlo server client with the WooCommerce integration installed. */
-	client: ProductStoreClient
+	client: ActiveKizloClient
 	/**
 	 * The store's currency minor unit, the number of decimal places, 2 for most currencies.
 	 *

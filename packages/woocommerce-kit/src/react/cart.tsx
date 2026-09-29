@@ -15,9 +15,10 @@
  * Renders nothing. Every class name, icon, label and route stays in the consumer.
  */
 
-import { useKizloClient } from "@kizlo/kit/react"
+import { useKizloContext } from "@kizlo/kit/react"
 import type { AddCartItemInput, Cart, CartError, UpdateCartInput } from "@kizlo/woocommerce"
 import { isServer, useIsMutating, useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import type { ActiveKizloClient } from "kizlo"
 import { type ChangeEvent, type FocusEvent, type KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
 	type CartActionPayload,
@@ -25,7 +26,6 @@ import {
 	type CartErrorEvent,
 	type CartItemLimits,
 	type CartStartEvent,
-	type CartStoreClient,
 	type CartSuccessEvent,
 	cartItemLimits,
 	cartQueryKey,
@@ -33,7 +33,7 @@ import {
 	resolveQuantity,
 } from "../cart"
 import { formatStoreMoney } from "../money"
-import { useWooCommerceConfig } from "./config"
+import { useWooCommerceContext } from "./context"
 
 /**
  * The core's cart types, re-exported so a component reads its hook and the types it returns from one specifier. Type-only, so
@@ -47,19 +47,12 @@ export type {
 	CartItemLimits,
 	CartSettledEvent,
 	CartStartEvent,
-	CartStoreClient,
 	CartSuccessEvent,
 } from "../cart"
 
-type CartProcedures = CartStoreClient["woocommerce"]["cart"]
+type CartProcedures = ActiveKizloClient["woocommerce"]["cart"]
 
-export type CartHookOptions = CartCallbacks & {
-	/**
-	 * A client for this hook instead of the one from `KizloProvider`. For a test stub or a second store; a storefront does not
-	 * pass it.
-	 */
-	client?: CartStoreClient
-}
+export type CartHookOptions = CartCallbacks
 
 /** Everything the cart mutations are keyed under, so one lookup answers "is any cart action in flight". */
 const cartMutationKey = [...cartQueryKey, "mutation"] as const
@@ -127,8 +120,8 @@ type CartAction = {
  * action into the four callback phases without ever rejecting.
  */
 function useCartRuntime(scope: readonly string[], options: CartHookOptions | undefined) {
-	const { callbacks: providerCallbacks, cartEnabled, locale } = useWooCommerceConfig()
-	const client = useKizloClient<CartStoreClient>("woocommerce.cart", options?.client)
+	const { callbacks: providerCallbacks, cartEnabled, locale } = useWooCommerceContext()
+	const { client } = useKizloContext()
 	const queryClient = useCartQueryClient()
 	const hookCallbacks = useLatest<CartCallbacks | undefined>(options)
 	const [error, setError] = useState<CartError | null>(null)
@@ -136,7 +129,7 @@ function useCartRuntime(scope: readonly string[], options: CartHookOptions | und
 	const cartQuery = useQuery({
 		// The cart is session state behind a cookie, so it is fetched in the browser and never server-rendered.
 		enabled: cartEnabled && !isServer,
-		queryFn: () => client.woocommerce.cart.get.call(),
+		queryFn: (): Promise<Cart> => client.woocommerce.cart.get.call(),
 		queryKey: cartQueryKey,
 		staleTime: cartStaleTime,
 	})

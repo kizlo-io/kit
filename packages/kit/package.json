@@ -57,15 +57,20 @@
 		"@tooling/typescript": "workspace:*",
 		"@types/node": "catalog:",
 		"@types/react": "catalog:react19",
+		"kizlo": "catalog:",
 		"react": "catalog:react19",
 		"tsdown": "catalog:",
 		"typescript": "catalog:",
 		"vitest": "catalog:"
 	},
 	"peerDependencies": {
+		"kizlo": ">=0.23.0",
 		"react": ">=19.0.0"
 	},
 	"peerDependenciesMeta": {
+		"kizlo": {
+			"optional": true
+		},
 		"react": {
 			"optional": true
 		}

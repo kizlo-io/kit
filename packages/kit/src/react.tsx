@@ -9,15 +9,24 @@
  * Server components cannot read React context, so they keep taking the client as a prop.
  */
 
-import { createContext, type ReactNode, useContext } from "react"
-import { assertKizloClient, type KizloClient } from "./client"
+import type { ActiveKizloClient } from "kizlo"
+import { createContext, type ReactNode, useContext, useMemo } from "react"
 
-const KizloClientContext = createContext<KizloClient | null>(null)
+/**
+ * What the context carries. One key today, which is why the hook hands back the object rather than the client itself: a
+ * locale, a session or kit-wide configuration can join it without changing a signature.
+ */
+export type KizloContextValue = {
+	/** The app's browser Kizlo client, typed from the procedures that app registered. */
+	client: ActiveKizloClient
+}
+
+const KizloContext = createContext<KizloContextValue | null>(null)
 
 export type KizloProviderProps = {
 	children: ReactNode
-	/** The app's browser Kizlo client, generated from its own WordPress introspection. */
-	client: KizloClient
+	/** The app's browser Kizlo client, the one `createKizloClient` returned. */
+	client: ActiveKizloClient
 }
 
 /**
@@ -42,37 +51,39 @@ export type KizloProviderProps = {
  * ```
  */
 export function KizloProvider({ children, client }: KizloProviderProps) {
-	return <KizloClientContext.Provider value={client}>{children}</KizloClientContext.Provider>
+	// `ActiveKizloClient` is `any` until the app registers its procedures, so a missing client is not a type error there, and
+	// the context value below is an object either way — nothing downstream would catch it before the first procedure call.
+	if (!client) {
+		throw new Error("<KizloProvider client={client}> needs the browser client `createKizloClient` returned.")
+	}
+
+	// Keyed on the client alone, so the value's identity survives every re-render of the app's provider tree.
+	const value = useMemo<KizloContextValue>(() => ({ client }), [client])
+
+	return <KizloContext.Provider value={value}>{children}</KizloContext.Provider>
 }
 
 /**
- * Reads the app's client, narrowed to the slice named by `path` and checked at runtime.
- *
- * `path` is the dotted procedure path the caller is about to use. A client that does not carry it fails here, naming what is
- * absent, instead of throwing a `TypeError` inside the request. Pass `override` to supply a client directly — a stub in a test,
- * or a second store — in which case no provider is required.
+ * Reads the kit context, whose `client` is typed from the procedures the app registered — so a call the contract does not
+ * carry is a compile error rather than a runtime surprise.
  *
  * @example
  * ```tsx
  * "use client"
- * import { useKizloClient } from "@kizlo/kit/react"
- * import type { CartStoreClient } from "@kizlo/woocommerce-kit"
+ * import { useKizloContext } from "@kizlo/kit/react"
  *
- * function useCartProcedures(override?: CartStoreClient) {
- * 	const client = useKizloClient<CartStoreClient>("woocommerce.cart", override)
+ * function useCartProcedures() {
+ * 	const { client } = useKizloContext()
  * 	return client.woocommerce.cart
  * }
  * ```
  */
-export function useKizloClient<T extends KizloClient>(path: string, override?: T): T {
-	const client = useContext(KizloClientContext)
+export function useKizloContext(): KizloContextValue {
+	const value = useContext(KizloContext)
 
-	if (override) return assertKizloClient<T>(override, path)
-	if (!client) {
-		throw new Error(
-			`a Kizlo client is needed for ${path}: mount <KizloProvider client={client}> above this component, or pass a client to the hook.`,
-		)
+	if (!value) {
+		throw new Error("mount <KizloProvider client={client}> from @kizlo/kit/react above this component.")
 	}
 
-	return assertKizloClient<T>(client, path)
+	return value
 }

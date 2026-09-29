@@ -9,9 +9,9 @@
  * RSC shape.
  */
 
+import type { ActiveKizloClient } from "kizlo"
 import { type CollectionScope, type CollectionSearchParams, type CollectionSortPreset, parseCollectionQuery } from "../contract"
 import { loadProductCollection } from "../request"
-import type { ProductStoreClient } from "../store"
 import { ProductCollectionProvider, type ProductCollectionProviderProps } from "./client"
 
 export type ProductCollectionProps = Omit<ProductCollectionProviderProps, "filters" | "navigationTaxonomy" | "products" | "unavailable"> & {
@@ -26,10 +26,10 @@ export type ProductCollectionProps = Omit<ProductCollectionProviderProps, "filte
 	/**
 	 * Your app's Kizlo server client, the one `createKizlo` returned, with the WooCommerce integration installed.
 	 *
-	 * Passed in rather than imported: the client is generated per app from its own WordPress introspection, so this package
-	 * cannot reach it. A server component also cannot read React context, which is why this is a prop and not a provider.
+	 * Passed in rather than imported: the client is one the app constructs, so this package cannot reach it. A server component
+	 * also cannot read React context, which is why this is a prop and not a provider.
 	 */
-	client: ProductStoreClient
+	client: ActiveKizloClient
 	/**
 	 * The store's currency minor unit, the number of decimal places, 2 for most currencies.
 	 *

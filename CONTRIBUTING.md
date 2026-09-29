@@ -115,7 +115,7 @@ cache, so adding a feature to a storefront mounts nothing new.
 
 The Kizlo client reaches client components through `KizloProvider` (`@kizlo/kit/react`) and server components as a prop,
 because a server component cannot read React context. The browser client and the server client are different instances,
-so neither half may hold the other's.
+so neither half may hold the other's. A hook never takes a client: one client per app is what the provider is for.
 
 The app owns `QueryClientProvider`. No kit creates a `QueryClient` or sets global react-query defaults: one cache per app
 is what lets a checkout seed the cart's own cache entry instead of racing a second copy of it.
@@ -126,7 +126,10 @@ is what lets a checkout seed the cart's own cache entry instead of racing a seco
 needed. Run `pnpm check:fix` before committing. CI runs `biome ci .` and fails on anything unformatted.
 
 - Match the surrounding code. Keep comments for *why*, not for restating *what*.
-- Types come from the integration package (`@kizlo/woocommerce`), never from an app's generated client.
+- Types come from the integration package (`@kizlo/woocommerce`), never from an app's generated client. The client itself is
+  typed by `ActiveKizloClient` from `kizlo`, which each app resolves from the procedures it registered — a kit never restates
+  the shape of a client it calls. `packages/woocommerce-kit/types/registry.ts` registers the WooCommerce contract so this
+  repo's own `pnpm typecheck` resolves those calls exactly; it is deliberately outside `src/` and outside the build tsconfig.
 - A component takes the Kizlo client as a prop or from context. A package must never import an app's client singleton,
   because that client is generated per app.
 
@@ -152,7 +155,7 @@ A package is a framework-agnostic core plus one thin adapter per framework. The 
 is the package; an adapter is a subdirectory, because it is a binding.
 
 ```
-src/*.ts       no React, no URL-state library, no JSX. The contract, the requests, the model, the client contract.
+src/*.ts       no React, no URL-state library, no JSX. The contract, the requests, the model.
 src/react/     the adapter: hooks in, one write callback out. It may own a data client.
 src/<other>/   the next adapter, built on the same core.
 ```
@@ -168,7 +171,7 @@ Entry points follow that split:
 
 | Entry | Holds | Peers |
 | -- | -- | -- |
-| `@kizlo/kit/react` | `KizloProvider`, `useKizloClient` | react |
+| `@kizlo/kit/react` | `KizloProvider`, `useKizloContext` | react |
 | `@kizlo/<integration>-kit/react/provider` | the kit's one configuration provider | react |
 | `@kizlo/<integration>-kit/react` | page-scoped, URL-driven features | react, nuqs |
 | `@kizlo/<integration>-kit/react/<feature>` | client-data features | react, a query library |
