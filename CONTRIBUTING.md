@@ -184,6 +184,10 @@ Two rules that are easy to break:
 - **A framework is an optional peer dependency.** A Solid app installing the package must not be told React is missing.
   `react`, `nuqs` and `@tanstack/react-query` are all carried this way: `peerDependencies` plus
   `peerDependenciesMeta.optional`, and `devDependencies` from the catalog.
+- **Bound 0.x peers to the verified minor.** Use a caret range, and update the catalog dependency, peer range and
+  changeset together when support moves to another minor. A peer at 1.0 or later may keep an open-ended minimum when the
+  kit deliberately expects future majors to remain compatible. The peer warning is the guard; do not enable
+  `strict-peer-dependencies` to turn it into an installation failure.
 - **Any entry reachable from client code needs `"use client"` on its built chunk.** The bundler drops the source
   directive, so `tsdown.config.ts` re-adds it to every chunk one of the package's client modules lands in — listed by
   module, not matched on the chunk name, because a name is emergent: it can miss a new entry and it misses the shared
