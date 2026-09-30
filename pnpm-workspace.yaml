@@ -7,7 +7,7 @@ allowBuilds:
   unrs-resolver: true
 
 catalog:
-  '@kizlo/woocommerce': ^0.8.0
+  '@kizlo/woocommerce': ^0.9.0
   '@tanstack/react-query': ^5.102.0
   '@testing-library/react': ^16.3.3
   '@types/node': ^22.18.12
@@ -28,6 +28,7 @@ catalogs:
 
 minimumReleaseAgeExclude:
   - kizlo@0.25.0
+  - '@kizlo/woocommerce@0.9.0'
 
 onlyBuiltDependencies:
   - esbuild

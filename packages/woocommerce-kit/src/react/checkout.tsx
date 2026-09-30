@@ -18,6 +18,7 @@ import {
 	type CheckoutStartEvent,
 	type CheckoutSuccessEvent,
 	checkoutQueryKey,
+	resolveCheckoutRedirect,
 } from "../checkout"
 import type { Checkout, CheckoutError, ConfirmCheckoutInput } from "../types"
 import { useWooCommerceContext } from "./context"
@@ -89,8 +90,8 @@ function useCheckoutQueryClient() {
  * Loads and confirms the store checkout while keeping the shared cart cache in step.
  *
  * The hook owns no form state and performs no navigation. Render fields from `checkout`, use the cart hooks for shipping and
- * coupons, and decide what `paymentResult.redirectUrl` means in the app. Confirmation callbacks run hook first, then provider,
- * in the same four phases as cart actions.
+ * coupons, and send the browser to the `redirectUrl` the success event carries. Confirmation callbacks run hook first, then
+ * provider, in the same four phases as cart actions.
  *
  * @example
  * ```tsx
@@ -101,7 +102,10 @@ function useCheckoutQueryClient() {
  * export function CheckoutForm() {
  * 	const { cart } = useCart()
  * 	const { checkout, confirm, error, isLoading, isPending } = useCheckout({
- * 		onSuccess: ({ checkout }) => track("purchase", { orderId: checkout.orderId }),
+ * 		onSuccess: ({ checkout, redirectUrl }) => {
+ * 			track("purchase", { orderId: checkout.orderId })
+ * 			if (redirectUrl) window.location.assign(redirectUrl)
+ * 		},
  * 	})
  *
  * 	if (isLoading) return <Spinner />
@@ -182,7 +186,12 @@ export function useCheckout(options?: CheckoutHookOptions): CheckoutApi {
 			queryClient.setQueryData(cartQueryKey, checkout.cart)
 			setError(null)
 
-			const success: CheckoutSuccessEvent = { ...payload, checkout, status: "success" }
+			const success: CheckoutSuccessEvent = {
+				...payload,
+				checkout,
+				redirectUrl: resolveCheckoutRedirect(checkout, input.successPath),
+				status: "success",
+			}
 			notify(hook?.onSuccess, success)
 			notify(provider.onSuccess, success)
 			notify(hook?.onSettled, success)
