@@ -74,7 +74,7 @@ that drives it; anything more than that landed wrong.
 **Providers.** A provider carries app configuration — one per kit, mounted by the app — or server
 data, page-scoped and mounted by the RSC. Feature state never gets one, so a new feature adds hooks
 and no new mount. The Kizlo client reaches client components through `KizloProvider`
-(`@kizlo/kit/react`) and server components as a prop, because a server component cannot read React
+(`kizlo/react`) and server components as a prop, because a server component cannot read React
 context. The app owns `QueryClientProvider`; no kit creates a `QueryClient` or sets global react-query
 defaults.
 

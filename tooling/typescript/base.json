@@ -4,7 +4,6 @@
 	"compilerOptions": {
 		"paths": {
 			"@kizlo/kit": ["${configDir}/../kit/src/index.ts"],
-			"@kizlo/kit/react": ["${configDir}/../kit/src/react.tsx"],
 			"@kizlo/woocommerce-kit": ["${configDir}/../woocommerce-kit/src/index.ts"],
 			"@kizlo/woocommerce-kit/react": ["${configDir}/../woocommerce-kit/src/react/client.tsx"],
 			"@kizlo/woocommerce-kit/react/cart": ["${configDir}/../woocommerce-kit/src/react/cart.tsx"],
