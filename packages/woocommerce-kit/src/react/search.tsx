@@ -17,9 +17,9 @@
  * consumer.
  */
 
-import { useKizloContext } from "@kizlo/kit/react"
 import type { ListProductInput, Product } from "@kizlo/woocommerce"
 import { isServer, keepPreviousData, skipToken, useQuery } from "@tanstack/react-query"
+import { useKizloContext } from "kizlo/react"
 import { type ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
 	defaultProductSearchPerPage,

@@ -7,7 +7,7 @@
  * configuration it holds is exactly that: no feature state lives here, which is what keeps its context value stable across
  * renders while the cart or checkout changes underneath.
  *
- * It does not hold the Kizlo client. That is `KizloProvider` in `@kizlo/kit/react`, one level up, because every kit reads the
+ * It does not hold the Kizlo client. That is `KizloProvider` in `kizlo/react`, one level up, because every kit reads the
  * same client.
  */
 
@@ -36,7 +36,7 @@ export type WooCommerceProviderProps = WooCommerceCallbacks & {
  * ```tsx
  * // app/providers.tsx
  * "use client"
- * import { KizloProvider } from "@kizlo/kit/react"
+ * import { KizloProvider } from "kizlo/react"
  * import { WooCommerceProvider } from "@kizlo/woocommerce-kit/react/provider"
  * import { QueryClientProvider } from "@tanstack/react-query"
  * import { client } from "@/lib/kizlo/client"

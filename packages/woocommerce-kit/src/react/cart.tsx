@@ -15,10 +15,10 @@
  * Renders nothing. Every class name, icon, label and route stays in the consumer.
  */
 
-import { useKizloContext } from "@kizlo/kit/react"
 import type { AddCartItemInput, Cart, CartError, UpdateCartInput } from "@kizlo/woocommerce"
 import { isServer, useIsMutating, useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import type { ActiveKizloClient } from "kizlo"
+import { useKizloContext } from "kizlo/react"
 import { type ChangeEvent, type FocusEvent, type KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
 	type CartActionPayload,

@@ -113,7 +113,7 @@ A provider carries **app configuration** — one per kit, mounted by the app —
 by the RSC that loaded it. Feature state never gets one: a hook reads the client, the kit's configuration and the app's
 cache, so adding a feature to a storefront mounts nothing new.
 
-The Kizlo client reaches client components through `KizloProvider` (`@kizlo/kit/react`) and server components as a prop,
+The Kizlo client reaches client components through `KizloProvider` (`kizlo/react`) and server components as a prop,
 because a server component cannot read React context. The browser client and the server client are different instances,
 so neither half may hold the other's. A hook never takes a client: one client per app is what the provider is for.
 
@@ -171,7 +171,7 @@ Entry points follow that split:
 
 | Entry | Holds | Peers |
 | -- | -- | -- |
-| `@kizlo/kit/react` | `KizloProvider`, `useKizloContext` | react |
+| `kizlo/react` (upstream, not this repo) | `KizloProvider`, `useKizloContext` | react |
 | `@kizlo/<integration>-kit/react/provider` | the kit's one configuration provider | react |
 | `@kizlo/<integration>-kit/react` | page-scoped, URL-driven features | react, nuqs |
 | `@kizlo/<integration>-kit/react/<feature>` | client-data features | react, a query library |

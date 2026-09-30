@@ -13,11 +13,11 @@ derived model and the cart and checkout contracts, with no React and no URL-stat
 pnpm add @kizlo/woocommerce-kit
 ```
 
-Peer dependencies: `@kizlo/woocommerce` 0.8+ and `kizlo` 0.23+ always, plus `react` 19+ if you import a React entry, `nuqs`
+Peer dependencies: `@kizlo/woocommerce` 0.8+ and `kizlo` 0.24+ always, plus `react` 19+ if you import a React entry, `nuqs`
 2.10+ for the collection and `@tanstack/react-query` 5.102+ for the cart, checkout and search. Those last three are optional
 peers, so a different framework's adapter does not drag React in and a collection-only storefront installs no query library.
-Your app supplies the Kizlo client, through [`KizloProvider`](../kit#kizloprovider-and-usekizlocontext) for client components
-and as a prop for server components.
+Your app supplies the Kizlo client, through `KizloProvider` from [`kizlo/react`](https://www.npmjs.com/package/kizlo) for
+client components and as a prop for server components.
 
 ## Product collection
 
@@ -108,7 +108,7 @@ keeps the cart in one cache entry your own code can read and seed — and the ki
 ```tsx
 // app/providers.tsx
 "use client"
-import { KizloProvider } from "@kizlo/kit/react"
+import { KizloProvider } from "kizlo/react"
 import { WooCommerceProvider } from "@kizlo/woocommerce-kit/react/provider"
 import { QueryClientProvider } from "@tanstack/react-query"
 import { client } from "@/lib/kizlo/client"

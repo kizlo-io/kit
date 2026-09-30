@@ -16,8 +16,8 @@ catalogs:
       specifier: ^22.18.12
       version: 22.20.4
     kizlo:
-      specifier: ^0.23.0
-      version: 0.23.0
+      specifier: ^0.24.0
+      version: 0.24.0
     nuqs:
       specifier: ^2.10.0
       version: 2.10.1
@@ -69,15 +69,6 @@ importers:
       '@types/node':
         specifier: 'catalog:'
         version: 22.20.4
-      '@types/react':
-        specifier: catalog:react19
-        version: 19.3.0
-      kizlo:
-        specifier: 'catalog:'
-        version: 0.23.0(react@19.3.0)(typescript@5.9.3)
-      react:
-        specifier: catalog:react19
-        version: 19.3.0
       tsdown:
         specifier: 'catalog:'
         version: 0.15.12(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)(typescript@5.9.3)
@@ -96,7 +87,7 @@ importers:
     devDependencies:
       '@kizlo/woocommerce':
         specifier: 'catalog:'
-        version: 0.8.0(kizlo@0.23.0(react@19.3.0)(typescript@5.9.3))
+        version: 0.8.0(kizlo@0.24.0(react@19.3.0)(typescript@5.9.3))
       '@tanstack/react-query':
         specifier: 'catalog:'
         version: 5.104.0(react@19.3.0)
@@ -111,7 +102,7 @@ importers:
         version: 19.3.0
       kizlo:
         specifier: 'catalog:'
-        version: 0.23.0(react@19.3.0)(typescript@5.9.3)
+        version: 0.24.0(react@19.3.0)(typescript@5.9.3)
       nuqs:
         specifier: 'catalog:'
         version: 2.10.1(react@19.3.0)
@@ -1411,8 +1402,8 @@ packages:
   jsonfile@4.0.0:
     resolution: {integrity: sha512-m6F1R3z8jjlf2imQHS2Qez5sjKWQzbuuhuJ/FKYFRZvPE3PuHcSMVZzfsLhGVOkfd20obL5SWEBew5ShlquNxg==}
 
-  kizlo@0.23.0:
-    resolution: {integrity: sha512-PbczKORxQAec/uFtkb7rgFuNumjDrKIqWKXZro6Zmhoj6BVBcCWnzBMamW+Qd17bLerxXr9QtIXmTwfW1X65Dw==}
+  kizlo@0.24.0:
+    resolution: {integrity: sha512-iqAANiCZDKKlSSxKi23hWQcUC43TbWC/+AwZN7OTpxIJchXx0i0kULGV6YMlJHJQ+g21wHyPqUv80IlFKzZ7+A==}
     engines: {node: '>=22.14.0'}
     hasBin: true
     peerDependencies:
@@ -2412,11 +2403,11 @@ snapshots:
       ua-parser-js: 2.0.10
       zod: 4.6.5
 
-  '@kizlo/woocommerce@0.8.0(kizlo@0.23.0(react@19.3.0)(typescript@5.9.3))':
+  '@kizlo/woocommerce@0.8.0(kizlo@0.24.0(react@19.3.0)(typescript@5.9.3))':
     dependencies:
       '@kizlo/shared': 0.10.0
       jose: 6.1.0
-      kizlo: 0.23.0(react@19.3.0)(typescript@5.9.3)
+      kizlo: 0.24.0(react@19.3.0)(typescript@5.9.3)
       zod: 4.6.5
 
   '@manypkg/find-root@1.1.0':
@@ -3296,7 +3287,7 @@ snapshots:
     optionalDependencies:
       graceful-fs: 4.2.11
 
-  kizlo@0.23.0(react@19.3.0)(typescript@5.9.3):
+  kizlo@0.24.0(react@19.3.0)(typescript@5.9.3):
     dependencies:
       '@clack/prompts': 1.8.1
       '@kizlo/shared': 0.10.0

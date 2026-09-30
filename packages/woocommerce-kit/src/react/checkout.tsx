@@ -7,9 +7,9 @@
  * `KizloProvider`, and seeds the cart's existing cache entry so checkout and every cart consumer see one cart.
  */
 
-import { useKizloContext } from "@kizlo/kit/react"
 import type { Checkout, ConfirmCheckoutInput } from "@kizlo/woocommerce"
 import { isServer, useIsMutating, useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { useKizloContext } from "kizlo/react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { cartQueryKey } from "../cart"
 import {
