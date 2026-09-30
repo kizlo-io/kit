@@ -21,6 +21,7 @@ import type { ListProductInput, Product } from "@kizlo/woocommerce"
 import { isServer, keepPreviousData, skipToken, useQuery } from "@tanstack/react-query"
 import { useKizloContext } from "kizlo/react"
 import { type ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useDebouncedCallback } from "use-debounce"
 import {
 	defaultProductSearchPerPage,
 	type ProductSearchSort,
@@ -216,14 +217,7 @@ export function useProductSearch({
 	const listeners = useLatest<ProductSearchCallbacks>(callbacks)
 	const [query, setQueryState] = useState("")
 	const [debouncedQuery, setDebouncedQuery] = useState("")
-
-	// One request per settled term rather than one per keystroke. Clearing settles immediately, so it is skipped here.
-	useEffect(() => {
-		if (query === debouncedQuery) return
-
-		const timeout = window.setTimeout(() => setDebouncedQuery(query), debounceMs)
-		return () => window.clearTimeout(timeout)
-	}, [debounceMs, debouncedQuery, query])
+	const settleQuery = useDebouncedCallback(setDebouncedQuery, debounceMs)
 
 	const request = resolveProductSearchRequest({ browseSort, filters, perPage, query: debouncedQuery })
 
@@ -285,17 +279,20 @@ export function useProductSearch({
 	const setQuery = useCallback(
 		(next: string) => {
 			setQueryState(next)
+			settleQuery(next)
 			// Before the debounce on purpose: this is what opens a panel on the first keystroke instead of on the first result.
 			notify(() => listeners.current.onQueryChange?.(next))
 		},
-		[listeners],
+		[listeners, settleQuery],
 	)
 
 	const clear = useCallback(() => {
 		setQueryState("")
-		setDebouncedQuery("")
+		// Replace a pending term and flush the empty value now, so closing the panel cannot leave a trailing request behind.
+		settleQuery("")
+		settleQuery.flush()
 		notify(() => listeners.current.onClear?.())
-	}, [listeners])
+	}, [listeners, settleQuery])
 
 	const inputProps = useMemo(
 		() => ({ onChange: (event: ChangeEvent<HTMLInputElement>) => setQuery(event.target.value), value: query }),

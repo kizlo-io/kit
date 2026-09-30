@@ -86,17 +86,22 @@
 		"clean": "git clean -xdf .cache .turbo dist node_modules"
 	},
 	"dependencies": {
-		"@kizlo/kit": "workspace:*"
+		"@kizlo/kit": "workspace:*",
+		"use-debounce": "catalog:"
 	},
 	"devDependencies": {
 		"@kizlo/woocommerce": "catalog:",
 		"@tanstack/react-query": "catalog:",
+		"@testing-library/react": "catalog:",
 		"@tooling/typescript": "workspace:*",
 		"@types/node": "catalog:",
 		"@types/react": "catalog:react19",
+		"@types/react-dom": "catalog:react19",
+		"happy-dom": "catalog:",
 		"kizlo": "catalog:",
 		"nuqs": "catalog:",
 		"react": "catalog:react19",
+		"react-dom": "catalog:react19",
 		"tsdown": "catalog:",
 		"typescript": "catalog:",
 		"vitest": "catalog:"
