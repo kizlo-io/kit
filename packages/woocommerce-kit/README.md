@@ -13,7 +13,7 @@ derived model and the cart and checkout contracts, with no React and no URL-stat
 pnpm add @kizlo/woocommerce-kit
 ```
 
-Peer dependencies: `@kizlo/woocommerce` 0.8+ and `kizlo` 0.24+ always, plus `react` 19+ if you import a React entry, `nuqs`
+Peer dependencies: `@kizlo/woocommerce` 0.8+ and `kizlo` 0.25+ always, plus `react` 19+ if you import a React entry, `nuqs`
 2.10+ for the collection and `@tanstack/react-query` 5.102+ for the cart, checkout and search. Those last three are optional
 peers, so a different framework's adapter does not drag React in and a collection-only storefront installs no query library.
 Your app supplies the Kizlo client, through `KizloProvider` from [`kizlo/react`](https://www.npmjs.com/package/kizlo) for
@@ -229,9 +229,10 @@ action reports `onStart` → `onSuccess` | `onError` → `onSettled`, and every 
 | `update_customer` | `input` | `useCart().updateCustomer` |
 | `select_shipping_rate` | `rateId`, `packageId` | `useCart().selectShippingRate` |
 
-`onSuccess` adds the new `cart` and `onError` a `CartError`; `onSettled` is either, narrowed on `status`. The payload is what
-makes these worth having: `remove_from_cart` carries the item that is already gone from `cart` by the time a listener runs, and
-the item tokens match GA4's, since analytics is usually the reason to want them.
+`onSuccess` adds the new `cart` and `onError` a `CartError`, whose `code` is the failing procedure's own token rather than a
+bare `string`, with the `data` that code carries narrowed alongside it; `onSettled` is either, narrowed on `status`. The payload
+is what makes these worth having: `remove_from_cart` carries the item that is already gone from `cart` by the time a listener
+runs, and the item tokens match GA4's, since analytics is usually the reason to want them.
 
 `WooCommerceProvider`'s callbacks fire for every cart and checkout action below it, which is where an analytics or drawer
 concern belongs — once, rather than at each call site. `onStart` is synchronous and cannot cancel the action; it is what lets a
@@ -247,7 +248,7 @@ racing a second request. Then use the live cart from `useCart()` for customer de
 
 ```tsx
 "use client"
-import type { ConfirmCheckoutInput } from "@kizlo/woocommerce"
+import type { ConfirmCheckoutInput } from "@kizlo/woocommerce-kit"
 import { useCart, useCartCoupon } from "@kizlo/woocommerce-kit/react/cart"
 import { useCheckout } from "@kizlo/woocommerce-kit/react/checkout"
 

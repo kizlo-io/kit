@@ -14,7 +14,6 @@
  * `write` callback out.
  */
 
-import type { ProductFilters, ProductList } from "@kizlo/woocommerce"
 import { useQueryStates } from "nuqs"
 import { createContext, type ReactNode, useContext, useMemo, useTransition } from "react"
 import {
@@ -25,6 +24,7 @@ import {
 	defaultNavigationTaxonomy,
 } from "../contract"
 import { buildCollectionModel, type CollectionModel } from "../model"
+import type { ProductFilters, ProductList } from "../types"
 import { collectionSearchParams } from "./params"
 
 /**

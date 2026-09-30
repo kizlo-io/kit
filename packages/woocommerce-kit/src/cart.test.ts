@@ -1,6 +1,6 @@
-import type { CartItem } from "@kizlo/woocommerce"
 import { describe, expect, it } from "vitest"
 import { cartItemLimits, resolveQuantity } from "./cart"
+import type { CartItem } from "./types"
 
 /** Only the fields `cartItemLimits` reads. The rest of a cart item says nothing about its quantity range. */
 function lineItem(item: { isSoldIndividually: boolean; quantity: number; quantityLimits: CartItem["quantityLimits"] }) {

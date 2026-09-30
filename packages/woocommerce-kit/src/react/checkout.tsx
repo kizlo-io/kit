@@ -7,31 +7,31 @@
  * `KizloProvider`, and seeds the cart's existing cache entry so checkout and every cart consumer see one cart.
  */
 
-import type { Checkout, ConfirmCheckoutInput } from "@kizlo/woocommerce"
 import { isServer, useIsMutating, useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { toKizloError } from "kizlo"
 import { useKizloContext } from "kizlo/react"
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { cartQueryKey } from "../cart"
 import {
 	type CheckoutCallbacks,
-	type CheckoutError,
 	type CheckoutErrorEvent,
 	type CheckoutStartEvent,
 	type CheckoutSuccessEvent,
 	checkoutQueryKey,
 } from "../checkout"
+import type { Checkout, CheckoutError, ConfirmCheckoutInput } from "../types"
 import { useWooCommerceContext } from "./context"
 
 /** The core checkout types, available beside the hook that returns them. */
 export type {
 	CheckoutActionPayload,
 	CheckoutCallbacks,
-	CheckoutError,
 	CheckoutErrorEvent,
 	CheckoutSettledEvent,
 	CheckoutStartEvent,
 	CheckoutSuccessEvent,
 } from "../checkout"
+export type { CheckoutError } from "../types"
 
 export type CheckoutHookOptions = CheckoutCallbacks
 
@@ -71,18 +71,8 @@ function notify<E>(listener: ((event: E) => void) | undefined, event: E) {
 	}
 }
 
-function toCheckoutError(cause: unknown): CheckoutError {
-	if (cause && typeof cause === "object") {
-		const { code, data, message } = cause as { code?: unknown; data?: unknown; message?: unknown }
-		return {
-			code: typeof code === "string" ? code : "",
-			...(data === undefined ? {} : { data }),
-			message: typeof message === "string" ? message : "",
-		}
-	}
-
-	return { code: "", message: typeof cause === "string" ? cause : "" }
-}
+/** What a confirmation resolves to: the new checkout, or a failure from `checkout.confirm`'s own error map. */
+type ConfirmResult = { data: Checkout; error: null; success: true } | { data: undefined; error: CheckoutError; success: false }
 
 function useCheckoutQueryClient() {
 	try {
@@ -137,18 +127,28 @@ export function useCheckout(options?: CheckoutHookOptions): CheckoutApi {
 	const hookCallbacks = useLatest<CheckoutCallbacks | undefined>(options)
 	const [error, setError] = useState<CheckoutError | null>(null)
 
-	const checkoutQuery = useQuery({
+	const checkoutQuery = useQuery<Checkout, CheckoutError>({
 		enabled: !isServer,
-		queryFn: async (): Promise<Checkout> => {
-			const checkout = await client.woocommerce.checkout.get.call()
-			queryClient.setQueryData(cartQueryKey, checkout.cart)
-			return checkout
+		// React Query reports a failure by rejection, so the envelope is unwrapped here rather than carried into the cache.
+		queryFn: async () => {
+			const result = await client.woocommerce.checkout.get()
+			if (!result.success) throw result.error
+			queryClient.setQueryData(cartQueryKey, result.data.cart)
+			return result.data
 		},
 		queryKey: checkoutQueryKey,
 	})
 
 	const mutation = useMutation({
-		mutationFn: (input: ConfirmCheckoutInput): Promise<Checkout> => client.woocommerce.checkout.confirm.call({ body: input }),
+		// The client answers failures rather than throwing them, so the only way here is something outside the contract. It is
+		// folded into the same envelope so a confirmation still never rejects.
+		mutationFn: async (input: ConfirmCheckoutInput): Promise<ConfirmResult> => {
+			try {
+				return await client.woocommerce.checkout.confirm({ body: input })
+			} catch (cause) {
+				return { data: undefined, error: toKizloError(cause) as CheckoutError, success: false }
+			}
+		},
 		mutationKey: checkoutMutationKey,
 	})
 	const mutateAsync = useLatest(mutation.mutateAsync)
@@ -164,34 +164,35 @@ export function useCheckout(options?: CheckoutHookOptions): CheckoutApi {
 			notify(hook?.onStart, start)
 			notify(provider.onStart, start)
 
-			try {
-				const checkout = await mutateAsync.current(input)
-				queryClient.setQueryData(checkoutQueryKey, checkout)
-				queryClient.setQueryData(cartQueryKey, checkout.cart)
-				setError(null)
+			const result = await mutateAsync.current(input)
 
-				const success: CheckoutSuccessEvent = { ...payload, checkout, status: "success" }
-				notify(hook?.onSuccess, success)
-				notify(provider.onSuccess, success)
-				notify(hook?.onSettled, success)
-				notify(provider.onSettled, success)
-				return checkout
-			} catch (cause) {
-				const failed = toCheckoutError(cause)
-				setError(failed)
+			if (!result.success) {
+				setError(result.error)
 
-				const failure: CheckoutErrorEvent = { ...payload, error: failed, status: "error" }
+				const failure: CheckoutErrorEvent = { ...payload, error: result.error, status: "error" }
 				notify(hook?.onError, failure)
 				notify(provider.onError, failure)
 				notify(hook?.onSettled, failure)
 				notify(provider.onSettled, failure)
 				return null
 			}
+
+			const checkout = result.data
+			queryClient.setQueryData(checkoutQueryKey, checkout)
+			queryClient.setQueryData(cartQueryKey, checkout.cart)
+			setError(null)
+
+			const success: CheckoutSuccessEvent = { ...payload, checkout, status: "success" }
+			notify(hook?.onSuccess, success)
+			notify(provider.onSuccess, success)
+			notify(hook?.onSettled, success)
+			notify(provider.onSettled, success)
+			return checkout
 		},
 		[hookCallbacks, mutateAsync, providerCallbacks, queryClient],
 	)
 
-	const queryError = useMemo(() => (checkoutQuery.error ? toCheckoutError(checkoutQuery.error) : null), [checkoutQuery.error])
+	const queryError = checkoutQuery.error
 	const refresh = useCallback(async () => {
 		setError(null)
 		await queryClient.refetchQueries({ queryKey: checkoutQueryKey })

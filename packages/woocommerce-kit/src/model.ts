@@ -7,7 +7,6 @@
  */
 
 import { decodeHtmlEntities } from "@kizlo/kit"
-import type { Product, ProductFilters, ProductList } from "@kizlo/woocommerce"
 import {
 	type CollectionQuery,
 	type CollectionQueryPatch,
@@ -18,6 +17,7 @@ import {
 	defaultNavigationTaxonomy,
 	resolveSortPreset,
 } from "./contract"
+import type { Product, ProductFilters, ProductList } from "./types"
 
 /** The store's own product type, passed through unmapped. */
 export type CollectionProduct = Product

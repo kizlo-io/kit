@@ -5,19 +5,11 @@
  * request while this module keeps the integration contract and events available to every framework.
  */
 
-import type { Checkout, ConfirmCheckoutInput } from "@kizlo/woocommerce"
 import type { CartErrorEvent, CartSettledEvent, CartStartEvent, CartSuccessEvent } from "./cart"
+import type { Checkout, CheckoutError, ConfirmCheckoutInput } from "./types"
 
 /** The one checkout snapshot shared by every checkout consumer in the app's query client. */
 export const checkoutQueryKey = ["kizlo", "woocommerce", "checkout"] as const
-
-/** A checkout failure consumers can render or map onto their own form fields. */
-export type CheckoutError = {
-	code: string
-	/** Procedure-specific details, including validation fields when the store supplies them. */
-	data?: unknown
-	message: string
-}
 
 /** Everything a confirmation reports about itself in every callback phase. */
 export type CheckoutActionPayload = { type: "confirm_checkout"; input: ConfirmCheckoutInput }

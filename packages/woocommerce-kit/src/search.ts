@@ -10,8 +10,8 @@
  * The results *page* is the existing product collection, reading `q` from its own search params.
  */
 
-import type { ListProductInput } from "@kizlo/woocommerce"
 import { type CollectionSortPreset, serializeCollectionQuery } from "./contract"
+import type { ListProductInput } from "./types"
 
 /**
  * How to order an empty field, for a panel that shows products before anything is typed.

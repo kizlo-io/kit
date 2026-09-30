@@ -12,7 +12,7 @@ catalog:
   '@testing-library/react': ^16.3.3
   '@types/node': ^22.18.12
   happy-dom: ^20.14.5
-  kizlo: ^0.24.0
+  kizlo: ^0.25.0
   nuqs: ^2.10.0
   tsdown: ^0.15.6
   typescript: ^5.9.3
@@ -27,7 +27,7 @@ catalogs:
     '@types/react-dom': ^19.2.3
 
 minimumReleaseAgeExclude:
-  - kizlo@0.24.0
+  - kizlo@0.25.0
 
 onlyBuiltDependencies:
   - esbuild

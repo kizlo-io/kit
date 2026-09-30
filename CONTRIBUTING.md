@@ -28,8 +28,9 @@ uphold it.
 - **pnpm** — `corepack enable` provides the pinned version (11.2.2); the minimum is 9.6
 
 That is the whole list. There is no Docker, no PHP, no WordPress, no database, and no `.env` — nothing here talks to a
-running WordPress. A kit is tested against its own fixtures, and the integration types come from `@kizlo/woocommerce` as a
-dev dependency. If you find yourself needing a service to run a test, the test is reaching too far.
+running WordPress. A kit is tested against its own fixtures, and its types are derived from the Kizlo client rather than
+imported — `@kizlo/woocommerce` is a dev dependency only so the contract can be registered for this repo's own type-check. If
+you find yourself needing a service to run a test, the test is reaching too far.
 
 ## Getting started
 
@@ -126,10 +127,18 @@ is what lets a checkout seed the cart's own cache entry instead of racing a seco
 needed. Run `pnpm check:fix` before committing. CI runs `biome ci .` and fails on anything unformatted.
 
 - Match the surrounding code. Keep comments for *why*, not for restating *what*.
-- Types come from the integration package (`@kizlo/woocommerce`), never from an app's generated client. The client itself is
-  typed by `ActiveKizloClient` from `kizlo`, which each app resolves from the procedures it registered — a kit never restates
-  the shape of a client it calls. `packages/woocommerce-kit/types/registry.ts` registers the WooCommerce contract so this
-  repo's own `pnpm typecheck` resolves those calls exactly; it is deliberately outside `src/` and outside the build tsconfig.
+- Types come from the client, never from the integration package and never from an app's generated client. `ActiveKizloClient`
+  from `kizlo` resolves from the procedures each app registered, and the `InferClient*` helpers read one procedure's input,
+  data and error union off it, so a kit knows the client it calls instead of restating its shape. Each package derives every
+  type it exposes in one module — `packages/woocommerce-kit/src/types.ts` — under the name it has always exported, and each
+  consumer resolves those aliases against their own contract: custom fields and per-procedure error codes included.
+  `packages/woocommerce-kit/types/registry.ts` registers the WooCommerce contract so this repo's own `pnpm typecheck` resolves
+  them exactly. It is the only file in the package that imports `@kizlo/woocommerce`, and it sits outside `src/` and outside
+  the build tsconfig so the published declarations name `ActiveKizloClient` rather than baking this repo's contract into them.
+- Call a procedure for its result, not with `.call`. A plain call answers `{ success, data, error }`, so a failure arrives as
+  the contract's own error: a `code` a consumer can branch on, and the `data` that code carries. `.call` throws instead, which
+  loses both. The one place a kit still unwraps the envelope is a query function, because React Query reports a failure by
+  rejection.
 - A component takes the Kizlo client as a prop or from context. A package must never import an app's client singleton,
   because that client is generated per app.
 

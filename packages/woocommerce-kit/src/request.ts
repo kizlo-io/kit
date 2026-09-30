@@ -24,7 +24,6 @@
  * facets to counts derived from the current page rather than emptying the sidebar.
  */
 
-import type { ProductFilters, ProductList } from "@kizlo/woocommerce"
 import type { ActiveKizloClient } from "kizlo"
 import {
 	type CollectionQuery,
@@ -34,6 +33,7 @@ import {
 	defaultNavigationTaxonomy,
 	resolveSortPreset,
 } from "./contract"
+import type { ProductFilters, ProductList } from "./types"
 
 type SelectedTermGroup = { taxonomy: string; terms: string[] }
 
@@ -136,19 +136,17 @@ function filterQuery(request: CollectionFilterRequest) {
 }
 
 async function fetchProducts(client: ActiveKizloClient, request: ProductRequest) {
-	try {
-		return await client.woocommerce.products.list.call({
-			query: {
-				...filterQuery(request),
-				order: request.sort.order,
-				orderBy: request.sort.orderBy,
-				page: request.page,
-				perPage: request.perPage,
-			},
-		})
-	} catch {
-		return null
-	}
+	const result = await client.woocommerce.products.list({
+		query: {
+			...filterQuery(request),
+			order: request.sort.order,
+			orderBy: request.sort.orderBy,
+			page: request.page,
+			perPage: request.perPage,
+		},
+	})
+
+	return result.success ? result.data : null
 }
 
 async function fetchFilters(
@@ -157,23 +155,21 @@ async function fetchFilters(
 	attributeTaxonomies: readonly string[],
 	navigationTaxonomy: string,
 ): Promise<ProductFilters | null> {
-	try {
-		return await client.woocommerce.products.filters.call({
-			query: {
-				...filterQuery(request),
-				attributeCounts: attributeTaxonomies.map((taxonomy) => ({
-					// Drops this attribute's own clause before counting, so its unselected terms survive.
-					operator: "or" as const,
-					taxonomy,
-				})),
-				stockStatusCounts: true,
-				// Navigation, not a facet: the terms of the scope's own taxonomy.
-				taxonomyCounts: [navigationTaxonomy],
-			},
-		})
-	} catch {
-		return null
-	}
+	const result = await client.woocommerce.products.filters({
+		query: {
+			...filterQuery(request),
+			attributeCounts: attributeTaxonomies.map((taxonomy) => ({
+				// Drops this attribute's own clause before counting, so its unselected terms survive.
+				operator: "or" as const,
+				taxonomy,
+			})),
+			stockStatusCounts: true,
+			// Navigation, not a facet: the terms of the scope's own taxonomy.
+			taxonomyCounts: [navigationTaxonomy],
+		},
+	})
+
+	return result.success ? result.data : null
 }
 
 export type LoadProductCollectionInput = {
