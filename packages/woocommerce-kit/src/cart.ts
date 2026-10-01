@@ -92,7 +92,7 @@ export type CartItemLimits = {
  * A sold-individually line is the interesting case: the store reports a maximum as usual, but the line cannot grow past what
  * is already in the cart, so its maximum collapses to the current quantity and the increment stops being offered.
  *
- * Inside React, `useCartItem(key).limits` is this function already applied to that line.
+ * Inside React, `useCartItem(key).quantity.limits` is this function already applied to that line.
  *
  * @example
  * ```ts
@@ -109,6 +109,32 @@ export function cartItemLimits(item: CartItem): CartItemLimits {
 		minimum,
 		step: multipleOf,
 	}
+}
+
+/**
+ * The quantity range for a control with no line behind it: a product page choosing a quantity before anything is in the cart.
+ *
+ * The store says nothing about a product that is not a line yet, so these defaults stand in for it — 99 is WooCommerce's own
+ * fallback ceiling — and `editable` is `true`, because a draft is always editable. Pass whatever the product itself constrains.
+ *
+ * Inside React, `useCartItem({ limits }).quantity.limits` is this function already applied.
+ *
+ * @example
+ * ```ts
+ * draftQuantityLimits()
+ * // { editable: true, maximum: 99, minimum: 1, step: 1 }
+ *
+ * draftQuantityLimits({ maximum: 5 })
+ * // { editable: true, maximum: 5, minimum: 1, step: 1 }
+ * ```
+ */
+export function draftQuantityLimits({
+	editable = true,
+	maximum = 99,
+	minimum = 1,
+	step = 1,
+}: Partial<CartItemLimits> = {}): CartItemLimits {
+	return { editable, maximum, minimum, step }
 }
 
 /** A typed quantity and the range it has to land in. */
@@ -128,7 +154,7 @@ export type ResolveQuantityOptions = {
  * falling back to the current quantity when the field holds nothing numeric. Pure, so the control's behaviour is testable
  * without a DOM.
  *
- * `useQuantityInput` calls this on blur and Enter; call it directly when building a control for another framework.
+ * `useCartItem`'s quantity field calls this on blur and Enter; call it directly when building a control for another framework.
  *
  * @example
  * ```ts
@@ -145,4 +171,37 @@ export function resolveQuantity({ input, maximum, minimum, step, value }: Resolv
 
 	const stepped = step > 0 ? Math.round(parsed / step) * step : parsed
 	return Math.min(maximum, Math.max(minimum, stepped))
+}
+
+/** One press of a quantity control's `−` or `+`. */
+export type StepQuantityOptions = {
+	direction: "decrement" | "increment"
+	limits: CartItemLimits
+	/** What the control is showing, which is the pending edit rather than the store's quantity while one is owed. */
+	value: number
+}
+
+/**
+ * Moves a quantity one step and stops at the edge of its range, which is the arithmetic behind a control's `−` and `+`.
+ *
+ * A step that would overshoot lands exactly on the boundary instead of past it, so a shopper holding `+` ends on the maximum. The
+ * boundary wins over the step: a maximum the store did not place on a multiple is still what it accepts, so the result is not
+ * necessarily one. Pass it through `resolveQuantity` — which is what `useCartItem` does — for a quantity aligned to both.
+ *
+ * A step of zero or less cannot move anything, so it falls back to 1 rather than leaving the button dead; `resolveQuantity`
+ * disregards such a step the same way.
+ *
+ * @example
+ * ```ts
+ * const limits = { editable: true, maximum: 10, minimum: 1, step: 3 }
+ *
+ * stepQuantity({ direction: "increment", limits, value: 4 }) // 7
+ * stepQuantity({ direction: "increment", limits, value: 9 }) // 10, clamped
+ * stepQuantity({ direction: "decrement", limits, value: 2 }) // 1, clamped
+ * ```
+ */
+export function stepQuantity({ direction, limits, value }: StepQuantityOptions): number {
+	const step = limits.step > 0 ? limits.step : 1
+
+	return direction === "increment" ? Math.min(limits.maximum, value + step) : Math.max(limits.minimum, value - step)
 }
