@@ -143,11 +143,14 @@ Then each component reads the slice it needs. A product page has no line yet, so
 import { useCartItem } from "@kizlo/woocommerce-kit/react/cart"
 
 export function AddToCart({ productId }: { productId: number }) {
-	const { addItem, error, isPending } = useCartItem()
+	const { addItem, error, isPending, quantity } = useCartItem()
 
 	return (
 		<>
-			<button disabled={isPending} onClick={() => void addItem({ productId, quantity: 1 })} type="button">
+			<button aria-label="One fewer" {...quantity.decrementProps}>−</button>
+			<input aria-label="Quantity" {...quantity.inputProps} />
+			<button aria-label="One more" {...quantity.incrementProps}>+</button>
+			<button disabled={isPending} onClick={() => void addItem({ productId })} type="button">
 				{isPending ? "Adding…" : "Add to cart"}
 			</button>
 			{error ? <p role="alert">{error.code === "CART_ITEM_EXISTS" ? "Already in your cart." : error.message}</p> : null}
@@ -156,31 +159,27 @@ export function AddToCart({ productId }: { productId: number }) {
 }
 ```
 
-A line of the cart passes its key, and gets that line's own pending state:
+`quantity` is the whole control: the shopper's draft value, the range it stays in, and the props for each element. Without a key
+there is no line to save it to, so `addItem` sends it — `addItem({ productId })` adds what the control shows, and an explicit
+`addItem({ productId, quantity: 3 })` wins.
+
+A line of the cart passes its key. The same control now writes back to the store, and the line gets its own pending state:
 
 ```tsx
 "use client"
-import { useCartItem, useQuantityInput } from "@kizlo/woocommerce-kit/react/cart"
+import { useCartItem } from "@kizlo/woocommerce-kit/react/cart"
 
 export function CartLine({ itemKey }: { itemKey: string }) {
-	const { format, isPending, item, limits, quantity, remove, setQuantity } = useCartItem(itemKey)
-	const field = useQuantityInput({
-		maximum: limits.maximum,
-		minimum: limits.minimum,
-		onValueChange: setQuantity,
-		step: limits.step,
-		value: quantity,
-	})
+	const { format, isPending, item, quantity, remove } = useCartItem(itemKey)
 
 	if (!item) return null
 
 	return (
 		<article aria-busy={isPending}>
 			<h3>{item.name}</h3>
-			<input aria-label="Quantity" disabled={!limits.editable} {...field.inputProps} />
-			<button disabled={!field.canIncrement} onClick={field.increment} type="button">
-				+
-			</button>
+			<button aria-label="One fewer" {...quantity.decrementProps}>−</button>
+			<input aria-label="Quantity" {...quantity.inputProps} />
+			<button aria-label="One more" {...quantity.incrementProps}>+</button>
 			<p>{format(item.totals.total)}</p>
 			<button onClick={() => void remove()} type="button">
 				Remove
@@ -190,22 +189,46 @@ export function CartLine({ itemKey }: { itemKey: string }) {
 }
 ```
 
+Spreading the three bags is the whole control. The store's range, step and editability are already folded into each `disabled`, so
+there is no conditional left for you to write, and the arithmetic stops at `limits.maximum` instead of asking the store for a
+quantity it will reject.
+
+An edit shows immediately and is saved 400ms later (`debounceMs`), so four quick `+` clicks are one request for the final value
+rather than four requests — and a save in flight deliberately disables nothing, because that debounce is what collapses the burst.
+Blur, Enter and `quantity.commit()` skip the wait; Escape abandons what was typed; a cart refetch leaves an edit that is still
+owed alone, though text typed and not yet committed still follows the store; and an edit pending when the component unmounts is
+sent rather than dropped, so a closing mini-cart keeps it.
+
+| Field | Is |
+| --- | --- |
+| `value` | What the control shows: the pending edit while one is owed, otherwise `committed`. |
+| `committed` | The quantity the store holds. Without a key, `value`. |
+| `input` | What is in the field right now, which is not a quantity until it is committed. |
+| `limits` | `{ editable, maximum, minimum, step }` — the store's for a line, the draft range without one. |
+| `isDirty` | A save is owed. Always `false` without a key, where `addItem` is the commit. |
+| `set(n)`, `commit()`, `revert()` | Set the quantity, save a pending edit now, or discard it. `set` is not awaitable behind a debounce; `set(5); await commit()` is. |
+
+For an explicit "Update" button, pass `autoCommit: false` and call `quantity.commit()` yourself: an edit then sets `value` and
+`isDirty` and waits, with `committed` still showing the store's quantity, and nothing is written without that call — an unmount
+included. The keyless form takes its options first, so a product
+that caps its own quantity is `useCartItem({ limits: { maximum: 5 } })` with no placeholder key.
+
 | Hook | Returns |
 | --- | --- |
 | `useCart(options?)` | `{ cart, items, itemCount, format, isLoading, isMutating, error, refresh, updateCustomer, selectShippingRate, reset }`. The cart as a whole: `cart` is the store's payload, so totals, coupons and addresses are read from it directly. It has no add action — that is item-shaped work. |
-| `useCartItem(key?, options?)` | `{ addItem, item, quantity, limits, isPending, error, format, setQuantity, remove, reset }`. Everything item-shaped. The key is optional: without one you get `addItem` for a product page; with one, the full line API, and `item` is `null` once the key leaves the cart. |
+| `useCartItem(key?, options?)` | `{ addItem, item, quantity, isPending, error, format, remove, reset }`. Everything item-shaped, `quantity` included as a whole control. The key is optional: without one the control is a draft and `addItem` sends it; with one it edits that line, and `item` is `null` once the key leaves the cart. |
 | `useCartCoupon(options?)` | `{ coupons, isPending, error, apply, remove, reset }`. |
-| `useQuantityInput(options)` | `{ input, inputProps, increment, decrement, canIncrement, canDecrement }` — the behaviour of a quantity control, no markup. Commits on blur and Enter, abandons on Escape. |
 
-Every hook takes one optional argument: its own [callbacks](#cart-events). The client comes from `KizloProvider` and the
-configuration from `WooCommerceProvider`, so there is nothing else to pass.
+Each hook's last argument is its own [callbacks](#cart-events); `useCartItem` takes `autoCommit`, `debounceMs`,
+`defaultQuantity` and `limits` there too. The client comes from `KizloProvider` and the configuration from
+`WooCommerceProvider`, so there is nothing else to pass.
 
 `format` is the store's currency and your locale already applied, so a line total is `format(item.totals.total)`. `isMutating`
 is true while any cart action anywhere in the tree is in flight, which is what a page disables its controls on;
 `useCartItem(key).isPending` narrows that to the one line that is saving. Both read the shared mutation cache, so a line saving
 in the drawer is also saving on the cart page, with no state held above them.
 
-**No action rejects.** `addItem`, `setQuantity`, `remove`, `apply` and the rest return `Promise<void>` and report the outcome
+**No action rejects.** `addItem`, `quantity.commit`, `remove`, `apply` and the rest return `Promise<void>` and report the outcome
 through callbacks instead, so no call site needs a `try`/`catch`. The last failure stays on the hook's `error` as
 `{ code, message }` — the store's code intact, so you can answer `CART_ITEM_EXISTS` in your own words — until `reset()` or the
 next success clears it.
@@ -222,7 +245,7 @@ action reports `onStart` → `onSuccess` | `onError` → `onSettled`, and every 
 | `type` | Payload | Raised by |
 | --- | --- | --- |
 | `add_to_cart` | `input` | `useCartItem().addItem` |
-| `update_cart_item` | `key`, `quantity`, `previousQuantity` | `useCartItem(key).setQuantity` |
+| `update_cart_item` | `key`, `quantity`, `previousQuantity` | `useCartItem(key).quantity` |
 | `remove_from_cart` | `key`, `item` | `useCartItem(key).remove` |
 | `apply_coupon` | `code` | `useCartCoupon().apply` |
 | `remove_coupon` | `code` | `useCartCoupon().remove` |
@@ -455,7 +478,7 @@ beside a desktop header — does not narrate the open one's requests.
 | --- | --- |
 | `@kizlo/woocommerce-kit` | The core. Collection grammar and model, cart and checkout cache keys and events, search request, href and cache helpers, quantity and money helpers, and every type. No framework. |
 | `@kizlo/woocommerce-kit/react` | `ProductCollectionProvider`, `useProductCollection`, and the model types it returns. Carries `"use client"`. |
-| `@kizlo/woocommerce-kit/react/cart` | `useCart`, `useCartItem`, `useCartCoupon`, `useQuantityInput`. Carries `"use client"`. Needs `@tanstack/react-query`. |
+| `@kizlo/woocommerce-kit/react/cart` | `useCart`, `useCartItem`, `useCartCoupon`. Carries `"use client"`. Needs `@tanstack/react-query`. |
 | `@kizlo/woocommerce-kit/react/checkout` | `useCheckout` and its callback types. Carries `"use client"`. Needs `@tanstack/react-query`. |
 | `@kizlo/woocommerce-kit/react/provider` | `WooCommerceProvider`, this kit's app-level configuration. Carries `"use client"`. Imports no peer but React. |
 | `@kizlo/woocommerce-kit/react/search` | `useProductSearch`. Carries `"use client"`. Needs `@tanstack/react-query`. |
