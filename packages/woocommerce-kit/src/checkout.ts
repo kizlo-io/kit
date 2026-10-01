@@ -6,7 +6,6 @@
  * store sends the shopper back to is a page, not a session, so everything it needs is a pure derivation here.
  */
 
-import type { CartErrorEvent, CartSettledEvent, CartStartEvent, CartSuccessEvent } from "./cart"
 import type { Checkout, CheckoutError, ConfirmCheckoutInput, Order } from "./types"
 
 /** The one checkout snapshot shared by every checkout consumer in the app's query client. */
@@ -68,25 +67,6 @@ export type CheckoutCallbacks = {
 	onSuccess?: (event: CheckoutSuccessEvent) => void
 	onError?: (event: CheckoutErrorEvent) => void
 	onSettled?: (event: CheckoutSettledEvent) => void
-}
-
-/** Every action the kit-level provider can hear, narrowed by `type` and then `status`. */
-export type WooCommerceStartEvent = CartStartEvent | CheckoutStartEvent
-export type WooCommerceSuccessEvent = CartSuccessEvent | CheckoutSuccessEvent
-export type WooCommerceErrorEvent = CartErrorEvent | CheckoutErrorEvent
-export type WooCommerceSettledEvent = CartSettledEvent | CheckoutSettledEvent
-
-/**
- * Kit-level listeners for cart and checkout actions.
- *
- * Feature hooks retain their narrower callback types; this union belongs to `WooCommerceProvider`, where an app wires a
- * cross-cutting concern such as analytics once and narrows each event by `type`.
- */
-export type WooCommerceCallbacks = {
-	onStart?: (event: WooCommerceStartEvent) => void
-	onSuccess?: (event: WooCommerceSuccessEvent) => void
-	onError?: (event: WooCommerceErrorEvent) => void
-	onSettled?: (event: WooCommerceSettledEvent) => void
 }
 
 /** The order the store handed back on the return route. */

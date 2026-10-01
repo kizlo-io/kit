@@ -30,6 +30,7 @@ import {
 	resolveProductSearchRequest,
 } from "../search"
 import type { ListProductInput, Product } from "../types"
+import { notify } from "./notify"
 
 /**
  * The core's search types, re-exported so a component reads its hook and the types around it from one specifier. Type-only, so
@@ -39,20 +40,6 @@ export type { ProductSearchHrefInput, ProductSearchSort, ProductSearchState } fr
 
 /** Stable empty, so a consumer mapping `products` before the first result does not see a new array every render. */
 const noProducts: readonly Product[] = []
-
-/**
- * Runs one listener without letting it break the hook. The failure is re-raised on its own so it still reaches the app's error
- * handling instead of disappearing into a render.
- */
-function notify(listen: () => void) {
-	try {
-		listen()
-	} catch (error) {
-		queueMicrotask(() => {
-			throw error
-		})
-	}
-}
 
 function useLatest<T>(value: T) {
 	const ref = useRef(value)
@@ -228,14 +215,8 @@ export function useProductSearch({
 		placeholderData: keepPreviousData,
 		// No request to make — an empty field with no browse ordering. `skipToken` is how that stays a fact of the query rather
 		// than a cast inside the function.
-		queryFn: request
-			? async () => {
-					// React Query reports a failure by rejection, so the envelope is unwrapped here.
-					const result = await client.woocommerce.products.list({ query: request })
-					if (!result.success) throw result.error
-					return result.data
-				}
-			: skipToken,
+		// React Query reports a failure by rejection, which is what `.call` does.
+		queryFn: request ? () => client.woocommerce.products.list.call({ query: request }) : skipToken,
 		queryKey: productSearchQueryKey({ browseSort, filters, perPage, query: debouncedQuery }),
 		staleTime,
 	})

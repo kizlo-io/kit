@@ -54,20 +54,20 @@ export type CartSettledEvent = CartSuccessEvent | CartErrorEvent
  * `add_to_cart` reports what was added, and `remove_from_cart` carries the item that is already gone from `cart` by the time
  * the listener runs. The item tokens match GA4's vocabulary, since analytics is the main reason to want these.
  *
- * Pass them to `WooCommerceProvider` to hear every action in the tree, or to a hook to hear only its own. Both fire, the hook's
- * first.
+ * Pass them to the hook that performs the action: `useCart`, `useCartItem` and `useCartCoupon` each take their own, and a
+ * concern that spans the storefront wires the same listener on each hook it cares about.
  *
  * @example
  * ```tsx
- * <WooCommerceProvider
- * 	onStart={(event) => {
+ * const { addItem, remove } = useCartItem(itemKey, {
+ * 	onStart: (event) => {
  * 		if (event.type === "add_to_cart") openCartDrawer()
- * 	}}
- * 	onSuccess={(event) => {
+ * 	},
+ * 	onSuccess: (event) => {
  * 		if (event.type === "remove_from_cart") track("remove_from_cart", { item: event.item.name })
- * 	}}
- * 	onError={(event) => report(event.type, event.error.code)}
- * >
+ * 	},
+ * 	onError: (event) => report(event.type, event.error.code),
+ * })
  * ```
  */
 export type CartCallbacks = {

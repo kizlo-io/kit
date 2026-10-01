@@ -8,20 +8,12 @@
  */
 
 import { isServer, useIsMutating, useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { toKizloError } from "kizlo"
 import { useKizloContext } from "kizlo/react"
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback } from "react"
 import { cartQueryKey } from "../cart"
-import {
-	type CheckoutCallbacks,
-	type CheckoutErrorEvent,
-	type CheckoutStartEvent,
-	type CheckoutSuccessEvent,
-	checkoutQueryKey,
-	resolveCheckoutRedirect,
-} from "../checkout"
+import { type CheckoutCallbacks, type CheckoutSuccessEvent, checkoutQueryKey, resolveCheckoutRedirect } from "../checkout"
 import type { Checkout, CheckoutError, ConfirmCheckoutInput } from "../types"
-import { useWooCommerceContext } from "./context"
+import { notify } from "./notify"
 
 /** The core checkout types, available beside the hook that returns them. */
 export type {
@@ -41,39 +33,27 @@ export type CheckoutApi = {
 	checkout: Checkout | null
 	/** The last fetch or confirmation failure. */
 	error: CheckoutError | null
-	/** Confirms the order. Resolves to the new checkout, or `null` on failure; it never rejects. */
-	confirm: (input: ConfirmCheckoutInput) => Promise<Checkout | null>
+	/** Places the order. Returns nothing: the order and where to send the browser next arrive on the success event. */
+	confirm: (input: ConfirmCheckoutInput) => void
 	isLoading: boolean
 	isPending: boolean
 	refresh: () => Promise<void>
-	/** Clears the last confirmation failure. */
+	/** Clears the last confirmation failure once it has settled. */
 	reset: () => void
 }
 
 const checkoutMutationKey = [...checkoutQueryKey, "mutation"] as const
 
-function useLatest<T>(value: T) {
-	const ref = useRef(value)
-	useEffect(() => {
-		ref.current = value
-	}, [value])
-	return ref
-}
-
-function notify<E>(listener: ((event: E) => void) | undefined, event: E) {
-	if (!listener) return
-
-	try {
-		listener(event)
-	} catch (error) {
-		queueMicrotask(() => {
-			throw error
-		})
+/** Module-level and pure, so both phases that report a success derive the same event from the same two inputs. */
+function checkoutSuccessEvent(checkout: Checkout, input: ConfirmCheckoutInput): CheckoutSuccessEvent {
+	return {
+		checkout,
+		input,
+		redirectUrl: resolveCheckoutRedirect(checkout, input.successPath),
+		status: "success",
+		type: "confirm_checkout",
 	}
 }
-
-/** What a confirmation resolves to: the new checkout, or a failure from `checkout.confirm`'s own error map. */
-type ConfirmResult = { data: Checkout; error: null; success: true } | { data: undefined; error: CheckoutError; success: false }
 
 function useCheckoutQueryClient() {
 	try {
@@ -90,8 +70,9 @@ function useCheckoutQueryClient() {
  * Loads and confirms the store checkout while keeping the shared cart cache in step.
  *
  * The hook owns no form state and performs no navigation. Render fields from `checkout`, use the cart hooks for shipping and
- * coupons, and send the browser to the `redirectUrl` the success event carries. Confirmation callbacks run hook first, then
- * provider, in the same four phases as cart actions.
+ * coupons, and send the browser to the `redirectUrl` the success event carries — `confirm` returns nothing to await, because
+ * the redirect is derived on that event and was never on a return value. Its callbacks run in the four phases
+ * `onStart` → `onSuccess` | `onError` → `onSettled`.
  *
  * @example
  * ```tsx
@@ -114,7 +95,7 @@ function useCheckoutQueryClient() {
  * 	return (
  * 		<form onSubmit={(event) => {
  * 			event.preventDefault()
- * 			void confirm(valuesFrom(event.currentTarget))
+ * 			confirm(valuesFrom(event.currentTarget))
  * 		}}>
  * 			{error ? <p role="alert">{error.message}</p> : null}
  * 			<p>{cart.itemCount} items</p>
@@ -125,96 +106,69 @@ function useCheckoutQueryClient() {
  * ```
  */
 export function useCheckout(options?: CheckoutHookOptions): CheckoutApi {
-	const { callbacks: providerCallbacks } = useWooCommerceContext()
 	const { client } = useKizloContext()
 	const queryClient = useCheckoutQueryClient()
-	const hookCallbacks = useLatest<CheckoutCallbacks | undefined>(options)
-	const [error, setError] = useState<CheckoutError | null>(null)
 
 	const checkoutQuery = useQuery<Checkout, CheckoutError>({
 		enabled: !isServer,
-		// React Query reports a failure by rejection, so the envelope is unwrapped here rather than carried into the cache.
+		// React Query reports a failure by rejection, which is what `.call` does.
 		queryFn: async () => {
-			const result = await client.woocommerce.checkout.get()
-			if (!result.success) throw result.error
-			queryClient.setQueryData(cartQueryKey, result.data.cart)
-			return result.data
+			const checkout = await client.woocommerce.checkout.get.call()
+			queryClient.setQueryData(cartQueryKey, checkout.cart)
+			return checkout
 		},
 		queryKey: checkoutQueryKey,
 	})
 
-	const mutation = useMutation({
-		// The client answers failures rather than throwing them, so the only way here is something outside the contract. It is
-		// folded into the same envelope so a confirmation still never rejects.
-		mutationFn: async (input: ConfirmCheckoutInput): Promise<ConfirmResult> => {
-			try {
-				return await client.woocommerce.checkout.confirm({ body: input })
-			} catch (cause) {
-				return { data: undefined, error: toKizloError(cause) as CheckoutError, success: false }
-			}
-		},
+	// One confirmation, run by React Query: the phases, the pending state and the last failure are all the mutation's own. The
+	// options are read from the last committed render, which is what a callback ref used to buy.
+	const mutation = useMutation<Checkout, CheckoutError, ConfirmCheckoutInput>({
+		mutationFn: (input) => client.woocommerce.checkout.confirm.call({ body: input }),
 		mutationKey: checkoutMutationKey,
-	})
-	const mutateAsync = useLatest(mutation.mutateAsync)
-	const isPending = useIsMutating({ mutationKey: checkoutMutationKey }) > 0
-
-	const confirm = useCallback(
-		async (input: ConfirmCheckoutInput) => {
-			const hook = hookCallbacks.current
-			const provider = providerCallbacks.current
-			const payload = { input, type: "confirm_checkout" } as const
-			const start: CheckoutStartEvent = { ...payload, status: "start" }
-
-			notify(hook?.onStart, start)
-			notify(provider.onStart, start)
-
-			const result = await mutateAsync.current(input)
-
-			if (!result.success) {
-				setError(result.error)
-
-				const failure: CheckoutErrorEvent = { ...payload, error: result.error, status: "error" }
-				notify(hook?.onError, failure)
-				notify(provider.onError, failure)
-				notify(hook?.onSettled, failure)
-				notify(provider.onSettled, failure)
-				return null
-			}
-
-			const checkout = result.data
+		// Pinned rather than inherited: query-core's own default is `this.options.retry ?? 0`, and `this.options` carries the app's
+		// `defaultOptions.mutations`. Placing an order twice is not a retry.
+		retry: 0,
+		onMutate: (input) => {
+			notify(() => options?.onStart?.({ input, status: "start", type: "confirm_checkout" }))
+		},
+		onSuccess: (checkout, input) => {
 			queryClient.setQueryData(checkoutQueryKey, checkout)
 			queryClient.setQueryData(cartQueryKey, checkout.cart)
-			setError(null)
-
-			const success: CheckoutSuccessEvent = {
-				...payload,
-				checkout,
-				redirectUrl: resolveCheckoutRedirect(checkout, input.successPath),
-				status: "success",
-			}
-			notify(hook?.onSuccess, success)
-			notify(provider.onSuccess, success)
-			notify(hook?.onSettled, success)
-			notify(provider.onSettled, success)
-			return checkout
+			notify(() => options?.onSuccess?.(checkoutSuccessEvent(checkout, input)))
 		},
-		[hookCallbacks, mutateAsync, providerCallbacks, queryClient],
-	)
+		onError: (error, input) => {
+			notify(() => options?.onError?.({ error, input, status: "error", type: "confirm_checkout" }))
+		},
+		// A narrowing rather than a branch: query-core passes `(checkout, null, …)` on success and `(undefined, error, …)` on
+		// failure, never neither.
+		onSettled: (checkout, error, input) => {
+			if (error) notify(() => options?.onSettled?.({ error, input, status: "error", type: "confirm_checkout" }))
+			else if (checkout) notify(() => options?.onSettled?.(checkoutSuccessEvent(checkout, input)))
+		},
+	})
 
-	const queryError = checkoutQuery.error
+	// Read from the mutation cache, so every component that shows the order button sees the same confirmation in flight.
+	const isPending = useIsMutating({ mutationKey: checkoutMutationKey }) > 0
+	const { reset } = mutation
+
+	// `reset` detaches the observer from the mutation it is watching, so resetting a confirmation that is still in flight would
+	// leave the refusal it is about to report with nowhere to land. A settled failure is the only one cleared.
+	const clearSettled = useCallback(() => {
+		if (!isPending) reset()
+	}, [isPending, reset])
+
 	const refresh = useCallback(async () => {
-		setError(null)
+		clearSettled()
 		await queryClient.refetchQueries({ queryKey: checkoutQueryKey })
-	}, [queryClient])
-	const reset = useCallback(() => setError(null), [])
+	}, [clearSettled, queryClient])
 
 	return {
 		checkout: checkoutQuery.data ?? null,
-		confirm,
-		error: error ?? queryError,
+		confirm: mutation.mutate,
+		error: mutation.error ?? checkoutQuery.error,
 		isLoading: checkoutQuery.isPending,
 		isPending,
 		refresh,
-		reset,
+		reset: clearSettled,
 	}
 }

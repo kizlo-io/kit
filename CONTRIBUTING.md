@@ -137,8 +137,9 @@ needed. Run `pnpm check:fix` before committing. CI runs `biome ci .` and fails o
   the build tsconfig so the published declarations name `ActiveKizloClient` rather than baking this repo's contract into them.
 - Call a procedure for its result, not with `.call`. A plain call answers `{ success, data, error }`, so a failure arrives as
   the contract's own error: a `code` a consumer can branch on, and the `data` that code carries. `.call` throws instead, which
-  loses both. The one place a kit still unwraps the envelope is a query function, because React Query reports a failure by
-  rejection.
+  loses both. The exception is a query or mutation function, which calls `.call`: React Query reports a failure by rejection, so
+  it wants the throw, and the typed error reaches a consumer through the hook's `error` either way. A server-side loader is not
+  one of those — it stays on the result form.
 - A component takes the Kizlo client as a prop or from context. A package must never import an app's client singleton,
   because that client is generated per app.
 
