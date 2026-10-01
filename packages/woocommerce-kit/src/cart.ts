@@ -6,14 +6,7 @@
  * shares, the vocabulary its actions report themselves in, and the arithmetic behind a quantity control.
  */
 
-import type { AddCartItemInput, Cart, CartError, CartItem, UpdateCartInput } from "@kizlo/woocommerce"
-
-/**
- * The store's own error shape, re-exported so a consumer reads a hook and the type of its `error` from one specifier. Its
- * `code` is the part that matters: call sites branch on tokens like `CART_ITEM_EXISTS` to explain a refusal in their own
- * words, so the code has to survive the trip out of the client.
- */
-export type { CartError } from "@kizlo/woocommerce"
+import type { AddCartItemInput, Cart, CartError, CartItem, UpdateCartInput } from "./types"
 
 /**
  * The one cache entry the whole cart shares. Exported because an app that obtains a cart by another route — a checkout

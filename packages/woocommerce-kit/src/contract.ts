@@ -6,7 +6,7 @@
  * re-encoding a parameter as breaking regardless of the version it lands in.
  */
 
-import type { ProductOrderBy } from "@kizlo/woocommerce"
+import type { ProductOrderBy } from "./types"
 
 export const collectionStockValues = ["instock", "outofstock", "onbackorder"] as const
 

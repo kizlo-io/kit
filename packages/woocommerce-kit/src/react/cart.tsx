@@ -15,9 +15,8 @@
  * Renders nothing. Every class name, icon, label and route stays in the consumer.
  */
 
-import type { AddCartItemInput, Cart, CartError, UpdateCartInput } from "@kizlo/woocommerce"
 import { isServer, useIsMutating, useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import type { ActiveKizloClient } from "kizlo"
+import { type ActiveKizloClient, toKizloError } from "kizlo"
 import { useKizloContext } from "kizlo/react"
 import { type ChangeEvent, type FocusEvent, type KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
@@ -33,6 +32,7 @@ import {
 	resolveQuantity,
 } from "../cart"
 import { formatStoreMoney } from "../money"
+import type { AddCartItemInput, Cart, CartError, UpdateCartInput } from "../types"
 import { useWooCommerceContext } from "./context"
 
 /**
@@ -42,13 +42,13 @@ import { useWooCommerceContext } from "./context"
 export type {
 	CartActionPayload,
 	CartCallbacks,
-	CartError,
 	CartErrorEvent,
 	CartItemLimits,
 	CartSettledEvent,
 	CartStartEvent,
 	CartSuccessEvent,
 } from "../cart"
+export type { CartError } from "../types"
 
 type CartProcedures = ActiveKizloClient["woocommerce"]["cart"]
 
@@ -88,16 +88,6 @@ function notify<E>(listener: ((event: E) => void) | undefined, event: E) {
 	}
 }
 
-/** Narrows whatever the client threw to the store's error shape, keeping the code a call site may branch on. */
-function toCartError(cause: unknown): CartError {
-	if (cause && typeof cause === "object") {
-		const { code, message } = cause as { code?: unknown; message?: unknown }
-		return { code: typeof code === "string" ? code : "", message: typeof message === "string" ? message : "" }
-	}
-
-	return { code: "", message: typeof cause === "string" ? cause : "" }
-}
-
 /** The app's query client, or a message that names what is missing rather than react-query's own. */
 function useCartQueryClient() {
 	try {
@@ -110,9 +100,15 @@ function useCartQueryClient() {
 	}
 }
 
+/**
+ * What one cart action resolves to. Every cart procedure answers the new cart, and every failure it can report is a member of
+ * {@link CartError}, so one envelope describes them all and a caller narrows on `success`.
+ */
+type CartActionResult = { data: Cart; error: null; success: true } | { data: undefined; error: CartError; success: false }
+
 type CartAction = {
 	payload: CartActionPayload
-	request: (procedures: CartProcedures) => Promise<Cart>
+	request: (procedures: CartProcedures) => Promise<CartActionResult>
 }
 
 /**
@@ -126,17 +122,30 @@ function useCartRuntime(scope: readonly string[], options: CartHookOptions | und
 	const hookCallbacks = useLatest<CartCallbacks | undefined>(options)
 	const [error, setError] = useState<CartError | null>(null)
 
-	const cartQuery = useQuery({
+	const cartQuery = useQuery<Cart, CartError>({
 		// The cart is session state behind a cookie, so it is fetched in the browser and never server-rendered.
 		enabled: cartEnabled && !isServer,
-		queryFn: (): Promise<Cart> => client.woocommerce.cart.get.call(),
+		// React Query reports a failure by rejection, so the envelope is unwrapped here rather than carried into the cache.
+		queryFn: async () => {
+			const result = await client.woocommerce.cart.get()
+			if (!result.success) throw result.error
+			return result.data
+		},
 		queryKey: cartQueryKey,
 		staleTime: cartStaleTime,
 	})
 
 	// Each hook owns one mutation, keyed to its scope: the caller already memoised `scope`, so the key is stable.
 	const mutation = useMutation({
-		mutationFn: (action: CartAction) => action.request(client.woocommerce.cart),
+		// The client answers failures rather than throwing them, so the only way here is something outside the contract — a
+		// cancelled mutation, a broken proxy. It is folded into the same envelope so an action still never rejects.
+		mutationFn: async (action: CartAction): Promise<CartActionResult> => {
+			try {
+				return await action.request(client.woocommerce.cart)
+			} catch (cause) {
+				return { data: undefined, error: toKizloError(cause) as CartError, success: false }
+			}
+		},
 		mutationKey: scope,
 	})
 	const mutateAsync = useLatest(mutation.mutateAsync)
@@ -154,21 +163,21 @@ function useCartRuntime(scope: readonly string[], options: CartHookOptions | und
 			notify(hook?.onStart, start)
 			notify(provider.onStart, start)
 
-			try {
-				const cart = await mutateAsync.current(action)
-				queryClient.setQueryData(cartQueryKey, cart)
+			const result = await mutateAsync.current(action)
+
+			if (result.success) {
+				queryClient.setQueryData(cartQueryKey, result.data)
 				setError(null)
 
-				const success: CartSuccessEvent = { ...action.payload, cart, status: "success" }
+				const success: CartSuccessEvent = { ...action.payload, cart: result.data, status: "success" }
 				notify(hook?.onSuccess, success)
 				notify(provider.onSuccess, success)
 				notify(hook?.onSettled, success)
 				notify(provider.onSettled, success)
-			} catch (cause) {
-				const failed = toCartError(cause)
-				setError(failed)
+			} else {
+				setError(result.error)
 
-				const failure: CartErrorEvent = { ...action.payload, error: failed, status: "error" }
+				const failure: CartErrorEvent = { ...action.payload, error: result.error, status: "error" }
 				notify(hook?.onError, failure)
 				notify(provider.onError, failure)
 				notify(hook?.onSettled, failure)
@@ -179,7 +188,7 @@ function useCartRuntime(scope: readonly string[], options: CartHookOptions | und
 	)
 
 	const cart = cartQuery.data ?? null
-	const queryError = useMemo(() => (cartQuery.error ? toCartError(cartQuery.error) : null), [cartQuery.error])
+	const queryError = cartQuery.error
 	const format = useCallback((amount: number) => (cart ? formatStoreMoney(amount, cart.currencyFormat, locale) : ""), [cart, locale])
 
 	const refresh = useCallback(async () => {
@@ -274,7 +283,7 @@ export function useCart(options?: CartHookOptions): CartApi {
 		(input: UpdateCartInput) =>
 			run({
 				payload: { input, type: "update_customer" },
-				request: (procedures) => procedures.update.call({ body: input }),
+				request: (procedures) => procedures.update({ body: input }),
 			}),
 		[run],
 	)
@@ -283,7 +292,7 @@ export function useCart(options?: CartHookOptions): CartApi {
 		(rateId: string, packageId?: string | number | null) =>
 			run({
 				payload: { packageId, rateId, type: "select_shipping_rate" },
-				request: (procedures) => procedures.selectShippingRate.call({ body: { packageId, rateId } }),
+				request: (procedures) => procedures.selectShippingRate({ body: { packageId, rateId } }),
 			}),
 		[run],
 	)
@@ -373,7 +382,7 @@ export function useCartItem(key?: string, options?: CartHookOptions): CartItemAp
 		(input: AddCartItemInput) =>
 			run({
 				payload: { input, type: "add_to_cart" },
-				request: (procedures) => procedures.items.add.call({ body: input }),
+				request: (procedures) => procedures.items.add({ body: input }),
 			}),
 		[run],
 	)
@@ -384,7 +393,7 @@ export function useCartItem(key?: string, options?: CartHookOptions): CartItemAp
 
 			return run({
 				payload: { key, previousQuantity: item.quantity, quantity, type: "update_cart_item" },
-				request: (procedures) => procedures.items.update.call({ body: { quantity }, params: { key } }),
+				request: (procedures) => procedures.items.update({ body: { quantity }, params: { key } }),
 			})
 		},
 		[item, key, run],
@@ -396,7 +405,7 @@ export function useCartItem(key?: string, options?: CartHookOptions): CartItemAp
 		return run({
 			// The removed item travels with the event: by the time a listener runs it is already gone from `cart`.
 			payload: { item, key, type: "remove_from_cart" },
-			request: (procedures) => procedures.items.remove.call({ params: { key } }),
+			request: (procedures) => procedures.items.remove({ params: { key } }),
 		})
 	}, [item, key, run])
 
@@ -473,7 +482,7 @@ export function useCartCoupon(options?: CartHookOptions): CartCouponApi {
 		(code: string) =>
 			run({
 				payload: { code, type: "apply_coupon" },
-				request: (procedures) => procedures.coupons.apply.call({ body: { code } }),
+				request: (procedures) => procedures.coupons.apply({ body: { code } }),
 			}),
 		[run],
 	)
@@ -482,7 +491,7 @@ export function useCartCoupon(options?: CartHookOptions): CartCouponApi {
 		(code: string) =>
 			run({
 				payload: { code, type: "remove_coupon" },
-				request: (procedures) => procedures.coupons.remove.call({ params: { code } }),
+				request: (procedures) => procedures.coupons.remove({ params: { code } }),
 			}),
 		[run],
 	)

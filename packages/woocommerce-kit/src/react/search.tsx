@@ -17,7 +17,6 @@
  * consumer.
  */
 
-import type { ListProductInput, Product } from "@kizlo/woocommerce"
 import { isServer, keepPreviousData, skipToken, useQuery } from "@tanstack/react-query"
 import { useKizloContext } from "kizlo/react"
 import { type ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react"
@@ -30,6 +29,7 @@ import {
 	productSearchStaleTime,
 	resolveProductSearchRequest,
 } from "../search"
+import type { ListProductInput, Product } from "../types"
 
 /**
  * The core's search types, re-exported so a component reads its hook and the types around it from one specifier. Type-only, so
@@ -228,7 +228,14 @@ export function useProductSearch({
 		placeholderData: keepPreviousData,
 		// No request to make — an empty field with no browse ordering. `skipToken` is how that stays a fact of the query rather
 		// than a cast inside the function.
-		queryFn: request ? () => client.woocommerce.products.list.call({ query: request }) : skipToken,
+		queryFn: request
+			? async () => {
+					// React Query reports a failure by rejection, so the envelope is unwrapped here.
+					const result = await client.woocommerce.products.list({ query: request })
+					if (!result.success) throw result.error
+					return result.data
+				}
+			: skipToken,
 		queryKey: productSearchQueryKey({ browseSort, filters, perPage, query: debouncedQuery }),
 		staleTime,
 	})
