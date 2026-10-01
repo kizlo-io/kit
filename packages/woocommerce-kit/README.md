@@ -13,7 +13,7 @@ derived model and the cart and checkout contracts, with no React and no URL-stat
 pnpm add @kizlo/woocommerce-kit
 ```
 
-Peer dependencies: `@kizlo/woocommerce` 0.8+ and `kizlo` 0.25+ always, plus `react` 19+ if you import a React entry, `nuqs`
+Peer dependencies: `@kizlo/woocommerce` 0.9+ and `kizlo` 0.25+ always, plus `react` 19+ if you import a React entry, `nuqs`
 2.10+ for the collection and `@tanstack/react-query` 5.102+ for the cart, checkout and search. Those last three are optional
 peers, so a different framework's adapter does not drag React in and a collection-only storefront installs no query library.
 Your app supplies the Kizlo client, through `KizloProvider` from [`kizlo/react`](https://www.npmjs.com/package/kizlo) for
@@ -256,7 +256,10 @@ export function CheckoutForm({ values }: { values: ConfirmCheckoutInput }) {
 	const { cart, selectShippingRate, updateCustomer } = useCart()
 	const { apply: applyCoupon } = useCartCoupon()
 	const { checkout, confirm, error, isLoading, isPending, refresh, reset } = useCheckout({
-		onSuccess: ({ checkout }) => track("purchase", { orderId: checkout.orderId }),
+		onSuccess: ({ checkout, redirectUrl }) => {
+			track("purchase", { orderId: checkout.orderId })
+			if (redirectUrl) window.location.assign(redirectUrl)
+		},
 	})
 
 	if (isLoading) return <Spinner />
@@ -269,9 +272,7 @@ export function CheckoutForm({ values }: { values: ConfirmCheckoutInput }) {
 			onSubmit={(event) => {
 				event.preventDefault()
 				reset()
-				void confirm(values).then((result) => {
-					if (result?.paymentResult?.redirectUrl) window.location.assign(result.paymentResult.redirectUrl)
-				})
+				void confirm({ ...values, cancelPath: "/cart", successPath: "/checkout/order-received" })
 			}}
 		>
 			<p>{cart.itemCount} items</p>
@@ -310,6 +311,59 @@ first, and one throwing does not suppress the other callback or phase:
 ```
 
 The checkout fetch and `refresh()` do not emit action callbacks. Only confirmation does.
+
+Navigate from the success event's `redirectUrl` rather than from `checkout.paymentResult`. It is the gateway's own
+destination when there is one, and the store's return URL rebuilt from your `successPath` when the gateway names none —
+WooCommerce's own client treats an empty redirect as "stay here", which leaves the shopper on the form with a placed order
+behind them. It is `null` when you passed no `successPath`, and when there is no placed order to return to.
+
+### The return route
+
+Headless has no thank-you page, so the two routes the store returns to are yours to build. Name them on `confirm` as paths on
+your own site; both are optional:
+
+| Outcome | Destination | Query |
+| -- | -- | -- |
+| Placed | `successPath`, or `/checkout/order-received` | `order_id`, `key` |
+| Cancelled at the gateway | `cancelPath`, or `/cart` | none |
+
+The whole redirect is gated on a configured Kizlo Site URL. Without one the store has no origin to send the browser back to,
+and `redirectUrl` is whatever the gateway gave you.
+
+A placed order is not a paid one, so the success route reads the order and asks what to tell the shopper. Both functions are
+pure and framework-agnostic, from the package root:
+
+```tsx
+// app/checkout/order-received/page.tsx
+import { orderOutcome, parseCheckoutReturn } from "@kizlo/woocommerce-kit"
+import { client } from "@/lib/kizlo/server"
+
+export default async function OrderReceived({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
+	const returned = parseCheckoutReturn(new URLSearchParams(Object.entries(await searchParams) as [string, string][]))
+	if (!returned) return <p>We could not find that order.</p>
+
+	const result = await client.woocommerce.orders.get({
+		params: { orderId: returned.orderId },
+		query: { key: returned.key },
+	})
+	if (!result.success) return <p>We could not find that order.</p>
+
+	const { state } = orderOutcome(result.data)
+	if (state === "paid") return <p>Thanks — your order is confirmed.</p>
+	if (state === "failed") return <p>Your payment was declined and the order has not been placed.</p>
+	return <p>Order received. We have emailed your payment instructions.</p>
+}
+```
+
+`parseCheckoutReturn` takes the raw `location.search` or a `URLSearchParams`, and returns `null` rather than a bad request
+when the query is missing or malformed. Its fields are what `orders.get` needs. Read the call's own envelope rather than
+letting it throw: `result.error.code` is `ORDER_FORBIDDEN` or `ORDER_NOT_FOUND` when a shopper opens the return link from
+another browser or after the key stops matching, which is likelier than a malformed query.
+
+`orderOutcome(order)` reports `paid`, `awaiting_payment` or `failed`. It reads the store's own `isPaid`, which is filterable
+in WooCommerce, so you never match a status string yourself: a bank transfer sitting on `on-hold` is `awaiting_payment`, cash
+on delivery is `paid`, and a status a plugin invented is money still owed rather than a finished order. A declined order
+reaches this route the same way — the store redirects on a 200 carrying a failed payment, and `failed` is what you get.
 
 ## Search
 

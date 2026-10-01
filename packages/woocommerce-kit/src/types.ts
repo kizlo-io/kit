@@ -17,6 +17,7 @@ import type { ActiveKizloClient, InferClientData, InferClientError, InferClientI
 type Procedures = ActiveKizloClient["woocommerce"]
 type CartProcedures = Procedures["cart"]
 type CheckoutProcedures = Procedures["checkout"]
+type OrderProcedures = Procedures["orders"]
 type ProductProcedures = Procedures["products"]
 
 /** The store's cart, exactly as the client answers it. */
@@ -48,6 +49,9 @@ export type CartError =
 	| InferClientError<CartProcedures["items"]["remove"]>
 	| InferClientError<CartProcedures["coupons"]["apply"]>
 	| InferClientError<CartProcedures["coupons"]["remove"]>
+
+/** One placed order, as the return route reads it back. */
+export type Order = InferClientData<OrderProcedures["get"]>
 
 /** The store's checkout snapshot. */
 export type Checkout = InferClientData<CheckoutProcedures["get"]>
