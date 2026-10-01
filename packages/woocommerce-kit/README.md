@@ -97,8 +97,8 @@ The scope is not in here. The page *is* its taxonomy term, so moving between ter
 
 ## Cart
 
-The store's cart, every cart mutation, and the pending and error state around them. Three hooks and no cart provider; the query
-library stays inside the package.
+The store's cart, every cart mutation, and the pending and error state around them. Five hooks, one per subject, and no cart
+provider; the query library stays inside the package.
 
 The cart is session state behind a cookie, so it is fetched in the browser instead of server-rendered — there is no server half
 to mount, and **no cart provider**. Three mounts, all app-level: your `QueryClientProvider`, `KizloProvider` with your
@@ -208,20 +208,30 @@ that caps its own quantity is `useCartItem({ limits: { maximum: 5 } })` with no 
 
 | Hook | Returns |
 | --- | --- |
-| `useCart(options?)` | `{ cart, items, itemCount, format, isLoading, isMutating, error, refresh, updateCustomer, selectShippingRate, reset }`. The cart as a whole: `cart` is the store's payload, so totals, coupons and addresses are read from it directly. It has no add action — that is item-shaped work. |
+| `useCart()` | `{ cart, items, itemCount, format, isLoading, isMutating, error, refresh }`. The cart as a whole and read-only: `cart` is the store's payload, so totals, coupons and addresses are read from it directly. It performs no action, so it takes no callbacks, and `error` is the fetch failing. |
+| `useCartAddress(options?)` | `{ update, isPending, error, reset }`. The customer's addresses. `update` takes whatever changed — a postcode alone is a valid save, and what makes the store re-quote shipping. The email is a field inside `billingAddress`. |
+| `useCartShippingRates(options?)` | `{ shippingPackages, selectShippingRate, hasSelectedShippingRates, isPending, error, reset }`. The packages the store quoted and the choice of rate. `hasSelectedShippingRates` is the question `cart.hasCalculatedShipping` does not answer: whether a rate is in effect for every package, not whether one was costed. The store's own default rate counts, so it is not proof the shopper chose anything. |
 | `useCartItem(key?, options?)` | `{ addItem, item, quantity, isPending, error, format, remove, reset }`. Everything item-shaped, `quantity` included as a whole control. The key is optional: without one the control is a draft and `addItem` sends it; with one it edits that line, and `item` is `null` once the key leaves the cart. |
-| `useCartCoupon(options?)` | `{ coupons, isPending, error, apply, remove, reset }`. |
+| `useCartCoupon(code?, options?)` | `{ coupons, isPending, error, apply, remove, reset }`. The code is optional, the same way a line's key is: without one the hook is the apply field, with one it is that chip alone, and `remove()` takes no argument because the hook already knows its code. `coupons` is the whole list either way. |
+
+One hook per subject, so each one's `isPending` and `error` describe its own action and nothing else: saving an address does not grey
+the rate list, and removing one coupon leaves the apply button and every other chip enabled.
 
 Each hook's last argument is its own [callbacks](#cart-events); `useCartItem` takes `autoCommit`, `debounceMs`,
-`defaultQuantity` and `limits` there too. The client comes from `KizloProvider` and the configuration from
-`WooCommerceProvider`, so there is nothing else to pass.
+`defaultQuantity` and `limits` there too. `useCart` takes nothing, because it performs no action. The client comes from
+`KizloProvider` and the configuration from `WooCommerceProvider`, so there is nothing else to pass.
 
 `format` is the store's currency and your locale already applied, so a line total is `format(item.totals.total)`. `isMutating`
-is true while any cart action anywhere in the tree is in flight, which is what a page disables its controls on;
-`useCartItem(key).isPending` narrows that to the one line that is saving. Both read the shared mutation cache, so a line saving
-in the drawer is also saving on the cart page, with no state held above them.
+is true while any cart action anywhere in the tree is in flight, which is what a page disables itself on; each action hook's
+`isPending` narrows that to its own action — `useCartItem(key).isPending` to the one line saving, `useCartCoupon(code).isPending`
+to the one chip. Both read the shared mutation cache, so a line saving in the drawer is also saving on the cart page, with no
+state held above them.
 
-**An action returns nothing.** `addItem`, `remove`, `apply`, `updateCustomer` and the rest report the outcome through callbacks
+`cart.errors` is a different thing from any hook's `error`: it is the store's own standing list of problems *with* the cart — a
+line that went out of stock, a coupon that stopped applying — read straight off `cart` as `{ code, message }`. A hook's `error` is
+the failure of the request that hook just made.
+
+**An action returns nothing.** `addItem`, `remove`, `apply`, `update` and the rest report the outcome through callbacks
 instead, so there is no promise to await and no call site needs a `try`/`catch`. The last failure stays on the hook's `error` as
 `{ code, message }` — the store's code intact, so you can answer `CART_ITEM_EXISTS` in your own words — until `reset()`, the next
 action or the next success clears it. `reset()` clears a failure that has settled; an action still in flight keeps reporting its
@@ -242,9 +252,9 @@ every event carries the action's own payload, narrowed on `type`:
 | `update_cart_item` | `key`, `quantity`, `previousQuantity` | `useCartItem(key).quantity` |
 | `remove_from_cart` | `key`, `item` | `useCartItem(key).remove` |
 | `apply_coupon` | `code` | `useCartCoupon().apply` |
-| `remove_coupon` | `code` | `useCartCoupon().remove` |
-| `update_customer` | `input` | `useCart().updateCustomer` |
-| `select_shipping_rate` | `rateId`, `packageId` | `useCart().selectShippingRate` |
+| `remove_coupon` | `code` | `useCartCoupon(code).remove` |
+| `update_customer` | `input` | `useCartAddress().update` |
+| `select_shipping_rate` | `rateId`, `packageId` | `useCartShippingRates().selectShippingRate` |
 
 `onSuccess` adds the new `cart` and `onError` a `CartError`, whose `code` is the failing procedure's own token rather than a
 bare `string`, with the `data` that code carries narrowed alongside it; `onSettled` is either, narrowed on `status`. The payload
@@ -261,16 +271,20 @@ Checkout loads the store's checkout snapshot, confirms an order and keeps the ca
 form state and performs no navigation: validation, copy, fields, routes and payment redirects stay in the storefront.
 
 On the checkout route, disable the cart's own fetch through `WooCommerceProvider` so checkout can seed `cartQueryKey` without
-racing a second request. Then use the live cart from `useCart()` for customer details, shipping rates and coupons:
+racing a second request. Then use the live cart alongside it: `useCart()` for the totals, and the address, rate and coupon hooks
+for the parts the shopper still changes — each reporting only its own save, so one pending request does not disable the rest of
+the form:
 
 ```tsx
 "use client"
 import type { ConfirmCheckoutInput } from "@kizlo/woocommerce-kit"
-import { useCart, useCartCoupon } from "@kizlo/woocommerce-kit/react/cart"
+import { useCart, useCartAddress, useCartCoupon, useCartShippingRates } from "@kizlo/woocommerce-kit/react/cart"
 import { useCheckout } from "@kizlo/woocommerce-kit/react/checkout"
 
 export function CheckoutForm({ values }: { values: ConfirmCheckoutInput }) {
-	const { cart, selectShippingRate, updateCustomer } = useCart()
+	const { cart } = useCart()
+	const { update: updateAddress } = useCartAddress()
+	const { selectShippingRate } = useCartShippingRates()
 	const { apply: applyCoupon } = useCartCoupon()
 	const { checkout, confirm, error, isLoading, isPending, refresh, reset } = useCheckout({
 		onSuccess: ({ checkout, redirectUrl }) => {
@@ -293,7 +307,7 @@ export function CheckoutForm({ values }: { values: ConfirmCheckoutInput }) {
 			}}
 		>
 			<p>{cart.itemCount} items</p>
-			<button onClick={() => updateCustomer({ shippingAddress: values.shippingAddress })} type="button">
+			<button onClick={() => updateAddress({ shippingAddress: values.shippingAddress })} type="button">
 				Calculate shipping
 			</button>
 			<button onClick={() => selectShippingRate("flat_rate:1", 0)} type="button">
@@ -464,7 +478,7 @@ beside a desktop header — does not narrate the open one's requests.
 | --- | --- |
 | `@kizlo/woocommerce-kit` | The core. Collection grammar and model, cart and checkout cache keys and events, search request, href and cache helpers, quantity and money helpers, and every type. No framework. |
 | `@kizlo/woocommerce-kit/react` | `ProductCollectionProvider`, `useProductCollection`, and the model types it returns. Carries `"use client"`. |
-| `@kizlo/woocommerce-kit/react/cart` | `useCart`, `useCartItem`, `useCartCoupon`. Carries `"use client"`. Needs `@tanstack/react-query`. |
+| `@kizlo/woocommerce-kit/react/cart` | `useCart`, `useCartAddress`, `useCartShippingRates`, `useCartItem`, `useCartCoupon`. Carries `"use client"`. Needs `@tanstack/react-query`. |
 | `@kizlo/woocommerce-kit/react/checkout` | `useCheckout` and its callback types. Carries `"use client"`. Needs `@tanstack/react-query`. |
 | `@kizlo/woocommerce-kit/react/provider` | `WooCommerceProvider`, this kit's app-level configuration. Carries `"use client"`. Imports no peer but React. |
 | `@kizlo/woocommerce-kit/react/search` | `useProductSearch`. Carries `"use client"`. Needs `@tanstack/react-query`. |
