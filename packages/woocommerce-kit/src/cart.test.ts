@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
-import { cartItemLimits, draftQuantityLimits, resolveQuantity, stepQuantity } from "./cart"
-import type { CartItem } from "./types"
+import { cartItemLimits, draftQuantityLimits, hasSelectedShippingRates, resolveQuantity, stepQuantity } from "./cart"
+import type { Cart, CartItem } from "./types"
 
 /** Only the fields `cartItemLimits` reads. The rest of a cart item says nothing about its quantity range. */
 function lineItem(item: { isSoldIndividually: boolean; quantity: number; quantityLimits: CartItem["quantityLimits"] }) {
@@ -100,5 +100,47 @@ describe("resolveQuantity", () => {
 
 		expect(resolveQuantity({ input: "0", maximum, minimum, step, value: 1 })).toBe(1)
 		expect(resolveQuantity({ input: "150", maximum, minimum, step, value: 1 })).toBe(99)
+	})
+})
+
+describe("hasSelectedShippingRates", () => {
+	/** Only the shipping fields the derivation reads. `rates` is one boolean per rate: whether it is the selected one. */
+	function shippingCart(packages: { rates: boolean[] }[], needsShipping = true) {
+		return {
+			needsShipping,
+			shippingPackages: packages.map((shippingPackage, index) => ({
+				id: index,
+				rates: shippingPackage.rates.map((selected, rateIndex) => ({ id: `rate-${index}-${rateIndex}`, selected })),
+			})),
+		} as unknown as Cart
+	}
+
+	it("is false without a cart, so a consumer needs no guard", () => {
+		expect(hasSelectedShippingRates(null)).toBe(false)
+	})
+
+	it("is true for a cart that needs no shipping at all", () => {
+		expect(hasSelectedShippingRates(shippingCart([], false))).toBe(true)
+	})
+
+	it("is true once the one package has its rate", () => {
+		expect(hasSelectedShippingRates(shippingCart([{ rates: [false, true] }]))).toBe(true)
+	})
+
+	it("is false while a package offers rates and none is selected", () => {
+		expect(hasSelectedShippingRates(shippingCart([{ rates: [false, false] }]))).toBe(false)
+	})
+
+	it("is false for a package nothing can be shipped by", () => {
+		expect(hasSelectedShippingRates(shippingCart([{ rates: [] }]))).toBe(false)
+	})
+
+	it("is false until every package has its own selection", () => {
+		expect(hasSelectedShippingRates(shippingCart([{ rates: [true] }, { rates: [false] }]))).toBe(false)
+		expect(hasSelectedShippingRates(shippingCart([{ rates: [true] }, { rates: [true] }]))).toBe(true)
+	})
+
+	it("is false for a cart that needs shipping and was quoted no packages", () => {
+		expect(hasSelectedShippingRates(shippingCart([]))).toBe(false)
 	})
 })

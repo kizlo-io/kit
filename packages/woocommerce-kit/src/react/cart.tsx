@@ -1,7 +1,7 @@
 "use client"
 
 /**
- * React adapter for the cart: three hooks, one of which carries a whole quantity control. No provider of its own.
+ * React adapter for the cart: five hooks, one of which carries a whole quantity control. No provider of its own.
  *
  * Its own entry point rather than an addition to `./client`, because the cart needs a query library and the collection needs a
  * URL-state library; sharing one chunk would make a collection-only consumer resolve a dependency it never installed.
@@ -28,6 +28,7 @@ import {
 	cartQueryKey,
 	cartStaleTime,
 	draftQuantityLimits,
+	hasSelectedShippingRates,
 	resolveQuantity,
 	stepQuantity,
 } from "../cart"
@@ -61,6 +62,7 @@ const cartMutationKey = [...cartQueryKey, "mutation"] as const
 /** Stable empties, so a consumer reading `items` on an unfetched cart does not see a new array every render. */
 const noItems: Cart["items"] = []
 const noCoupons: Cart["coupons"] = []
+const noShippingPackages: Cart["shippingPackages"] = []
 
 function useLatest<T>(value: T) {
 	const ref = useRef(value)
@@ -109,10 +111,10 @@ function cartRequest(procedures: CartProcedures, variables: CartActionPayload): 
 const noop = () => {}
 
 /**
- * What every cart hook is made of: the shared cart query and one mutation keyed to this hook's scope. React Query runs that
- * mutation — the four callback phases, the pending state and the last failure are all its own.
+ * The cart itself: the shared query every hook reads, this cart's money format, and the cart-wide pending flag. It registers no
+ * mutation, so a read-only consumer subscribes to nothing it will never use.
  */
-function useCartRuntime(scope: readonly string[], options: CartHookOptions | undefined) {
+function useCartData() {
 	const { cartEnabled, locale } = useWooCommerceContext()
 	const { client } = useKizloContext()
 	const queryClient = useCartQueryClient()
@@ -125,6 +127,32 @@ function useCartRuntime(scope: readonly string[], options: CartHookOptions | und
 		queryKey: cartQueryKey,
 		staleTime: cartStaleTime,
 	})
+
+	// Prefix-matched, so one lookup covers every hook's scope — and a cache read rather than a subscription, which is why a hook
+	// holding no mutation of its own can still answer it.
+	const isMutating = useIsMutating({ mutationKey: cartMutationKey }) > 0
+
+	const cart = cartQuery.data ?? null
+	const format = useCallback((amount: number) => (cart ? formatStoreMoney(amount, cart.currencyFormat, locale) : ""), [cart, locale])
+
+	const refresh = useCallback(async () => {
+		await queryClient.refetchQueries({ queryKey: cartQueryKey })
+	}, [queryClient])
+
+	return { cart, format, isLoading: cartQuery.isPending, isMutating, queryError: cartQuery.error, refresh }
+}
+
+/**
+ * One hook's own action: a mutation keyed to that hook's scope, so `isPending` and `error` describe its action and no other one.
+ * React Query runs it — the four callback phases, the pending state and the last failure are all its own.
+ *
+ * Composes {@link useCartData} rather than sitting beside it, so a hook that only acts is still subscribed to the shared cart
+ * query: an address form on a page of its own is what fetches the cart for it.
+ */
+function useCartAction(scope: readonly string[], options: CartHookOptions | undefined) {
+	const { client } = useKizloContext()
+	const queryClient = useCartQueryClient()
+	const data = useCartData()
 
 	// Each hook owns one mutation, keyed to its scope: the caller already memoised `scope`, so the key is stable. The options
 	// below are read from the last committed render, which is what a callback ref used to buy.
@@ -154,7 +182,6 @@ function useCartRuntime(scope: readonly string[], options: CartHookOptions | und
 
 	// Read from the mutation cache rather than from local state: two components showing the same line both see it saving.
 	const isPending = useIsMutating({ mutationKey: scope }) > 0
-	const isMutating = useIsMutating({ mutationKey: cartMutationKey }) > 0
 
 	const { mutate, mutateAsync, reset } = mutation
 
@@ -168,99 +195,203 @@ function useCartRuntime(scope: readonly string[], options: CartHookOptions | und
 	// caller that awaits its save, to know the store has answered; the failure itself is already on `error`.
 	const write = useCallback((variables: CartActionPayload) => mutateAsync(variables).then(noop, noop), [mutateAsync])
 
-	const cart = cartQuery.data ?? null
-	const queryError = cartQuery.error
-	const format = useCallback((amount: number) => (cart ? formatStoreMoney(amount, cart.currencyFormat, locale) : ""), [cart, locale])
-
-	const refresh = useCallback(async () => {
-		clearSettled()
-		await queryClient.refetchQueries({ queryKey: cartQueryKey })
-	}, [clearSettled, queryClient])
-
-	return {
-		cart,
-		error: mutation.error,
-		format,
-		isLoading: cartQuery.isPending,
-		isMutating,
-		isPending,
-		mutate,
-		queryError,
-		refresh,
-		reset: clearSettled,
-		write,
-	}
+	return { ...data, error: mutation.error, isPending, mutate, reset: clearSettled, write }
 }
 
 export type CartApi = {
 	/** The store's payload, so totals, addresses and shipping are read from it directly rather than mirrored here. */
 	cart: Cart | null
-	/** The last failure of the cart itself: one of these actions, or the fetch. A line's own failure is on `useCartItem`. */
+	/**
+	 * The cart failed to load, and nothing else. An action's own failure is on the hook that performs it:
+	 * {@link useCartAddress}, {@link useCartShippingRates}, {@link useCartItem} or {@link useCartCoupon}.
+	 *
+	 * Distinct again from `cart.errors`, which is the store's own list of problems *with* the cart — a line that went out of
+	 * stock, a coupon that stopped applying — read straight off `cart`.
+	 */
 	error: CartError | null
 	/** This cart's currency and the configured locale, already applied. Empty while there is no cart. */
 	format: (amount: number) => string
 	isLoading: boolean
-	/** Any cart action anywhere in the tree is in flight — what a consumer disables its controls on. */
+	/** Any cart action anywhere in the tree is in flight — what a consumer disables a whole page on. */
 	isMutating: boolean
 	itemCount: number
 	items: Cart["items"]
+	/** Refetches the cart, which is how a consumer retries after `error`. */
 	refresh: () => Promise<void>
-	reset: () => void
-	selectShippingRate: (rateId: string, packageId?: string | number | null) => void
-	updateCustomer: (input: UpdateCartInput) => void
 }
 
 /**
- * The cart and the actions that are about the cart as a whole: the customer's details and the shipping choice.
+ * The cart as a whole, read-only: the store's payload, what it costs, and whether anything is being saved.
  *
- * Adding, editing and removing a line are item-shaped work and live on {@link useCartItem}; coupons live on
- * {@link useCartCoupon}. An action returns nothing: the outcome arrives through the callbacks, and the last failure stays on
- * `error` until `reset`, the next action or the next success clears it, so a call site needs neither a `try`/`catch` nor an
- * `await`.
+ * It performs no action, so it takes no callbacks. Each action lives on the hook for its own subject — the addresses on
+ * {@link useCartAddress}, the shipping choice on {@link useCartShippingRates}, a line on {@link useCartItem}, coupons on
+ * {@link useCartCoupon} — and each carries its own `isPending` and `error`, so saving an address does not grey the rate list.
+ *
+ * `isMutating` stays here because "anything, anywhere" is a cart-wide question, and `error` is unambiguously the fetch failing.
  *
  * Needs `KizloProvider`, `WooCommerceProvider` and the app's `QueryClientProvider` above it. It takes no client.
  *
- * @example Summary totals, and a postcode that re-quotes shipping
+ * @example Summary totals, and the store's own complaints about the cart
  * ```tsx
  * "use client"
  * import { useCart } from "@kizlo/woocommerce-kit/react/cart"
  *
  * export function CartSummary() {
- * 	const { cart, error, format, isLoading, isMutating, updateCustomer } = useCart()
+ * 	const { cart, error, format, isLoading, isMutating, refresh } = useCart()
  *
  * 	if (isLoading) return <Spinner />
+ * 	if (error) return <button onClick={() => void refresh()} type="button">Try again</button>
  * 	if (!cart) return <EmptyCart />
  *
  * 	return (
  * 		<section aria-busy={isMutating}>
- * 			{error ? <p role="alert">{error.message}</p> : null}
  * 			<p>{cart.itemCount} items · {format(cart.totals.total)}</p>
- * 			<button
- * 				disabled={isMutating}
- * 				onClick={() => updateCustomer({ shippingAddress: { postcode: "560001" } })}
- * 				type="button"
- * 			>
- * 				Estimate shipping
- * 			</button>
+ * 			{cart.errors.map((problem) => (
+ * 				<p key={problem.code} role="alert">{problem.message}</p>
+ * 			))}
  * 		</section>
  * 	)
  * }
  * ```
+ */
+export function useCart(): CartApi {
+	const { cart, format, isLoading, isMutating, queryError, refresh } = useCartData()
+
+	return {
+		cart,
+		error: queryError,
+		format,
+		isLoading,
+		isMutating,
+		itemCount: cart?.itemCount ?? 0,
+		items: cart?.items ?? noItems,
+		refresh,
+	}
+}
+
+export type CartAddressApi = {
+	/** The last failure of this save, and of nothing else. */
+	error: CartError | null
+	/** This hook's own save is in flight. A rate selection or a line saving elsewhere does not set it. */
+	isPending: boolean
+	/** Clears the last failure once it has settled. */
+	reset: () => void
+	/** Saves the customer's addresses. The email is a field inside `billingAddress` rather than a sibling of it. */
+	update: (input: UpdateCartInput) => void
+}
+
+/**
+ * The customer's addresses, and saving them.
  *
- * @example Hearing only this hook's actions
+ * Its own hook rather than a method on {@link useCart}, because an `isPending` shared with the shipping choice is what greys a
+ * rate list while an email is being saved. WooCommerce's own cart store splits along the same line.
+ *
+ * `update` takes whatever subset of the addresses changed, so a postcode on its own is a valid save — which is also what makes
+ * the store re-quote shipping. The action reports itself as `update_customer`, after the Store API route behind it.
+ *
+ * @example A postcode that re-quotes shipping, with only this form disabled while it saves
  * ```tsx
- * const { selectShippingRate } = useCart({
+ * "use client"
+ * import { useCartAddress } from "@kizlo/woocommerce-kit/react/cart"
+ * import { useState } from "react"
+ *
+ * export function ShippingPostcode() {
+ * 	const { error, isPending, update } = useCartAddress()
+ * 	const [postcode, setPostcode] = useState("")
+ *
+ * 	return (
+ * 		<form
+ * 			onSubmit={(event) => {
+ * 				event.preventDefault()
+ * 				update({ shippingAddress: { postcode } })
+ * 			}}
+ * 		>
+ * 			<input onChange={(event) => setPostcode(event.target.value)} value={postcode} />
+ * 			<button disabled={isPending} type="submit">{isPending ? "Saving…" : "Update"}</button>
+ * 			{error ? <p role="alert">{error.message}</p> : null}
+ * 		</form>
+ * 	)
+ * }
+ * ```
+ */
+export function useCartAddress(options?: CartHookOptions): CartAddressApi {
+	const scope = useMemo(() => [...cartMutationKey, "address"], [])
+	const { error, isPending, mutate, reset } = useCartAction(scope, options)
+
+	const update = useCallback((input: UpdateCartInput) => mutate({ input, type: "update_customer" }), [mutate])
+
+	return { error, isPending, reset, update }
+}
+
+export type CartShippingRatesApi = {
+	/** The last failure of a rate selection, and of nothing else. */
+	error: CartError | null
+	/** A rate is in effect for every package that needs shipping — the store's default counts. `false` while there is no cart. */
+	hasSelectedShippingRates: boolean
+	/** A selection is in flight. Not per package: the store re-quotes the whole cart, so one boolean matches every list. */
+	isPending: boolean
+	/** Clears the last failure once it has settled. */
+	reset: () => void
+	/** Chooses one of a package's rates. Pass the package's own `id`; omit it for a cart with a single package. */
+	selectShippingRate: (rateId: string, packageId?: string | number | null) => void
+	/** The store's packages, each with its rates and which of them is selected. Empty while there is no cart. */
+	shippingPackages: Cart["shippingPackages"]
+}
+
+/**
+ * The shipping packages the store quoted, and choosing a rate for them.
+ *
+ * `hasSelectedShippingRates` answers what `cart.hasCalculatedShipping` does not: that one says shipping has been costed, this
+ * one says a rate is in effect for every package. Not that the shopper chose it — the store marks a default rate `selected` as
+ * soon as it can quote, so a completed-shipping-step indicator gated on it lights up before any interaction. It is
+ * {@link hasSelectedShippingRates} applied to the current cart, so the same answer is
+ * available outside React.
+ *
+ * `isPending` is deliberately not per package — the store re-quotes the whole cart from one selection, so one boolean covers
+ * every list at once. It also says nothing about an address being saved, which is {@link useCartAddress}.
+ *
+ * @example A rate list that stays interactive while an address is saving
+ * ```tsx
+ * "use client"
+ * import { useCartShippingRates } from "@kizlo/woocommerce-kit/react/cart"
+ *
+ * export function ShippingRates() {
+ * 	const { error, isPending, selectShippingRate, shippingPackages } = useCartShippingRates()
+ *
+ * 	return (
+ * 		<fieldset aria-busy={isPending}>
+ * 			{shippingPackages.map((shippingPackage) =>
+ * 				shippingPackage.rates.map((rate) => (
+ * 					<label key={rate.id}>
+ * 						<input
+ * 							checked={rate.selected}
+ * 							disabled={isPending}
+ * 							name={String(shippingPackage.id)}
+ * 							onChange={() => selectShippingRate(rate.id, shippingPackage.id)}
+ * 							type="radio"
+ * 						/>
+ * 						{rate.name}
+ * 					</label>
+ * 				)),
+ * 			)}
+ * 			{error ? <p role="alert">{error.message}</p> : null}
+ * 		</fieldset>
+ * 	)
+ * }
+ * ```
+ *
+ * @example Hearing only this hook's action
+ * ```tsx
+ * const { selectShippingRate } = useCartShippingRates({
  * 	onSuccess: (event) => {
  * 		if (event.type === "select_shipping_rate") track("shipping_selected", { rateId: event.rateId })
  * 	},
  * })
  * ```
  */
-export function useCart(options?: CartHookOptions): CartApi {
-	const scope = useMemo(() => [...cartMutationKey, "cart"], [])
-	const { cart, error, format, isLoading, isMutating, mutate, queryError, refresh, reset } = useCartRuntime(scope, options)
-
-	const updateCustomer = useCallback((input: UpdateCartInput) => mutate({ input, type: "update_customer" }), [mutate])
+export function useCartShippingRates(options?: CartHookOptions): CartShippingRatesApi {
+	const scope = useMemo(() => [...cartMutationKey, "shippingRate"], [])
+	const { cart, error, isPending, mutate, reset } = useCartAction(scope, options)
 
 	const selectShippingRate = useCallback(
 		(rateId: string, packageId?: string | number | null) => mutate({ packageId, rateId, type: "select_shipping_rate" }),
@@ -268,17 +399,12 @@ export function useCart(options?: CartHookOptions): CartApi {
 	)
 
 	return {
-		cart,
-		error: error ?? queryError,
-		format,
-		isLoading,
-		isMutating,
-		itemCount: cart?.itemCount ?? 0,
-		items: cart?.items ?? noItems,
-		refresh,
+		error,
+		hasSelectedShippingRates: hasSelectedShippingRates(cart),
+		isPending,
 		reset,
 		selectShippingRate,
-		updateCustomer,
+		shippingPackages: cart?.shippingPackages ?? noShippingPackages,
 	}
 }
 
@@ -653,7 +779,7 @@ export function useCartItem(first?: string | CartItemOptions, second?: CartItemO
 	const { autoCommit = true, debounceMs = 400, defaultQuantity = 1, limits: draftLimits } = options ?? {}
 
 	const scope = useMemo(() => [...cartMutationKey, "item", key ?? "add"], [key])
-	const { cart, error, format, isPending, mutate, reset, write } = useCartRuntime(scope, options)
+	const { cart, error, format, isPending, mutate, reset, write } = useCartAction(scope, options)
 	const item = key === undefined ? null : (cart?.items.find((candidate) => candidate.key === key) ?? null)
 
 	const writeQuantity = useCallback(
@@ -716,28 +842,42 @@ export function useCartItem(first?: string | CartItemOptions, second?: CartItemO
 }
 
 export type CartCouponApi = {
+	/**
+	 * Applies a code. Available with or without a code on the hook, because a field has nothing applied yet.
+	 *
+	 * On a code-bound hook it reports against *that* hook's code: `useCartCoupon("SAVE10").apply("WELCOME10")` marks the `SAVE10`
+	 * chip pending. Apply from the field, or from a hook bound to the code being applied.
+	 */
 	apply: (code: string) => void
 	coupons: Cart["coupons"]
+	/** The last failure of this hook's code — or of the apply field, without one. */
 	error: CartError | null
+	/** This hook's own code is saving. Another chip, and the apply field, are unaffected. */
 	isPending: boolean
-	remove: (code: string) => void
+	/** Removes this hook's code. Without one — no code, or an empty one — there is nothing to remove, so it does nothing. */
+	remove: () => void
+	/** Clears the last failure once it has settled. */
 	reset: () => void
 }
 
 /**
  * The coupons on the cart, and applying or removing one.
  *
- * `reset` clears a rejected code, which a coupon field needs as soon as its input changes — otherwise the rejection of the last
- * code sits under a field the shopper has already corrected.
+ * The code decides what `isPending` and `error` describe, the same way a key does on {@link useCartItem}. Without one the hook is
+ * the apply field: `error` is the rejection of the code just typed, and `reset` clears it as soon as the input changes —
+ * otherwise the rejection of the last code sits under a field the shopper has already corrected. With one it is that chip alone,
+ * so removing a coupon leaves every other chip's button and the apply button enabled.
  *
- * @example
+ * `coupons` is the whole list on both forms, because a chip still needs to know what it is rendering.
+ *
+ * @example The apply field, which has no code of its own yet
  * ```tsx
  * "use client"
  * import { useCartCoupon } from "@kizlo/woocommerce-kit/react/cart"
  * import { useState } from "react"
  *
  * export function CouponField() {
- * 	const { apply, coupons, error, isPending, remove, reset } = useCartCoupon()
+ * 	const { apply, coupons, error, isPending, reset } = useCartCoupon()
  * 	const [code, setCode] = useState("")
  *
  * 	return (
@@ -757,22 +897,55 @@ export type CartCouponApi = {
  * 			<button disabled={isPending || !code.trim()} type="submit">Apply</button>
  * 			{error ? <p role="alert">{error.message}</p> : null}
  * 			{coupons.map((coupon) => (
- * 				<button key={coupon.code} onClick={() => remove(coupon.code)} type="button">
- * 					{coupon.code} ×
- * 				</button>
+ * 				<CouponChip code={coupon.code} key={coupon.code} />
  * 			))}
  * 		</form>
  * 	)
  * }
  * ```
+ *
+ * @example One chip, which reports only its own removal
+ * ```tsx
+ * export function CouponChip({ code }: { code: string }) {
+ * 	const { error, isPending, remove } = useCartCoupon(code)
+ *
+ * 	return (
+ * 		<button disabled={isPending} onClick={() => remove()} type="button">
+ * 			{code} {isPending ? "…" : "×"}
+ * 			{error ? <span role="alert">{error.message}</span> : null}
+ * 		</button>
+ * 	)
+ * }
+ * ```
  */
-export function useCartCoupon(options?: CartHookOptions): CartCouponApi {
-	const scope = useMemo(() => [...cartMutationKey, "coupon"], [])
-	const { cart, error, isPending, mutate, reset } = useCartRuntime(scope, options)
+export function useCartCoupon(options?: CartHookOptions): CartCouponApi
+export function useCartCoupon(code: string | undefined, options?: CartHookOptions): CartCouponApi
+export function useCartCoupon(first?: string | CartHookOptions, second?: CartHookOptions): CartCouponApi {
+	// A code the shopper has not chosen yet arrives as `""` as often as `undefined` — `useState("")` is the obvious way to hold
+	// one — and an empty code is no code: it must select the field's scope rather than a `coupon/code/""` of its own.
+	const code = typeof first === "string" && first.trim() !== "" ? first : undefined
+	// Decided on the shape of the first argument rather than on its absence, so `undefined`, `""` and a `null` read off a URL or
+	// a map all leave the options where they were passed. Testing only for a string would drop them silently.
+	const options = typeof first === "object" && first !== null ? first : second
 
-	const apply = useCallback((code: string) => mutate({ code, type: "apply_coupon" }), [mutate])
+	// The sentinel sits in its own slot rather than where a code goes: a store running a promotion actually coded `apply` would
+	// otherwise share a key with the field, so removing that chip would disable the apply button.
+	const scope = useMemo(
+		() => (code === undefined ? [...cartMutationKey, "coupon", "field"] : [...cartMutationKey, "coupon", "code", code]),
+		[code],
+	)
+	const { cart, error, isPending, mutate, reset } = useCartAction(scope, options)
 
-	const remove = useCallback((code: string) => mutate({ code, type: "remove_coupon" }), [mutate])
+	// Deliberately the argument's code rather than this hook's, because the field form has no code of its own — the same latitude
+	// `addItem` has on a keyed `useCartItem`. The pending state and the failure still belong to this hook's scope, which is what
+	// the `apply` doc on `CartCouponApi` says.
+	const apply = useCallback((applied: string) => mutate({ code: applied, type: "apply_coupon" }), [mutate])
+
+	const remove = useCallback(() => {
+		if (code === undefined) return
+
+		mutate({ code, type: "remove_coupon" })
+	}, [code, mutate])
 
 	return {
 		apply,

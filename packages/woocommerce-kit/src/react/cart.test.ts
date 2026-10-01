@@ -6,7 +6,7 @@ import { createElement, type ReactNode } from "react"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { cartQueryKey } from "../cart"
 import type { Cart, CartError } from "../types"
-import { type CartHookOptions, useCart, useCartItem } from "./cart"
+import { type CartHookOptions, useCart, useCartAddress, useCartCoupon, useCartItem, useCartShippingRates } from "./cart"
 import { WooCommerceProvider } from "./provider"
 
 /**
@@ -32,7 +32,7 @@ vi.mock("kizlo/react", () => ({
 }))
 
 /** Only the fields the hooks read. The rest of a cart says nothing about an action's lifecycle. */
-function storeCart(items: { key: string; quantity: number }[]) {
+function storeCart(items: { key: string; quantity: number }[], shipping?: { rates: boolean[] }[]) {
 	return {
 		coupons: [],
 		itemCount: items.length,
@@ -42,6 +42,12 @@ function storeCart(items: { key: string; quantity: number }[]) {
 			quantity,
 			quantityLimits: { editable: true, maximum: 10, minimum: 1, multipleOf: 1 },
 		})),
+		// A cart needs shipping exactly when the test gave it packages; each boolean is one rate, true for the selected one.
+		needsShipping: shipping !== undefined,
+		shippingPackages: (shipping ?? []).map((shippingPackage, index) => ({
+			id: index,
+			rates: shippingPackage.rates.map((selected, rateIndex) => ({ id: `rate-${index}-${rateIndex}`, selected })),
+		})),
 	} as unknown as Cart
 }
 
@@ -50,14 +56,16 @@ function storeError(code: string) {
 	return Object.assign(new Error("Already in your cart."), { code }) as unknown as CartError
 }
 
-function mount<T>(hook: () => T, cart?: Cart, mutations?: { retry: number }) {
+function mount<T>(hook: () => T, cart?: Cart, options?: { cartEnabled?: boolean; mutations?: { retry: number } }) {
+	const { cartEnabled = false, mutations } = options ?? {}
 	const queryClient = new QueryClient({ defaultOptions: { mutations, queries: { retry: false } } })
 	if (cart) queryClient.setQueryData(cartQueryKey, cart)
 
-	// `cartEnabled: false` so the cart query makes no request: every cart these tests read is either seeded or answered by an
-	// action. JSX is avoided because the suite only collects `src/**/*.test.ts`.
+	// `cartEnabled: false` by default so the cart query makes no request: every cart these tests read is either seeded or
+	// answered by an action. The one case that needs the fetch itself to fail opts in. JSX is avoided because the suite only
+	// collects `src/**/*.test.ts`.
 	const wrapper = ({ children }: { children: ReactNode }) =>
-		createElement(QueryClientProvider, { client: queryClient }, createElement(WooCommerceProvider, { cartEnabled: false, children }))
+		createElement(QueryClientProvider, { client: queryClient }, createElement(WooCommerceProvider, { cartEnabled, children }))
 
 	return { queryClient, ...renderHook(hook, { wrapper }) }
 }
@@ -190,7 +198,7 @@ describe("useCartItem callbacks", () => {
 	it("sends one request for one click, whatever the app sets as its mutation retry", async () => {
 		procedures.items.add.call.mockRejectedValue(storeError("CART_ITEM_EXISTS"))
 
-		const { result } = mount(() => useCartItem(), undefined, { retry: 2 })
+		const { result } = mount(() => useCartItem(), undefined, { mutations: { retry: 2 } })
 		act(() => result.current.addItem({ productId: 7 }))
 
 		await waitFor(() => expect(result.current.error?.code).toBe("CART_ITEM_EXISTS"))
@@ -270,5 +278,156 @@ describe("cart pending state", () => {
 
 		await waitFor(() => expect(result.current.cart.isMutating).toBe(false))
 		expect(result.current.a.isPending).toBe(false)
+	})
+})
+
+describe("cart address and shipping rates", () => {
+	it("keeps isPending to the acting hook while isMutating covers the cart", async () => {
+		let answer: (cart: Cart) => void = () => {}
+		procedures.update.call.mockReturnValue(new Promise<Cart>((resolve) => (answer = resolve)))
+
+		const { result } = mount(
+			() => ({ address: useCartAddress(), cart: useCart(), rates: useCartShippingRates() }),
+			storeCart([], [{ rates: [false] }]),
+		)
+
+		act(() => result.current.address.update({ shippingAddress: { postcode: "560001" } }))
+
+		await waitFor(() => expect(result.current.address.isPending).toBe(true))
+		// The defect this split fixes: saving an address used to be indistinguishable from choosing a rate.
+		expect(result.current.rates.isPending).toBe(false)
+		expect(result.current.cart.isMutating).toBe(true)
+
+		await act(async () => answer(storeCart([], [{ rates: [true] }])))
+
+		await waitFor(() => expect(result.current.cart.isMutating).toBe(false))
+		expect(result.current.address.isPending).toBe(false)
+	})
+
+	it("reports an address failure on the address hook alone", async () => {
+		procedures.update.call.mockRejectedValue(storeError("CART_INVALID_ADDRESS"))
+
+		const { result } = mount(() => ({ address: useCartAddress(), rates: useCartShippingRates() }), storeCart([]))
+		act(() => result.current.address.update({ shippingAddress: { postcode: "560001" } }))
+
+		await waitFor(() => expect(result.current.address.error?.code).toBe("CART_INVALID_ADDRESS"))
+		expect(result.current.rates.error).toBeNull()
+	})
+
+	it("answers hasSelectedShippingRates and shippingPackages from the cart it holds", async () => {
+		const { result, queryClient } = mount(() => useCartShippingRates(), storeCart([], [{ rates: [false, true] }]))
+
+		expect(result.current.shippingPackages).toHaveLength(1)
+		expect(result.current.hasSelectedShippingRates).toBe(true)
+
+		await act(async () => {
+			queryClient.setQueryData(cartQueryKey, storeCart([], [{ rates: [false, false] }]))
+		})
+
+		await waitFor(() => expect(result.current.hasSelectedShippingRates).toBe(false))
+	})
+})
+
+describe("cart coupons", () => {
+	it("keeps isPending to the code being removed", async () => {
+		let answer: (cart: Cart) => void = () => {}
+		procedures.coupons.remove.call.mockReturnValue(new Promise<Cart>((resolve) => (answer = resolve)))
+
+		const { result } = mount(() => ({
+			field: useCartCoupon(),
+			other: useCartCoupon("OTHER"),
+			save10: useCartCoupon("SAVE10"),
+		}))
+
+		act(() => result.current.save10.remove())
+
+		await waitFor(() => expect(result.current.save10.isPending).toBe(true))
+		// Removing one coupon used to disable the apply button and every other chip.
+		expect(result.current.field.isPending).toBe(false)
+		expect(result.current.other.isPending).toBe(false)
+
+		await act(async () => answer(storeCart([])))
+
+		await waitFor(() => expect(result.current.save10.isPending).toBe(false))
+	})
+
+	it("reports a removal failure on that code alone", async () => {
+		procedures.coupons.remove.call.mockRejectedValue(storeError("CART_COUPON_ERROR"))
+
+		const { result } = mount(() => ({
+			field: useCartCoupon(),
+			other: useCartCoupon("OTHER"),
+			save10: useCartCoupon("SAVE10"),
+		}))
+
+		act(() => result.current.save10.remove())
+
+		await waitFor(() => expect(result.current.save10.error?.code).toBe("CART_COUPON_ERROR"))
+		expect(result.current.field.error).toBeNull()
+		expect(result.current.other.error).toBeNull()
+	})
+	it("keeps a coupon coded apply off the apply field's own scope", async () => {
+		let answer: (cart: Cart) => void = () => {}
+		procedures.coupons.remove.call.mockReturnValue(new Promise<Cart>((resolve) => (answer = resolve)))
+
+		const { result } = mount(() => ({ chip: useCartCoupon("apply"), field: useCartCoupon() }))
+
+		act(() => result.current.chip.remove())
+
+		await waitFor(() => expect(result.current.chip.isPending).toBe(true))
+		// The sentinel shares no slot with a code, so a promotion actually coded `apply` cannot disable the apply button.
+		expect(result.current.field.isPending).toBe(false)
+
+		await act(async () => answer(storeCart([])))
+
+		await waitFor(() => expect(result.current.chip.isPending).toBe(false))
+	})
+
+	it("delivers the callbacks of a hook whose code is explicitly undefined", async () => {
+		procedures.coupons.apply.call.mockResolvedValue(storeCart([]))
+		const { options, phases } = recorder()
+		const code: string | undefined = undefined
+
+		const { result } = mount(() => useCartCoupon(code, options))
+		act(() => result.current.apply("WELCOME10"))
+
+		// The overload takes `string | undefined`, so an absent code must not be mistaken for the options object.
+		await waitFor(() => expect(phases()).toEqual(["start", "success", "settled"]))
+	})
+
+	it("does nothing when the apply field's remove is called", async () => {
+		const { result } = mount(() => useCartCoupon())
+
+		act(() => result.current.remove())
+
+		expect(procedures.coupons.remove.call).not.toHaveBeenCalled()
+		expect(result.current.isPending).toBe(false)
+	})
+	it("treats an empty code as no code, so a not-yet-chosen coupon sends nothing", async () => {
+		// `useState("")` is the obvious way to hold a selected code, so `""` must behave as the apply field rather than scope a
+		// hook to `coupon/code/""` whose remove() would ask the store to remove an empty code.
+		const { result } = mount(() => ({ chosen: useCartCoupon("SAVE10"), empty: useCartCoupon("") }))
+
+		act(() => result.current.empty.remove())
+
+		expect(procedures.coupons.remove.call).not.toHaveBeenCalled()
+		expect(result.current.empty.isPending).toBe(false)
+		expect(result.current.chosen.isPending).toBe(false)
+	})
+})
+
+describe("useCart", () => {
+	it("reports the fetch failure on error, and no action's", async () => {
+		procedures.get.call.mockRejectedValue(storeError("CART_UNAVAILABLE"))
+		procedures.items.add.call.mockRejectedValue(storeError("CART_ITEM_EXISTS"))
+
+		const { result } = mount(() => ({ cart: useCart(), line: useCartItem() }), undefined, { cartEnabled: true })
+
+		await waitFor(() => expect(result.current.cart.error?.code).toBe("CART_UNAVAILABLE"))
+
+		act(() => result.current.line.addItem({ productId: 7 }))
+
+		await waitFor(() => expect(result.current.line.error?.code).toBe("CART_ITEM_EXISTS"))
+		expect(result.current.cart.error?.code).toBe("CART_UNAVAILABLE")
 	})
 })

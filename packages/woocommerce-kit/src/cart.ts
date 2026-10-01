@@ -1,9 +1,10 @@
 /**
- * Cart bones: the cache identity, the event vocabulary and the two derivations that are worth testing.
+ * Cart bones: the cache identity, the event vocabulary and the derivations that are worth testing.
  *
  * No React and no query library. The cart has no URL grammar and no response derivation, so unlike the collection it gets no
  * `contract`/`request`/`model` triple — what is framework-agnostic here is the identity of the cache entry every consumer
- * shares, the vocabulary its actions report themselves in, and the arithmetic behind a quantity control.
+ * shares, the vocabulary its actions report themselves in, whether its shipping has been chosen, and the arithmetic behind a
+ * quantity control.
  */
 
 import type { AddCartItemInput, Cart, CartError, CartItem, UpdateCartInput } from "./types"
@@ -54,8 +55,9 @@ export type CartSettledEvent = CartSuccessEvent | CartErrorEvent
  * `add_to_cart` reports what was added, and `remove_from_cart` carries the item that is already gone from `cart` by the time
  * the listener runs. The item tokens match GA4's vocabulary, since analytics is the main reason to want these.
  *
- * Pass them to the hook that performs the action: `useCart`, `useCartItem` and `useCartCoupon` each take their own, and a
- * concern that spans the storefront wires the same listener on each hook it cares about.
+ * Pass them to the hook that performs the action: `useCartAddress`, `useCartShippingRates`, `useCartItem` and `useCartCoupon`
+ * each take their own, and a concern that spans the storefront wires the same listener on each hook it cares about. `useCart`
+ * takes none, because it performs no action.
  *
  * @example
  * ```tsx
@@ -76,6 +78,38 @@ export type CartCallbacks = {
 	onSuccess?: (event: CartSuccessEvent) => void
 	onError?: (event: CartErrorEvent) => void
 	onSettled?: (event: CartSettledEvent) => void
+}
+
+/**
+ * Whether every package that needs shipping has a rate chosen.
+ *
+ * The question `cart.hasCalculatedShipping` does not answer: that one says the store has costed shipping, not that the shopper
+ * picked one of the quotes. Without this, every storefront re-derives it to decide whether its shipping step is done.
+ *
+ * `false` for a cart that has not loaded, so a consumer needs no null guard, and `true` for a cart that needs no shipping at all.
+ * Otherwise every package must carry exactly one rate marked `selected` — which also means at least one rate. Deliberately
+ * stricter than WooCommerce's own storefront, which treats a package with no rates as satisfied: a package nothing can be
+ * shipped by is not a chosen rate. A cart that needs shipping and reports no packages is `false` for the same reason.
+ *
+ * `checkout.confirm` rejects a missing rate anyway (`CHECKOUT_SHIPPING_OPTION_INVALID`), so this is for showing the shopper
+ * which step is incomplete rather than for guarding the order.
+ *
+ * Inside React, `useCartShippingRates().hasSelectedShippingRates` is this function already applied to the current cart.
+ *
+ * @example
+ * ```ts
+ * hasSelectedShippingRates(null) // false, nothing fetched yet
+ * hasSelectedShippingRates(digitalCart) // true, needsShipping is false
+ * ```
+ */
+export function hasSelectedShippingRates(cart: Cart | null): boolean {
+	if (!cart) return false
+	if (!cart.needsShipping) return true
+
+	return (
+		cart.shippingPackages.length > 0 &&
+		cart.shippingPackages.every((shippingPackage) => shippingPackage.rates.filter((rate) => rate.selected).length === 1)
+	)
 }
 
 /** What a quantity control may offer for one line. */
