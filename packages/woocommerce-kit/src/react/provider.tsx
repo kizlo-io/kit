@@ -11,11 +11,10 @@
  * same client.
  */
 
-import { type ReactNode, useEffect, useMemo, useRef } from "react"
-import type { WooCommerceCallbacks } from "../checkout"
+import { type ReactNode, useMemo } from "react"
 import { WooCommerceContext, type WooCommerceContextValue } from "./context"
 
-export type WooCommerceProviderProps = WooCommerceCallbacks & {
+export type WooCommerceProviderProps = {
 	/**
 	 * Whether the cart fetches itself. Set it false on a route that seeds `cartQueryKey` from its own request — a checkout
 	 * snapshot, for instance — so the two do not race.
@@ -27,10 +26,10 @@ export type WooCommerceProviderProps = WooCommerceCallbacks & {
 }
 
 /**
- * Configures the WooCommerce kit for the tree below it, and hears every cart and checkout action in that tree.
+ * Configures the WooCommerce kit for the tree below it.
  *
- * Its callbacks are where a concern that belongs to the whole storefront goes — analytics, or opening the cart drawer the
- * moment an add starts — wired once instead of at each call site. A hook's own callbacks fire as well, and first.
+ * Configuration and nothing else. An action reports itself through the callbacks on the hook that performs it, which is where
+ * a listener goes — a storefront-wide concern wires the same listener on each hook it cares about.
  *
  * @example
  * ```tsx
@@ -46,32 +45,16 @@ export type WooCommerceProviderProps = WooCommerceCallbacks & {
  * 	return (
  * 		<QueryClientProvider client={queryClient}>
  * 			<KizloProvider client={client}>
- * 				<WooCommerceProvider
- * 					locale="en-IN"
- * 					onStart={(event) => {
- * 						if (event.type === "add_to_cart") openCartDrawer()
- * 					}}
- * 					onSuccess={(event) => {
- * 						if (event.type === "confirm_checkout") track("purchase", { orderId: event.checkout.orderId })
- * 					}}
- * 				>
- * 					{children}
- * 				</WooCommerceProvider>
+ * 				<WooCommerceProvider locale="en-IN">{children}</WooCommerceProvider>
  * 			</KizloProvider>
  * 		</QueryClientProvider>
  * 	)
  * }
  * ```
  */
-export function WooCommerceProvider({ cartEnabled = true, children, locale, ...callbacks }: WooCommerceProviderProps) {
-	const callbacksRef = useRef<WooCommerceCallbacks>(callbacks)
-
-	useEffect(() => {
-		callbacksRef.current = callbacks
-	})
-
+export function WooCommerceProvider({ cartEnabled = true, children, locale }: WooCommerceProviderProps) {
 	// Only the configuration is in the value, so it changes when the app changes it and not when the cart does.
-	const value = useMemo<WooCommerceContextValue>(() => ({ callbacks: callbacksRef, cartEnabled, locale }), [cartEnabled, locale])
+	const value = useMemo<WooCommerceContextValue>(() => ({ cartEnabled, locale }), [cartEnabled, locale])
 
 	return <WooCommerceContext.Provider value={value}>{children}</WooCommerceContext.Provider>
 }

@@ -118,22 +118,15 @@ export function Providers({ children }) {
 	return (
 		<QueryClientProvider client={queryClient}>
 			<KizloProvider client={client}>
-				<WooCommerceProvider
-					locale="en-IN"
-					onStart={(event) => {
-						if (event.type === "add_to_cart") openCartDrawer()
-					}}
-				>
-					{children}
-				</WooCommerceProvider>
+				<WooCommerceProvider locale="en-IN">{children}</WooCommerceProvider>
 			</KizloProvider>
 		</QueryClientProvider>
 	)
 }
 ```
 
-`WooCommerceProvider` carries configuration and nothing else — `locale`, the `cartEnabled` gate for a route that seeds the cache
-itself, and the kit-level cart callbacks — which is why its context value does not change as the cart does. There is no provider
+`WooCommerceProvider` carries configuration and nothing else — `locale` and the `cartEnabled` gate for a route that seeds the
+cache itself — which is why its context value does not change as the cart does. There is no provider
 per feature: the hooks below read the client from `KizloProvider` and the cart from your `QueryClient`.
 
 Then each component reads the slice it needs. A product page has no line yet, so it calls `useCartItem()` without a key:
@@ -150,7 +143,7 @@ export function AddToCart({ productId }: { productId: number }) {
 			<button aria-label="One fewer" {...quantity.decrementProps}>−</button>
 			<input aria-label="Quantity" {...quantity.inputProps} />
 			<button aria-label="One more" {...quantity.incrementProps}>+</button>
-			<button disabled={isPending} onClick={() => void addItem({ productId })} type="button">
+			<button disabled={isPending} onClick={() => addItem({ productId })} type="button">
 				{isPending ? "Adding…" : "Add to cart"}
 			</button>
 			{error ? <p role="alert">{error.code === "CART_ITEM_EXISTS" ? "Already in your cart." : error.message}</p> : null}
@@ -181,7 +174,7 @@ export function CartLine({ itemKey }: { itemKey: string }) {
 			<input aria-label="Quantity" {...quantity.inputProps} />
 			<button aria-label="One more" {...quantity.incrementProps}>+</button>
 			<p>{format(item.totals.total)}</p>
-			<button onClick={() => void remove()} type="button">
+			<button onClick={() => remove()} type="button">
 				Remove
 			</button>
 		</article>
@@ -228,19 +221,20 @@ is true while any cart action anywhere in the tree is in flight, which is what a
 `useCartItem(key).isPending` narrows that to the one line that is saving. Both read the shared mutation cache, so a line saving
 in the drawer is also saving on the cart page, with no state held above them.
 
-**No action rejects.** `addItem`, `quantity.commit`, `remove`, `apply` and the rest return `Promise<void>` and report the outcome
-through callbacks instead, so no call site needs a `try`/`catch`. The last failure stays on the hook's `error` as
-`{ code, message }` — the store's code intact, so you can answer `CART_ITEM_EXISTS` in your own words — until `reset()` or the
-next success clears it.
+**An action returns nothing.** `addItem`, `remove`, `apply`, `updateCustomer` and the rest report the outcome through callbacks
+instead, so there is no promise to await and no call site needs a `try`/`catch`. The last failure stays on the hook's `error` as
+`{ code, message }` — the store's code intact, so you can answer `CART_ITEM_EXISTS` in your own words — until `reset()`, the next
+action or the next success clears it. `reset()` clears a failure that has settled; an action still in flight keeps reporting its
+own outcome. `quantity.commit()` and `refresh()` are the two that still resolve, because each has something to wait
+for: the save the control owes, and the refetch.
 
 Every hook, the provider and the core functions carry a JSDoc example, so the shape above is also available from an editor's
 hover.
 
 ### Cart events
 
-Callbacks go on `WooCommerceProvider`, on a hook, or both; the hook's run first, and one throwing does not stop the other. Each
-action reports `onStart` → `onSuccess` | `onError` → `onSettled`, and every event carries the action's own payload, narrowed on
-`type`:
+Callbacks go on the hook that performs the action. Each action reports `onStart` → `onSuccess` | `onError` → `onSettled`, and
+every event carries the action's own payload, narrowed on `type`:
 
 | `type` | Payload | Raised by |
 | --- | --- | --- |
@@ -257,9 +251,9 @@ bare `string`, with the `data` that code carries narrowed alongside it; `onSettl
 is what makes these worth having: `remove_from_cart` carries the item that is already gone from `cart` by the time a listener
 runs, and the item tokens match GA4's, since analytics is usually the reason to want them.
 
-`WooCommerceProvider`'s callbacks fire for every cart and checkout action below it, which is where an analytics or drawer
-concern belongs — once, rather than at each call site. `onStart` is synchronous and cannot cancel the action; it is what lets a
-drawer open immediately instead of after the round trip.
+`onStart` is synchronous and cannot cancel the action; it is what lets a drawer open immediately instead of after the round
+trip. A throwing listener is isolated: the action itself still succeeds, and the later phases still run. A concern that spans
+the storefront — analytics, or the drawer — wires the same listener on each hook it cares about.
 
 ## Checkout
 
@@ -295,17 +289,17 @@ export function CheckoutForm({ values }: { values: ConfirmCheckoutInput }) {
 			onSubmit={(event) => {
 				event.preventDefault()
 				reset()
-				void confirm({ ...values, cancelPath: "/cart", successPath: "/checkout/order-received" })
+				confirm({ ...values, cancelPath: "/cart", successPath: "/checkout/order-received" })
 			}}
 		>
 			<p>{cart.itemCount} items</p>
-			<button onClick={() => void updateCustomer({ shippingAddress: values.shippingAddress })} type="button">
+			<button onClick={() => updateCustomer({ shippingAddress: values.shippingAddress })} type="button">
 				Calculate shipping
 			</button>
-			<button onClick={() => void selectShippingRate("flat_rate:1", 0)} type="button">
+			<button onClick={() => selectShippingRate("flat_rate:1", 0)} type="button">
 				Choose shipping
 			</button>
-			<button onClick={() => void applyCoupon("WELCOME10")} type="button">
+			<button onClick={() => applyCoupon("WELCOME10")} type="button">
 				Apply coupon
 			</button>
 			{error ? <p role="alert">{error.message}</p> : null}
@@ -315,22 +309,14 @@ export function CheckoutForm({ values }: { values: ConfirmCheckoutInput }) {
 }
 ```
 
-`confirm(input)` resolves to the new checkout, or `null` when it fails; it never rejects. The last fetch or confirmation
-failure is on `error`, including its store code and validation data. `reset()` clears a confirmation failure.
+`confirm(input)` returns nothing: the order and where to send the browser next arrive on the success event. The last fetch or
+confirmation failure is on `error`, including its store code and validation data. `reset()` clears a confirmation failure.
 
-Confirmation uses the cart callback lifecycle: `onStart` → `onSuccess` | `onError` → `onSettled`. Pass callbacks to
-`useCheckout` for one form, or to `WooCommerceProvider` for every cart and checkout action in the tree. Hook callbacks run
-first, and one throwing does not suppress the other callback or phase:
+Confirmation uses the cart callback lifecycle: `onStart` → `onSuccess` | `onError` → `onSettled`, passed to `useCheckout`
+itself. A throwing listener does not suppress a later phase or fail the confirmation:
 
 ```tsx
-<WooCommerceProvider
-	cartEnabled={!checkoutSeedsCart}
-	onSuccess={(event) => {
-		if (event.type === "confirm_checkout") track("purchase", { orderId: event.checkout.orderId })
-	}}
->
-	{children}
-</WooCommerceProvider>
+<WooCommerceProvider cartEnabled={!checkoutSeedsCart}>{children}</WooCommerceProvider>
 ```
 
 The checkout fetch and `refresh()` do not emit action callbacks. Only confirmation does.

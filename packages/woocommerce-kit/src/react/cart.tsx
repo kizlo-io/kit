@@ -16,17 +16,14 @@
  */
 
 import { isServer, useIsMutating, useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { type ActiveKizloClient, toKizloError } from "kizlo"
+import type { ActiveKizloClient } from "kizlo"
 import { useKizloContext } from "kizlo/react"
 import { type ChangeEvent, type FocusEvent, type KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useDebouncedCallback } from "use-debounce"
 import {
 	type CartActionPayload,
 	type CartCallbacks,
-	type CartErrorEvent,
 	type CartItemLimits,
-	type CartStartEvent,
-	type CartSuccessEvent,
 	cartItemLimits,
 	cartQueryKey,
 	cartStaleTime,
@@ -37,6 +34,7 @@ import {
 import { formatStoreMoney } from "../money"
 import type { AddCartItemInput, Cart, CartError, UpdateCartInput } from "../types"
 import { useWooCommerceContext } from "./context"
+import { notify } from "./notify"
 
 /**
  * The core's cart types, re-exported so a component reads its hook and the types it returns from one specifier. Type-only, so
@@ -72,22 +70,6 @@ function useLatest<T>(value: T) {
 	return ref
 }
 
-/**
- * Calls one listener without letting it break the phase: the hook's callback and the provider's both run, whichever throws.
- * The failure is re-raised on its own so it still reaches the app's error handling instead of disappearing.
- */
-function notify<E>(listener: ((event: E) => void) | undefined, event: E) {
-	if (!listener) return
-
-	try {
-		listener(event)
-	} catch (error) {
-		queueMicrotask(() => {
-			throw error
-		})
-	}
-}
-
 /** The app's query client, or a message that names what is missing rather than react-query's own. */
 function useCartQueryClient() {
 	try {
@@ -101,114 +83,112 @@ function useCartQueryClient() {
 }
 
 /**
- * What one cart action resolves to. Every cart procedure answers the new cart, and every failure it can report is a member of
- * {@link CartError}, so one envelope describes them all and a caller narrows on `success`.
+ * The one request each action is. The payload the callbacks already report is the mutation's own variables, so an action is a
+ * `type` and its fields rather than a request paired with a payload.
  */
-type CartActionResult = { data: Cart; error: null; success: true } | { data: undefined; error: CartError; success: false }
-
-type CartAction = {
-	payload: CartActionPayload
-	request: (procedures: CartProcedures) => Promise<CartActionResult>
+function cartRequest(procedures: CartProcedures, variables: CartActionPayload): Promise<Cart> {
+	switch (variables.type) {
+		case "add_to_cart":
+			return procedures.items.add.call({ body: variables.input })
+		case "update_cart_item":
+			return procedures.items.update.call({ body: { quantity: variables.quantity }, params: { key: variables.key } })
+		case "remove_from_cart":
+			return procedures.items.remove.call({ params: { key: variables.key } })
+		case "apply_coupon":
+			return procedures.coupons.apply.call({ body: { code: variables.code } })
+		case "remove_coupon":
+			return procedures.coupons.remove.call({ params: { code: variables.code } })
+		case "update_customer":
+			return procedures.update.call({ body: variables.input })
+		case "select_shipping_rate":
+			return procedures.selectShippingRate.call({ body: { packageId: variables.packageId, rateId: variables.rateId } })
+	}
 }
 
+/** Neither outcome interests the quantity control's write: its promise says only that the save settled. */
+const noop = () => {}
+
 /**
- * What every cart hook is made of: the shared cart query, one mutation keyed to this hook's scope, and the runner that turns an
- * action into the four callback phases without ever rejecting.
+ * What every cart hook is made of: the shared cart query and one mutation keyed to this hook's scope. React Query runs that
+ * mutation — the four callback phases, the pending state and the last failure are all its own.
  */
 function useCartRuntime(scope: readonly string[], options: CartHookOptions | undefined) {
-	const { callbacks: providerCallbacks, cartEnabled, locale } = useWooCommerceContext()
+	const { cartEnabled, locale } = useWooCommerceContext()
 	const { client } = useKizloContext()
 	const queryClient = useCartQueryClient()
-	const hookCallbacks = useLatest<CartCallbacks | undefined>(options)
-	const [error, setError] = useState<CartError | null>(null)
 
 	const cartQuery = useQuery<Cart, CartError>({
 		// The cart is session state behind a cookie, so it is fetched in the browser and never server-rendered.
 		enabled: cartEnabled && !isServer,
-		// React Query reports a failure by rejection, so the envelope is unwrapped here rather than carried into the cache.
-		queryFn: async () => {
-			const result = await client.woocommerce.cart.get()
-			if (!result.success) throw result.error
-			return result.data
-		},
+		// React Query reports a failure by rejection, which is what `.call` does.
+		queryFn: () => client.woocommerce.cart.get.call(),
 		queryKey: cartQueryKey,
 		staleTime: cartStaleTime,
 	})
 
-	// Each hook owns one mutation, keyed to its scope: the caller already memoised `scope`, so the key is stable.
-	const mutation = useMutation({
-		// The client answers failures rather than throwing them, so the only way here is something outside the contract — a
-		// cancelled mutation, a broken proxy. It is folded into the same envelope so an action still never rejects.
-		mutationFn: async (action: CartAction): Promise<CartActionResult> => {
-			try {
-				return await action.request(client.woocommerce.cart)
-			} catch (cause) {
-				return { data: undefined, error: toKizloError(cause) as CartError, success: false }
-			}
-		},
+	// Each hook owns one mutation, keyed to its scope: the caller already memoised `scope`, so the key is stable. The options
+	// below are read from the last committed render, which is what a callback ref used to buy.
+	const mutation = useMutation<Cart, CartError, CartActionPayload>({
+		mutationFn: (variables) => cartRequest(client.woocommerce.cart, variables),
 		mutationKey: scope,
+		// Pinned rather than inherited: query-core's own default is `this.options.retry ?? 0`, and `this.options` carries the app's
+		// `defaultOptions.mutations`. A cart write is not idempotent, so a retry is a second line rather than a second attempt.
+		retry: 0,
+		onMutate: (variables) => {
+			notify(() => options?.onStart?.({ ...variables, status: "start" }))
+		},
+		onSuccess: (cart, variables) => {
+			queryClient.setQueryData(cartQueryKey, cart)
+			notify(() => options?.onSuccess?.({ ...variables, cart, status: "success" }))
+		},
+		onError: (error, variables) => {
+			notify(() => options?.onError?.({ ...variables, error, status: "error" }))
+		},
+		// A narrowing rather than a branch: query-core passes `(cart, null, …)` on success and `(undefined, error, …)` on
+		// failure, never neither, so this avoids asserting `cart` is there.
+		onSettled: (cart, error, variables) => {
+			if (error) notify(() => options?.onSettled?.({ ...variables, error, status: "error" }))
+			else if (cart) notify(() => options?.onSettled?.({ ...variables, cart, status: "success" }))
+		},
 	})
-	const mutateAsync = useLatest(mutation.mutateAsync)
 
 	// Read from the mutation cache rather than from local state: two components showing the same line both see it saving.
 	const isPending = useIsMutating({ mutationKey: scope }) > 0
 	const isMutating = useIsMutating({ mutationKey: cartMutationKey }) > 0
 
-	const run = useCallback(
-		async (action: CartAction) => {
-			const hook = hookCallbacks.current
-			const provider = providerCallbacks.current
+	const { mutate, mutateAsync, reset } = mutation
 
-			const start: CartStartEvent = { ...action.payload, status: "start" }
-			notify(hook?.onStart, start)
-			notify(provider.onStart, start)
+	// `reset` detaches the observer from the mutation it is watching, so resetting an action that is still in flight would leave
+	// the refusal it is about to report with nowhere to land. A settled failure is the only one cleared.
+	const clearSettled = useCallback(() => {
+		if (!isPending) reset()
+	}, [isPending, reset])
 
-			const result = await mutateAsync.current(action)
-
-			if (result.success) {
-				queryClient.setQueryData(cartQueryKey, result.data)
-				setError(null)
-
-				const success: CartSuccessEvent = { ...action.payload, cart: result.data, status: "success" }
-				notify(hook?.onSuccess, success)
-				notify(provider.onSuccess, success)
-				notify(hook?.onSettled, success)
-				notify(provider.onSettled, success)
-			} else {
-				setError(result.error)
-
-				const failure: CartErrorEvent = { ...action.payload, error: result.error, status: "error" }
-				notify(hook?.onError, failure)
-				notify(provider.onError, failure)
-				notify(hook?.onSettled, failure)
-				notify(provider.onSettled, failure)
-			}
-		},
-		[hookCallbacks, mutateAsync, providerCallbacks, queryClient],
-	)
+	// `mutate` is what the public actions hand out, because none of them has anything to report. The quantity control is the one
+	// caller that awaits its save, to know the store has answered; the failure itself is already on `error`.
+	const write = useCallback((variables: CartActionPayload) => mutateAsync(variables).then(noop, noop), [mutateAsync])
 
 	const cart = cartQuery.data ?? null
 	const queryError = cartQuery.error
 	const format = useCallback((amount: number) => (cart ? formatStoreMoney(amount, cart.currencyFormat, locale) : ""), [cart, locale])
 
 	const refresh = useCallback(async () => {
-		setError(null)
+		clearSettled()
 		await queryClient.refetchQueries({ queryKey: cartQueryKey })
-	}, [queryClient])
-
-	const reset = useCallback(() => setError(null), [])
+	}, [clearSettled, queryClient])
 
 	return {
 		cart,
-		error,
+		error: mutation.error,
 		format,
 		isLoading: cartQuery.isPending,
 		isMutating,
 		isPending,
+		mutate,
 		queryError,
 		refresh,
-		reset,
-		run,
+		reset: clearSettled,
+		write,
 	}
 }
 
@@ -226,16 +206,17 @@ export type CartApi = {
 	items: Cart["items"]
 	refresh: () => Promise<void>
 	reset: () => void
-	selectShippingRate: (rateId: string, packageId?: string | number | null) => Promise<void>
-	updateCustomer: (input: UpdateCartInput) => Promise<void>
+	selectShippingRate: (rateId: string, packageId?: string | number | null) => void
+	updateCustomer: (input: UpdateCartInput) => void
 }
 
 /**
  * The cart and the actions that are about the cart as a whole: the customer's details and the shipping choice.
  *
  * Adding, editing and removing a line are item-shaped work and live on {@link useCartItem}; coupons live on
- * {@link useCartCoupon}. Every action here resolves and never rejects — the outcome arrives through the callbacks, and the last
- * failure stays on `error` until `reset` or the next success, which is what removes try/catch from the call sites.
+ * {@link useCartCoupon}. An action returns nothing: the outcome arrives through the callbacks, and the last failure stays on
+ * `error` until `reset`, the next action or the next success clears it, so a call site needs neither a `try`/`catch` nor an
+ * `await`.
  *
  * Needs `KizloProvider`, `WooCommerceProvider` and the app's `QueryClientProvider` above it. It takes no client.
  *
@@ -256,7 +237,7 @@ export type CartApi = {
  * 			<p>{cart.itemCount} items · {format(cart.totals.total)}</p>
  * 			<button
  * 				disabled={isMutating}
- * 				onClick={() => void updateCustomer({ shippingAddress: { postcode: "560001" } })}
+ * 				onClick={() => updateCustomer({ shippingAddress: { postcode: "560001" } })}
  * 				type="button"
  * 			>
  * 				Estimate shipping
@@ -277,24 +258,13 @@ export type CartApi = {
  */
 export function useCart(options?: CartHookOptions): CartApi {
 	const scope = useMemo(() => [...cartMutationKey, "cart"], [])
-	const { cart, error, format, isLoading, isMutating, queryError, refresh, reset, run } = useCartRuntime(scope, options)
+	const { cart, error, format, isLoading, isMutating, mutate, queryError, refresh, reset } = useCartRuntime(scope, options)
 
-	const updateCustomer = useCallback(
-		(input: UpdateCartInput) =>
-			run({
-				payload: { input, type: "update_customer" },
-				request: (procedures) => procedures.update({ body: input }),
-			}),
-		[run],
-	)
+	const updateCustomer = useCallback((input: UpdateCartInput) => mutate({ input, type: "update_customer" }), [mutate])
 
 	const selectShippingRate = useCallback(
-		(rateId: string, packageId?: string | number | null) =>
-			run({
-				payload: { packageId, rateId, type: "select_shipping_rate" },
-				request: (procedures) => procedures.selectShippingRate({ body: { packageId, rateId } }),
-			}),
-		[run],
+		(rateId: string, packageId?: string | number | null) => mutate({ packageId, rateId, type: "select_shipping_rate" }),
+		[mutate],
 	)
 
 	return {
@@ -605,7 +575,7 @@ function quantityLimits(
 
 export type CartItemApi = {
 	/** Puts a product in the cart. Available with or without a key, because a product page has no line yet. */
-	addItem: (input: AddCartItemInput) => Promise<void>
+	addItem: (input: AddCartItemInput) => void
 	error: CartError | null
 	format: (amount: number) => string
 	/** This hook's own action is in flight. Another saving line does not set it. */
@@ -614,8 +584,8 @@ export type CartItemApi = {
 	item: Cart["items"][number] | null
 	/** The whole quantity control: what it shows, the range it stays in, and the props that drive it. */
 	quantity: CartItemQuantity
-	remove: () => Promise<void>
-	/** Clears the last failure. An uncommitted edit is discarded with `quantity.revert()`. */
+	remove: () => void
+	/** Clears the last failure once it has settled. An uncommitted edit is discarded with `quantity.revert()`. */
 	reset: () => void
 }
 
@@ -647,7 +617,7 @@ export type CartItemApi = {
  * 			<button aria-label="One fewer" {...quantity.decrementProps}>−</button>
  * 			<input aria-label="Quantity" {...quantity.inputProps} />
  * 			<button aria-label="One more" {...quantity.incrementProps}>+</button>
- * 			<button disabled={isPending} onClick={() => void addItem({ productId })} type="button">
+ * 			<button disabled={isPending} onClick={() => addItem({ productId })} type="button">
  * 				{isPending ? "Adding…" : "Add to cart"}
  * 			</button>
  * 			{error ? <p role="alert">{error.code === "CART_ITEM_EXISTS" ? "Already in your cart." : error.message}</p> : null}
@@ -669,7 +639,7 @@ export type CartItemApi = {
  * 			<input aria-label="Quantity" {...quantity.inputProps} />
  * 			<button aria-label="One more" {...quantity.incrementProps}>+</button>
  * 			<p>{format(item.totals.total)}</p>
- * 			<button onClick={() => void remove()} type="button">Remove</button>
+ * 			<button onClick={() => remove()} type="button">Remove</button>
  * 		</article>
  * 	)
  * }
@@ -683,19 +653,16 @@ export function useCartItem(first?: string | CartItemOptions, second?: CartItemO
 	const { autoCommit = true, debounceMs = 400, defaultQuantity = 1, limits: draftLimits } = options ?? {}
 
 	const scope = useMemo(() => [...cartMutationKey, "item", key ?? "add"], [key])
-	const { cart, error, format, isPending, reset, run } = useCartRuntime(scope, options)
+	const { cart, error, format, isPending, mutate, reset, write } = useCartRuntime(scope, options)
 	const item = key === undefined ? null : (cart?.items.find((candidate) => candidate.key === key) ?? null)
 
-	const write = useCallback(
+	const writeQuantity = useCallback(
 		(quantity: number) => {
 			if (!item || key === undefined) return Promise.resolve()
 
-			return run({
-				payload: { key, previousQuantity: item.quantity, quantity, type: "update_cart_item" },
-				request: (procedures) => procedures.items.update({ body: { quantity }, params: { key } }),
-			})
+			return write({ key, previousQuantity: item.quantity, quantity, type: "update_cart_item" })
 		},
-		[item, key, run],
+		[item, key, write],
 	)
 
 	const limits = quantityLimits(item, key !== undefined, draftLimits)
@@ -713,7 +680,7 @@ export function useCartItem(first?: string | CartItemOptions, second?: CartItemO
 		debounceMs,
 		itemKey: key,
 		limits,
-		write,
+		write: writeQuantity,
 	})
 
 	const draft = quantity.value
@@ -724,23 +691,17 @@ export function useCartItem(first?: string | CartItemOptions, second?: CartItemO
 			// explicit quantity wins.
 			const body = key === undefined && input.quantity === undefined ? { ...input, quantity: draft } : input
 
-			return run({
-				payload: { input: body, type: "add_to_cart" },
-				request: (procedures) => procedures.items.add({ body }),
-			})
+			mutate({ input: body, type: "add_to_cart" })
 		},
-		[draft, key, run],
+		[draft, key, mutate],
 	)
 
 	const remove = useCallback(() => {
-		if (!item || key === undefined) return Promise.resolve()
+		if (!item || key === undefined) return
 
-		return run({
-			// The removed item travels with the event: by the time a listener runs it is already gone from `cart`.
-			payload: { item, key, type: "remove_from_cart" },
-			request: (procedures) => procedures.items.remove({ params: { key } }),
-		})
-	}, [item, key, run])
+		// The removed item travels with the event: by the time a listener runs it is already gone from `cart`.
+		mutate({ item, key, type: "remove_from_cart" })
+	}, [item, key, mutate])
 
 	return {
 		addItem,
@@ -755,11 +716,11 @@ export function useCartItem(first?: string | CartItemOptions, second?: CartItemO
 }
 
 export type CartCouponApi = {
-	apply: (code: string) => Promise<void>
+	apply: (code: string) => void
 	coupons: Cart["coupons"]
 	error: CartError | null
 	isPending: boolean
-	remove: (code: string) => Promise<void>
+	remove: (code: string) => void
 	reset: () => void
 }
 
@@ -783,7 +744,7 @@ export type CartCouponApi = {
  * 		<form
  * 			onSubmit={(event) => {
  * 				event.preventDefault()
- * 				void apply(code)
+ * 				apply(code)
  * 			}}
  * 		>
  * 			<input
@@ -796,7 +757,7 @@ export type CartCouponApi = {
  * 			<button disabled={isPending || !code.trim()} type="submit">Apply</button>
  * 			{error ? <p role="alert">{error.message}</p> : null}
  * 			{coupons.map((coupon) => (
- * 				<button key={coupon.code} onClick={() => void remove(coupon.code)} type="button">
+ * 				<button key={coupon.code} onClick={() => remove(coupon.code)} type="button">
  * 					{coupon.code} ×
  * 				</button>
  * 			))}
@@ -807,25 +768,11 @@ export type CartCouponApi = {
  */
 export function useCartCoupon(options?: CartHookOptions): CartCouponApi {
 	const scope = useMemo(() => [...cartMutationKey, "coupon"], [])
-	const { cart, error, isPending, reset, run } = useCartRuntime(scope, options)
+	const { cart, error, isPending, mutate, reset } = useCartRuntime(scope, options)
 
-	const apply = useCallback(
-		(code: string) =>
-			run({
-				payload: { code, type: "apply_coupon" },
-				request: (procedures) => procedures.coupons.apply({ body: { code } }),
-			}),
-		[run],
-	)
+	const apply = useCallback((code: string) => mutate({ code, type: "apply_coupon" }), [mutate])
 
-	const remove = useCallback(
-		(code: string) =>
-			run({
-				payload: { code, type: "remove_coupon" },
-				request: (procedures) => procedures.coupons.remove({ params: { code } }),
-			}),
-		[run],
-	)
+	const remove = useCallback((code: string) => mutate({ code, type: "remove_coupon" }), [mutate])
 
 	return {
 		apply,
