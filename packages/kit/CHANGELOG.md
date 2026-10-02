@@ -1,5 +1,11 @@
 # @kizlo/kit
 
+## 0.4.0
+
+### Minor Changes
+
+- [#13](https://github.com/kizlo-io/kit/pull/13) [`5648e1c`](https://github.com/kizlo-io/kit/commit/5648e1c7cb640bc25eda70be87a870aa2b1d5eb5) Thanks [@IDJGILL](https://github.com/IDJGILL)! - Move `KizloProvider` and `useKizloContext` to `kizlo/react`: change `import { KizloProvider } from "@kizlo/kit/react"` to `from "kizlo/react"`, because `@kizlo/kit/react` is gone and the WooCommerce hooks now read that context from `kizlo` 0.24+.
+
 ## 0.3.0
 
 ### Minor Changes
