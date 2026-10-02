@@ -15,6 +15,7 @@ const clientModules = [
 	"src/react/context.tsx",
 	"src/react/provider.tsx",
 	"src/react/search.tsx",
+	"src/react/storefront.tsx",
 ]
 
 function isClientModule(id: string | null) {
@@ -34,6 +35,7 @@ export default defineConfig({
 		"react/provider": "src/react/provider.tsx",
 		"react/search": "src/react/search.tsx",
 		"react/server": "src/react/server.tsx",
+		"react/storefront": "src/react/storefront.tsx",
 	},
 	outputOptions: {
 		legalComments: "inline",

@@ -10,7 +10,8 @@
 			"@kizlo/woocommerce-kit/react/checkout": ["${configDir}/../woocommerce-kit/src/react/checkout.tsx"],
 			"@kizlo/woocommerce-kit/react/provider": ["${configDir}/../woocommerce-kit/src/react/provider.tsx"],
 			"@kizlo/woocommerce-kit/react/search": ["${configDir}/../woocommerce-kit/src/react/search.tsx"],
-			"@kizlo/woocommerce-kit/react/server": ["${configDir}/../woocommerce-kit/src/react/server.tsx"]
+			"@kizlo/woocommerce-kit/react/server": ["${configDir}/../woocommerce-kit/src/react/server.tsx"],
+			"@kizlo/woocommerce-kit/react/storefront": ["${configDir}/../woocommerce-kit/src/react/storefront.tsx"]
 		}
 	}
 }

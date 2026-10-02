@@ -13,8 +13,8 @@ derived model and the cart and checkout contracts, with no React and no URL-stat
 pnpm add @kizlo/woocommerce-kit
 ```
 
-Peer dependencies: `@kizlo/woocommerce` 0.9+ and `kizlo` 0.25+ always, plus `react` 19+ if you import a React entry, `nuqs`
-2.10+ for the collection and `@tanstack/react-query` 5.102+ for the cart, checkout and search. Those last three are optional
+Peer dependencies: `@kizlo/woocommerce` 0.11+ and `kizlo` 0.25+ always, plus `react` 19+ if you import a React entry, `nuqs`
+2.10+ for the collection and `@tanstack/react-query` 5.102+ for the cart, checkout, search and store settings. Those last three are optional
 peers, so a different framework's adapter does not drag React in and a collection-only storefront installs no query library.
 Your app supplies the Kizlo client, through `KizloProvider` from [`kizlo/react`](https://www.npmjs.com/package/kizlo) for
 client components and as a prop for server components.
@@ -472,17 +472,60 @@ A throwing listener is re-raised on its own, so it reaches your error handling w
 `active: false` reports nothing and never claims to be refreshing, so a second panel sharing the cache entry — a mobile drawer
 beside a desktop header — does not narrate the open one's requests.
 
+## Store settings and addresses
+
+The store's own countries, states and address-field rules, so an address form needs nothing hardcoded. `useStorefront()`
+fetches `storefront.get` once and shares it; the derivations are plain functions in the core that take `storefront.address`.
+
+```tsx
+"use client"
+import { isAddressComplete, resolveAddressCountry, shippingCountries } from "@kizlo/woocommerce-kit"
+import { useStorefront } from "@kizlo/woocommerce-kit/react/storefront"
+
+export function ShippingAddress({ address }: { address: { country: string; state: string; postcode: string; city: string } }) {
+	const { storefront } = useStorefront()
+	if (!storefront) return <FreeTextAddressFields />
+
+	const countries = shippingCountries(storefront.address)
+	const { fields, states, stateLabel } = resolveAddressCountry(storefront.address, address.country)
+	const isComplete = isAddressComplete(storefront.address, address)
+
+	return <AddressFields isComplete={isComplete} countries={countries} fields={fields} stateLabel={stateLabel} states={states} />
+}
+```
+
+| Function | Answers |
+| --- | --- |
+| `billingCountries(address)` / `shippingCountries(address)` | The countries the store bills to or ships to, in the store's order. |
+| `addressFields(address, country)` | The country's address fields in display order: each default field overlaid with the country's locale, so `label`, `required`, `hidden` and `index` are what that country uses. Hidden fields are included; skip them when rendering. |
+| `resolveAddressCountry(address, country)` | Everything a form needs for one country: its `fields`, its `states` (`[]` when it has none, so the state is free text or hidden) and `stateLabel`, the country's own name for that field — "Emirate", "County" — or the default label. |
+| `isAddressComplete(address, input)` | Whether the shopper has filled in every field the store needs before it quotes shipping, by WooCommerce's own rule: a country, and each of country, state, postcode and city hidden, optional or filled for that country. |
+
+An unknown or empty country code answers the default fields rather than throwing, so a form keeps rendering while the shopper
+corrects it. A plugin-registered field may carry a JSON Schema rule object in `required` or `hidden` instead of a boolean; the
+kit passes it through untouched, and `isAddressComplete` reads it as required and visible.
+
+`isAddressComplete` checks completeness, not validity, exactly as WooCommerce's own check does. It does not check that the
+store ships to the country or that the state belongs to it, so offer only `shippingCountries` in the country picker and clear
+the state when the country changes.
+
+The settings stay fresh for an hour (`storefrontStaleTime`): they change when a merchant edits WooCommerce, not while a shopper
+browses. `refresh` refetches sooner. A failed request leaves `storefront` null and sets `error`, so fall back to free-text
+fields rather than blanking the form. Needs `KizloProvider` and your `QueryClientProvider` above it, and no
+`WooCommerceProvider`.
+
 ## Entry points
 
 | Import | Contents |
 | --- | --- |
-| `@kizlo/woocommerce-kit` | The core. Collection grammar and model, cart and checkout cache keys and events, search request, href and cache helpers, quantity and money helpers, and every type. No framework. |
+| `@kizlo/woocommerce-kit` | The core. Collection grammar and model, cart and checkout cache keys and events, search request, href and cache helpers, quantity, money and address helpers, and every type. No framework. |
 | `@kizlo/woocommerce-kit/react` | `ProductCollectionProvider`, `useProductCollection`, and the model types it returns. Carries `"use client"`. |
 | `@kizlo/woocommerce-kit/react/cart` | `useCart`, `useCartAddress`, `useCartShippingRates`, `useCartItem`, `useCartCoupon`. Carries `"use client"`. Needs `@tanstack/react-query`. |
 | `@kizlo/woocommerce-kit/react/checkout` | `useCheckout` and its callback types. Carries `"use client"`. Needs `@tanstack/react-query`. |
 | `@kizlo/woocommerce-kit/react/provider` | `WooCommerceProvider`, this kit's app-level configuration. Carries `"use client"`. Imports no peer but React. |
 | `@kizlo/woocommerce-kit/react/search` | `useProductSearch`. Carries `"use client"`. Needs `@tanstack/react-query`. |
 | `@kizlo/woocommerce-kit/react/server` | `ProductCollection`, the server component. |
+| `@kizlo/woocommerce-kit/react/storefront` | `useStorefront`, `storefrontQueryKey` and `storefrontStaleTime`. Carries `"use client"`. Needs `@tanstack/react-query`. |
 
 The React split across feature entries is an RSC constraint rather than a preference. A `"use client"` module imported by a
 server component becomes a client reference, so anything both halves need at runtime has to sit in a module with no
