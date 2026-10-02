@@ -24,6 +24,9 @@ type StorefrontProcedures = Procedures["storefront"]
 /** The store's cart, exactly as the client answers it. */
 export type Cart = InferClientData<CartProcedures["get"]>
 
+/** The store's shipping address, also the field shape used to compare shipping quotes. */
+export type CartShippingAddress = Cart["shippingAddress"]
+
 /** One line of the cart. Taken off `Cart` rather than derived again, so the two can never disagree. */
 export type CartItem = Cart["items"][number]
 
@@ -32,6 +35,19 @@ export type AddCartItemInput = InferClientInput<CartProcedures["items"]["add"]>[
 
 /** What `cart.update` accepts: the customer's addresses. */
 export type UpdateCartInput = InferClientInput<CartProcedures["update"]>["body"]
+
+/** A complete set of pricing fields, with the rest of the procedure's address input available alongside them. */
+type AddressSnapshot<T extends { country?: string; state?: string; city?: string; postcode?: string }> = T &
+	Required<Pick<T, "country" | "state" | "city" | "postcode">>
+
+/**
+ * The current form values for automatic repricing, rather than a patch for one field. Supply every pricing field for each
+ * included address, using empty strings for unused fields. A form editing both addresses includes both on every change.
+ */
+export type CartAddressSnapshotInput = Omit<UpdateCartInput, "shippingAddress" | "billingAddress"> & {
+	shippingAddress?: AddressSnapshot<NonNullable<UpdateCartInput["shippingAddress"]>>
+	billingAddress?: AddressSnapshot<NonNullable<UpdateCartInput["billingAddress"]>>
+}
 
 /**
  * Any way a cart action can fail, as the union of the procedures the cart hooks call.
