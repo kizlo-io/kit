@@ -1,19 +1,20 @@
 "use client"
 
 /**
- * React adapter for the store's settings: one query, no provider.
+ * React adapter for the store's settings: one query, no feature provider.
  *
  * `storefront.get` is reference data — the store's countries and field rules now, its checkout, pricing and catalog settings for
  * later features. It has no page to hang off and is not session state, so it is fetched once in the browser through the app's
- * query client and kept for a long time. Every derivation over it lives in the core, which takes `storefront.address`.
+ * query client from `WooCommerceProvider` and kept for a long time. Every derivation over it lives in the core, which takes `storefront.address`.
  *
  * Renders nothing.
  */
 
-import { isServer, useQuery, useQueryClient } from "@tanstack/react-query"
+import { isServer, useQuery } from "@tanstack/react-query"
 import { useKizloContext } from "kizlo/react"
 import { useCallback } from "react"
 import type { Storefront, StorefrontError } from "../types"
+import { useWooCommerceContext } from "./context"
 
 /** The core address types, available beside the hook whose payload they describe. */
 export type {
@@ -44,22 +45,13 @@ export type StorefrontApi = {
 	refresh: () => Promise<void>
 }
 
-function useStorefrontQueryClient() {
-	try {
-		// biome-ignore lint/correctness/useHookAtTopLevel: called once per render; the try only replaces the setup error.
-		return useQueryClient()
-	} catch {
-		throw new Error(
-			"the storefront settings need a <QueryClientProvider> above them: the kit uses the app's own QueryClient so one copy is shared.",
-		)
-	}
-}
-
 /**
  * The store's settings, fetched once and shared by every consumer.
  *
  * Fails soft: a dead request leaves `storefront` null and sets `error`, so an address form can fall back to free-text fields
  * rather than blanking.
+ *
+ * Needs `KizloProvider` and `WooCommerceProvider` above it. It takes no client.
  *
  * @example
  * ```tsx
@@ -77,7 +69,7 @@ function useStorefrontQueryClient() {
  */
 export function useStorefront(): StorefrontApi {
 	const { client } = useKizloContext()
-	const queryClient = useStorefrontQueryClient()
+	const { queryClient } = useWooCommerceContext()
 
 	const query = useQuery<Storefront, StorefrontError>({
 		enabled: !isServer,

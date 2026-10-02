@@ -6,8 +6,8 @@
  * Its own entry point rather than an addition to `./client`, because the cart needs a query library and the collection needs a
  * URL-state library; sharing one chunk would make a collection-only consumer resolve a dependency it never installed.
  *
- * The client comes from `KizloProvider`, the configuration from `WooCommerceProvider`, and the cart itself from the app's
- * `QueryClient` — so a consumer mounts nothing per feature. React Query is an implementation detail: no hook returns one of its
+ * The client comes from `KizloProvider`, and the configuration and the app's `QueryClient` from `WooCommerceProvider` — so a
+ * consumer mounts nothing per feature. React Query is an implementation detail: no hook returns one of its
  * result objects, no consumer imports it, and the kit never creates a client or sets a global default. What it does use is the
  * shared mutation cache, which is how one saving line is visible to every component that shows that line without a provider
  * holding the state.
@@ -15,7 +15,7 @@
  * Renders nothing. Every class name, icon, label and route stays in the consumer.
  */
 
-import { isServer, useIsMutating, useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { isServer, useIsMutating, useMutation, useQuery } from "@tanstack/react-query"
 import type { ActiveKizloClient } from "kizlo"
 import { useKizloContext } from "kizlo/react"
 import { type ChangeEvent, type FocusEvent, type KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react"
@@ -72,18 +72,6 @@ function useLatest<T>(value: T) {
 	return ref
 }
 
-/** The app's query client, or a message that names what is missing rather than react-query's own. */
-function useCartQueryClient() {
-	try {
-		// biome-ignore lint/correctness/useHookAtTopLevel: called once per render, never conditionally; the try only rewrites the error.
-		return useQueryClient()
-	} catch {
-		throw new Error(
-			"the cart needs a <QueryClientProvider> above it: the kit uses the app's own QueryClient so one cart lives in one cache.",
-		)
-	}
-}
-
 /**
  * The one request each action is. The payload the callbacks already report is the mutation's own variables, so an action is a
  * `type` and its fields rather than a request paired with a payload.
@@ -115,9 +103,8 @@ const noop = () => {}
  * mutation, so a read-only consumer subscribes to nothing it will never use.
  */
 function useCartData() {
-	const { cartEnabled, locale } = useWooCommerceContext()
+	const { cartEnabled, locale, queryClient } = useWooCommerceContext()
 	const { client } = useKizloContext()
-	const queryClient = useCartQueryClient()
 
 	const cartQuery = useQuery<Cart, CartError>({
 		// The cart is session state behind a cookie, so it is fetched in the browser and never server-rendered.
@@ -151,7 +138,7 @@ function useCartData() {
  */
 function useCartAction(scope: readonly string[], options: CartHookOptions | undefined) {
 	const { client } = useKizloContext()
-	const queryClient = useCartQueryClient()
+	const { queryClient } = useWooCommerceContext()
 	const data = useCartData()
 
 	// Each hook owns one mutation, keyed to its scope: the caller already memoised `scope`, so the key is stable. The options

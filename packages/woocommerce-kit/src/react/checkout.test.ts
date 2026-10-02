@@ -8,6 +8,7 @@ import { cartQueryKey } from "../cart"
 import { type CheckoutCallbacks, checkoutQueryKey } from "../checkout"
 import type { Checkout, CheckoutError, ConfirmCheckoutInput } from "../types"
 import { useCheckout } from "./checkout"
+import { WooCommerceProvider } from "./provider"
 
 /** React Query stays real: the confirmation's lifecycle is what these tests are about. Only `.call` is a stub. */
 const { procedures } = vi.hoisted(() => ({
@@ -33,7 +34,8 @@ const input = { successPath: "/checkout/order-received" } as ConfirmCheckoutInpu
 function mount(options?: CheckoutCallbacks, mutations?: { retry: number }) {
 	const queryClient = new QueryClient({ defaultOptions: { mutations, queries: { retry: false } } })
 	// JSX is avoided because the suite only collects `src/**/*.test.ts`.
-	const wrapper = ({ children }: { children: ReactNode }) => createElement(QueryClientProvider, { client: queryClient }, children)
+	const wrapper = ({ children }: { children: ReactNode }) =>
+		createElement(QueryClientProvider, { client: queryClient }, createElement(WooCommerceProvider, { children }))
 
 	return { queryClient, ...renderHook(() => useCheckout(options), { wrapper }) }
 }
