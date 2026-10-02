@@ -23,6 +23,7 @@ import type {
 	ProductFilters,
 	ProductList,
 	ProductOrderBy,
+	Storefront,
 	UpdateCartInput,
 } from "./types"
 
@@ -41,6 +42,10 @@ describe("the registered Kizlo client", () => {
 	it("answers the product procedures the collection and the typeahead call", () => {
 		expectTypeOf<ProductProcedures["list"]>().toBeCallableWith({ query: { page: 1 } })
 		expectTypeOf<ProductProcedures["filters"]>().toBeCallableWith({ query: { stockStatusCounts: true } })
+	})
+
+	it("answers the storefront procedure the settings hook calls", () => {
+		expectTypeOf<ActiveKizloClient["woocommerce"]["storefront"]["get"]>().toBeCallableWith()
 	})
 
 	it("carries only the integrations this repo registers", () => {
@@ -65,6 +70,7 @@ describe("the derived types", () => {
 		expectTypeOf<ConfirmCheckoutInput>().not.toBeNever()
 		expectTypeOf<ListProductInput>().not.toBeNever()
 		expectTypeOf<ProductOrderBy>().not.toBeNever()
+		expectTypeOf<Storefront>().not.toBeNever()
 	})
 
 	it("carry the fields the kit reads off a cart", () => {
@@ -76,6 +82,15 @@ describe("the derived types", () => {
 	it("carry the fields the kit reads off a listing", () => {
 		expectTypeOf<ProductList>().toExtend<{ items: readonly Product[] }>()
 		expectTypeOf<ProductList["meta"]>().toExtend<{ page: number; totalPages: number }>()
+	})
+
+	it("carry the address data the kit derives from", () => {
+		expectTypeOf<Storefront["address"]["countries"][number]>().toExtend<{
+			allowShipping: boolean
+			code: string
+			states: readonly { code: string }[]
+		}>()
+		expectTypeOf<Storefront["address"]["fieldLocations"]>().toExtend<{ address: readonly string[] }>()
 	})
 
 	it("accept what the kit sends", () => {

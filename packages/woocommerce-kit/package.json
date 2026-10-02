@@ -70,6 +70,12 @@
 				"types": "./dist/react/server.d.ts",
 				"default": "./dist/react/server.js"
 			}
+		},
+		"./react/storefront": {
+			"import": {
+				"types": "./dist/react/storefront.d.ts",
+				"default": "./dist/react/storefront.js"
+			}
 		}
 	},
 	"files": [
@@ -107,7 +113,7 @@
 		"vitest": "catalog:"
 	},
 	"peerDependencies": {
-		"@kizlo/woocommerce": "^0.9.0",
+		"@kizlo/woocommerce": "^0.11.0",
 		"@tanstack/react-query": ">=5.102.0",
 		"kizlo": "^0.25.0",
 		"nuqs": ">=2.10.0",

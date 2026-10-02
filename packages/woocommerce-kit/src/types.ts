@@ -19,6 +19,7 @@ type CartProcedures = Procedures["cart"]
 type CheckoutProcedures = Procedures["checkout"]
 type OrderProcedures = Procedures["orders"]
 type ProductProcedures = Procedures["products"]
+type StorefrontProcedures = Procedures["storefront"]
 
 /** The store's cart, exactly as the client answers it. */
 export type Cart = InferClientData<CartProcedures["get"]>
@@ -81,3 +82,9 @@ export type ListProductInput = NonNullable<NonNullable<InferClientInput<ProductP
 
 /** The columns the store can sort a listing by, so an unsupported one is a compile error rather than an ignored parameter. */
 export type ProductOrderBy = NonNullable<ListProductInput["orderBy"]>
+
+/** The store's own settings: its address data, checkout, pricing and catalog configuration, as `storefront.get` answers them. */
+export type Storefront = InferClientData<StorefrontProcedures["get"]>
+
+/** Any way reading the store's settings can fail. */
+export type StorefrontError = InferClientError<StorefrontProcedures["get"]>
