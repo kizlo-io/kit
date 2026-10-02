@@ -14,7 +14,7 @@ pnpm add @kizlo/woocommerce-kit
 ```
 
 Peer dependencies: `@kizlo/woocommerce` 0.11+ and `kizlo` 0.25+ always, plus `react` 19+ if you import a React entry, `nuqs`
-2.10+ for the collection and `@tanstack/react-query` 5.102+ for the cart, checkout, search and store settings. Those last three are optional
+2.10+ for the collection and `@tanstack/react-query` 5.102+ for `WooCommerceProvider`, the cart, checkout, search and store settings. Those last three are optional
 peers, so a different framework's adapter does not drag React in and a collection-only storefront installs no query library.
 Your app supplies the Kizlo client, through `KizloProvider` from [`kizlo/react`](https://www.npmjs.com/package/kizlo) for
 client components and as a prop for server components.
@@ -125,9 +125,10 @@ export function Providers({ children }) {
 }
 ```
 
-`WooCommerceProvider` carries configuration and nothing else — `locale` and the `cartEnabled` gate for a route that seeds the
-cache itself — which is why its context value does not change as the cart does. There is no provider
-per feature: the hooks below read the client from `KizloProvider` and the cart from your `QueryClient`.
+`WooCommerceProvider` carries configuration and nothing else — `locale`, the `cartEnabled` gate for a route that seeds the
+cache itself, and your `QueryClient`, read once from `QueryClientProvider` — which is why its context value does not change as
+the cart does. There is no provider per feature: the hooks below read the Kizlo client from `KizloProvider` and the query client
+from `WooCommerceProvider`.
 
 Then each component reads the slice it needs. A product page has no line yet, so it calls `useCartItem()` without a key:
 
@@ -268,7 +269,8 @@ the storefront — analytics, or the drawer — wires the same listener on each 
 ## Checkout
 
 Checkout loads the store's checkout snapshot, confirms an order and keeps the cart hooks on the same cache entry. It owns no
-form state and performs no navigation: validation, copy, fields, routes and payment redirects stay in the storefront.
+form state and performs no navigation: validation, copy, fields, routes and payment redirects stay in the storefront. Needs
+`KizloProvider` and `WooCommerceProvider` above it, which takes your query client from `QueryClientProvider`.
 
 On the checkout route, disable the cart's own fetch through `WooCommerceProvider` so checkout can seed `cartQueryKey` without
 racing a second request. Then use the live cart alongside it: `useCart()` for the totals, and the address, rate and coupon hooks
@@ -511,8 +513,8 @@ the state when the country changes.
 
 The settings stay fresh for an hour (`storefrontStaleTime`): they change when a merchant edits WooCommerce, not while a shopper
 browses. `refresh` refetches sooner. A failed request leaves `storefront` null and sets `error`, so fall back to free-text
-fields rather than blanking the form. Needs `KizloProvider` and your `QueryClientProvider` above it, and no
-`WooCommerceProvider`.
+fields rather than blanking the form. Needs `KizloProvider` and `WooCommerceProvider` above it, which takes your query
+client from `QueryClientProvider`.
 
 ## Entry points
 
@@ -522,7 +524,7 @@ fields rather than blanking the form. Needs `KizloProvider` and your `QueryClien
 | `@kizlo/woocommerce-kit/react` | `ProductCollectionProvider`, `useProductCollection`, and the model types it returns. Carries `"use client"`. |
 | `@kizlo/woocommerce-kit/react/cart` | `useCart`, `useCartAddress`, `useCartShippingRates`, `useCartItem`, `useCartCoupon`. Carries `"use client"`. Needs `@tanstack/react-query`. |
 | `@kizlo/woocommerce-kit/react/checkout` | `useCheckout` and its callback types. Carries `"use client"`. Needs `@tanstack/react-query`. |
-| `@kizlo/woocommerce-kit/react/provider` | `WooCommerceProvider`, this kit's app-level configuration. Carries `"use client"`. Imports no peer but React. |
+| `@kizlo/woocommerce-kit/react/provider` | `WooCommerceProvider`, this kit's app-level configuration. Carries `"use client"`. Needs `@tanstack/react-query`. |
 | `@kizlo/woocommerce-kit/react/search` | `useProductSearch`. Carries `"use client"`. Needs `@tanstack/react-query`. |
 | `@kizlo/woocommerce-kit/react/server` | `ProductCollection`, the server component. |
 | `@kizlo/woocommerce-kit/react/storefront` | `useStorefront`, `storefrontQueryKey` and `storefrontStaleTime`. Carries `"use client"`. Needs `@tanstack/react-query`. |

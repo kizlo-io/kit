@@ -8,6 +8,7 @@
  * own module graph.
  */
 
+import type { QueryClient } from "@tanstack/react-query"
 import { createContext, useContext } from "react"
 
 export type WooCommerceContextValue = {
@@ -15,6 +16,8 @@ export type WooCommerceContextValue = {
 	cartEnabled: boolean
 	/** Locale for money formatting. Decides grouping and symbol placement, never the currency. */
 	locale: string | undefined
+	/** The app's own query client, read once here so every feature shares one cache. */
+	queryClient: QueryClient
 }
 
 export const WooCommerceContext = createContext<WooCommerceContextValue | null>(null)

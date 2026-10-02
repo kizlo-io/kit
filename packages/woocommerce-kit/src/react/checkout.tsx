@@ -3,16 +3,18 @@
 /**
  * React adapter for checkout: one query, one confirmation and no feature provider.
  *
- * The checkout snapshot is browser-session state. It runs on the app's query client, reads the browser Kizlo client from
- * `KizloProvider`, and seeds the cart's existing cache entry so checkout and every cart consumer see one cart.
+ * The checkout snapshot is browser-session state. It runs on the app's query client from `WooCommerceProvider`, reads the
+ * browser Kizlo client from `KizloProvider`, and seeds the cart's existing cache entry so checkout and every cart consumer see
+ * one cart.
  */
 
-import { isServer, useIsMutating, useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { isServer, useIsMutating, useMutation, useQuery } from "@tanstack/react-query"
 import { useKizloContext } from "kizlo/react"
 import { useCallback } from "react"
 import { cartQueryKey } from "../cart"
 import { type CheckoutCallbacks, type CheckoutSuccessEvent, checkoutQueryKey, resolveCheckoutRedirect } from "../checkout"
 import type { Checkout, CheckoutError, ConfirmCheckoutInput } from "../types"
+import { useWooCommerceContext } from "./context"
 import { notify } from "./notify"
 
 /** The core checkout types, available beside the hook that returns them. */
@@ -55,17 +57,6 @@ function checkoutSuccessEvent(checkout: Checkout, input: ConfirmCheckoutInput): 
 	}
 }
 
-function useCheckoutQueryClient() {
-	try {
-		// biome-ignore lint/correctness/useHookAtTopLevel: called once per render; the try only replaces the setup error.
-		return useQueryClient()
-	} catch {
-		throw new Error(
-			"checkout needs a <QueryClientProvider> above it: the kit uses the app's own QueryClient to share checkout and cart state.",
-		)
-	}
-}
-
 /**
  * Loads and confirms the store checkout while keeping the shared cart cache in step.
  *
@@ -73,6 +64,8 @@ function useCheckoutQueryClient() {
  * coupons, and send the browser to the `redirectUrl` the success event carries — `confirm` returns nothing to await, because
  * the redirect is derived on that event and was never on a return value. Its callbacks run in the four phases
  * `onStart` → `onSuccess` | `onError` → `onSettled`.
+ *
+ * Needs `KizloProvider` and `WooCommerceProvider` above it. It takes no client.
  *
  * @example
  * ```tsx
@@ -107,7 +100,7 @@ function useCheckoutQueryClient() {
  */
 export function useCheckout(options?: CheckoutHookOptions): CheckoutApi {
 	const { client } = useKizloContext()
-	const queryClient = useCheckoutQueryClient()
+	const { queryClient } = useWooCommerceContext()
 
 	const checkoutQuery = useQuery<Checkout, CheckoutError>({
 		enabled: !isServer,
