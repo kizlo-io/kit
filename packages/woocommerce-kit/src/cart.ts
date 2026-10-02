@@ -7,7 +7,45 @@
  * quantity control.
  */
 
-import type { AddCartItemInput, Cart, CartError, CartItem, UpdateCartInput } from "./types"
+import type { AddCartItemInput, Cart, CartError, CartItem, CartShippingAddress, UpdateCartInput } from "./types"
+
+/**
+ * The four fields WooCommerce uses to decide whether an address needs new shipping rates or tax. Postcode spacing and case
+ * are insignificant; personal details and street are deliberately excluded. Missing fields compare as empty strings.
+ *
+ * @example
+ * ```ts
+ * shippingQuoteSignature({ country: "GB", postcode: "sw1a 1aa" })
+ * // The same signature as { country: "GB", postcode: "SW1A1AA" }.
+ * ```
+ */
+export function shippingQuoteSignature(address: Partial<CartShippingAddress>): string {
+	return JSON.stringify([
+		(address.country ?? "").trim(),
+		(address.state ?? "").trim(),
+		(address.city ?? "").trim(),
+		(address.postcode ?? "").replace(/\s+/g, "").toUpperCase(),
+	])
+}
+
+/**
+ * Whether either supplied address changes the cart's pricing fields and has a country. Partial input leaves omitted fields
+ * unchanged. Country-specific requirements and validation belong to the form, so a country without postcodes still qualifies.
+ *
+ * @example
+ * ```ts
+ * defaultShouldUpdateAddress({ shippingAddress: { postcode: "560001" } }, cart)
+ * // Uses the country already on the cart; true only when the pricing fields differ.
+ * ```
+ */
+export function defaultShouldUpdateAddress(input: UpdateCartInput, cart: Cart | null): boolean {
+	return (["shippingAddress", "billingAddress"] as const).some((key) => {
+		if (!input[key]) return false
+		const current = cart?.[key] ?? {}
+		const next = { ...current, ...input[key] }
+		return !!next.country?.trim() && shippingQuoteSignature(next) !== shippingQuoteSignature(current)
+	})
+}
 
 /**
  * The one cache entry the whole cart shares. Exported because an app that obtains a cart by another route — a checkout

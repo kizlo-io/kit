@@ -15,10 +15,10 @@
  * Renders nothing. Every class name, icon, label and route stays in the consumer.
  */
 
-import { isServer, useIsMutating, useMutation, useQuery } from "@tanstack/react-query"
+import { isServer, skipToken, useIsMutating, useMutation, useQuery } from "@tanstack/react-query"
 import type { ActiveKizloClient } from "kizlo"
 import { useKizloContext } from "kizlo/react"
-import { type ChangeEvent, type FocusEvent, type KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { type ChangeEvent, type FocusEvent, type KeyboardEvent, useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 import { useDebouncedCallback } from "use-debounce"
 import {
 	type CartActionPayload,
@@ -27,13 +27,15 @@ import {
 	cartItemLimits,
 	cartQueryKey,
 	cartStaleTime,
+	defaultShouldUpdateAddress,
 	draftQuantityLimits,
 	hasSelectedShippingRates,
 	resolveQuantity,
+	shippingQuoteSignature,
 	stepQuantity,
 } from "../cart"
 import { formatStoreMoney } from "../money"
-import type { AddCartItemInput, Cart, CartError, UpdateCartInput } from "../types"
+import type { AddCartItemInput, Cart, CartAddressSnapshotInput, CartError, UpdateCartInput } from "../types"
 import { useWooCommerceContext } from "./context"
 import { notify } from "./notify"
 
@@ -50,14 +52,24 @@ export type {
 	CartStartEvent,
 	CartSuccessEvent,
 } from "../cart"
-export type { CartError } from "../types"
+export type { CartAddressSnapshotInput, CartError } from "../types"
 
 type CartProcedures = ActiveKizloClient["woocommerce"]["cart"]
 
 export type CartHookOptions = CartCallbacks
 
+export type CartAddressHookOptions = CartHookOptions & {
+	/** How long `onAddressChange` waits after typing pauses. Defaults to 1500ms. */
+	addressDebounceMs?: number
+	/** Replaces the default pricing-field check. Returning false cancels any scheduled push. The form owns validation. */
+	shouldUpdateAddress?: (input: CartAddressSnapshotInput, cart: Cart | null) => boolean
+}
+
 /** Everything the cart mutations are keyed under, so one lookup answers "is any cart action in flight". */
 const cartMutationKey = [...cartQueryKey, "mutation"] as const
+const addressMutationKey = [...cartMutationKey, "address"] as const
+const addressQueueKey = [...cartQueryKey, "addressQueue"] as const
+const noQueuedAddresses: string[] = []
 
 /** Stable empties, so a consumer reading `items` on an unfetched cart does not see a new array every render. */
 const noItems: Cart["items"] = []
@@ -118,6 +130,15 @@ function useCartData() {
 	// Prefix-matched, so one lookup covers every hook's scope — and a cache read rather than a subscription, which is why a hook
 	// holding no mutation of its own can still answer it.
 	const isMutating = useIsMutating({ mutationKey: cartMutationKey }) > 0
+	const isAddressPending = useIsMutating({ mutationKey: addressMutationKey }) > 0
+	// Local queue ownership lives in the app's cache so a totals/order-button reader sees an edit before a request starts.
+	const { data: queuedAddresses = noQueuedAddresses } = useQuery({
+		queryKey: addressQueueKey,
+		queryFn: skipToken,
+		initialData: noQueuedAddresses,
+		gcTime: Infinity,
+	})
+	const isRepricing = isAddressPending || queuedAddresses.length > 0
 
 	const cart = cartQuery.data ?? null
 	const format = useCallback((amount: number) => (cart ? formatStoreMoney(amount, cart.currencyFormat, locale) : ""), [cart, locale])
@@ -126,7 +147,7 @@ function useCartData() {
 		await queryClient.refetchQueries({ queryKey: cartQueryKey })
 	}, [queryClient])
 
-	return { cart, format, isLoading: cartQuery.isPending, isMutating, queryError: cartQuery.error, refresh }
+	return { cart, format, isLoading: cartQuery.isPending, isMutating, isRepricing, queryError: cartQuery.error, refresh }
 }
 
 /**
@@ -182,7 +203,15 @@ function useCartAction(scope: readonly string[], options: CartHookOptions | unde
 	// caller that awaits its save, to know the store has answered; the failure itself is already on `error`.
 	const write = useCallback((variables: CartActionPayload) => mutateAsync(variables).then(noop, noop), [mutateAsync])
 
-	return { ...data, error: mutation.error, isPending, mutate, reset: clearSettled, write }
+	return {
+		...data,
+		error: mutation.error,
+		failedAddressInput: mutation.error && mutation.variables?.type === "update_customer" ? mutation.variables.input : null,
+		isPending,
+		mutate,
+		reset: clearSettled,
+		write,
+	}
 }
 
 export type CartApi = {
@@ -201,6 +230,8 @@ export type CartApi = {
 	isLoading: boolean
 	/** Any cart action anywhere in the tree is in flight — what a consumer disables a whole page on. */
 	isMutating: boolean
+	/** Address edits are queued or an address save is running. Shared across components, including the debounce window. */
+	isRepricing: boolean
 	itemCount: number
 	items: Cart["items"]
 	/** Refetches the cart, which is how a consumer retries after `error`. */
@@ -242,7 +273,7 @@ export type CartApi = {
  * ```
  */
 export function useCart(): CartApi {
-	const { cart, format, isLoading, isMutating, queryError, refresh } = useCartData()
+	const { cart, format, isLoading, isMutating, isRepricing, queryError, refresh } = useCartData()
 
 	return {
 		cart,
@@ -250,6 +281,7 @@ export function useCart(): CartApi {
 		format,
 		isLoading,
 		isMutating,
+		isRepricing,
 		itemCount: cart?.itemCount ?? 0,
 		items: cart?.items ?? noItems,
 		refresh,
@@ -261,10 +293,26 @@ export type CartAddressApi = {
 	error: CartError | null
 	/** This hook's own save is in flight. A rate selection or a line saving elsewhere does not set it. */
 	isPending: boolean
+	/** Debounces the current form snapshot, retaining the latest values while an address save runs. */
+	onAddressChange: (input: CartAddressSnapshotInput) => void
 	/** Clears the last failure once it has settled. */
 	reset: () => void
 	/** Saves the customer's addresses. The email is a field inside `billingAddress` rather than a sibling of it. */
 	update: (input: UpdateCartInput) => void
+}
+
+function matchesSavedAddresses(input: CartAddressSnapshotInput, cart: Cart | null, failedInput: UpdateCartInput): boolean {
+	if (!cart || (!input.shippingAddress && !input.billingAddress)) return false
+	return (["shippingAddress", "billingAddress"] as const).every((key) => {
+		const address = input[key]
+		if (!address) return !failedInput[key]
+		if (!Object.keys(failedInput[key] ?? {}).every((field) => field in address)) return false
+		const saved = cart[key]
+		if (!address.country.trim() || !saved || shippingQuoteSignature(address) !== shippingQuoteSignature(saved)) return false
+		return Object.entries(address).every(
+			([field, value]) => ["country", "state", "city", "postcode"].includes(field) || value === saved[field as keyof typeof saved],
+		)
+	})
 }
 
 /**
@@ -275,6 +323,19 @@ export type CartAddressApi = {
  *
  * `update` takes whatever subset of the addresses changed, so a postcode on its own is a valid save — which is also what makes
  * the store re-quote shipping. The action reports itself as `update_customer`, after the Store API route behind it.
+ *
+ * `onAddressChange` takes the whole current form snapshot for each address being edited, not a field patch. It waits 1500ms
+ * after typing pauses, compares country, state, city and postcode with the cart, and retains the latest snapshot while another
+ * address save runs. A correction back to the pre-request address is checked after that request settles, not discarded early.
+ * Either shipping or billing can qualify; postcode whitespace and case are ignored. Pass `shouldUpdateAddress` for validation
+ * or carrier-specific fields. Returning to the saved address clears a settled failure without another request.
+ * Read `useCart().isRepricing` to show updating totals and guard checkout while keeping fields editable.
+ *
+ * @example Recalculate from the whole current shipping form, without disabling its fields
+ * ```tsx
+ * const { onAddressChange } = useCartAddress()
+ * <ShippingAddressForm onValuesChange={(shippingAddress) => onAddressChange({ shippingAddress })} />
+ * ```
  *
  * @example A postcode that re-quotes shipping, with only this form disabled while it saves
  * ```tsx
@@ -301,13 +362,79 @@ export type CartAddressApi = {
  * }
  * ```
  */
-export function useCartAddress(options?: CartHookOptions): CartAddressApi {
-	const scope = useMemo(() => [...cartMutationKey, "address"], [])
-	const { error, isPending, mutate, reset } = useCartAction(scope, options)
+export function useCartAddress(options?: CartAddressHookOptions): CartAddressApi {
+	const scope = useMemo(() => addressMutationKey, [])
+	const { error, failedAddressInput, isPending, mutate, reset } = useCartAction(scope, options)
+	const { queryClient } = useWooCommerceContext()
+	const owner = useId()
+	const latest = useRef<CartAddressSnapshotInput | null>(null)
+	const { addressDebounceMs = 1500, shouldUpdateAddress = defaultShouldUpdateAddress } = options ?? {}
+
+	const markQueued = useCallback(
+		(queued: boolean) => {
+			queryClient.setQueryData<string[]>(addressQueueKey, (owners = noQueuedAddresses) => {
+				if (queued) return owners.includes(owner) ? owners : [...owners, owner]
+				return owners.includes(owner) ? owners.filter((id) => id !== owner) : owners
+			})
+		},
+		[owner, queryClient],
+	)
+
+	useEffect(
+		() => () => {
+			latest.current = null
+			markQueued(false)
+		},
+		[markQueued],
+	)
 
 	const update = useCallback((input: UpdateCartInput) => mutate({ input, type: "update_customer" }), [mutate])
 
-	return { error, isPending, reset, update }
+	const clearSavedFailure = useCallback(
+		(input: CartAddressSnapshotInput, cart: Cart | null) => {
+			if (failedAddressInput && matchesSavedAddresses(input, cart, failedAddressInput)) reset()
+		},
+		[failedAddressInput, reset],
+	)
+
+	const push = useDebouncedCallback(() => {
+		const input = latest.current
+		if (!input) return
+		// Compare only after the store has answered: a revert can match the old cache while the in-flight save will change it.
+		if (queryClient.isMutating({ mutationKey: scope }) > 0) {
+			push()
+			return
+		}
+		latest.current = null
+		const cart = queryClient.getQueryData<Cart>(cartQueryKey) ?? null
+		if (shouldUpdateAddress(input, cart)) update(input)
+		else clearSavedFailure(input, cart)
+		markQueued(false)
+	}, addressDebounceMs)
+
+	const onAddressChange = useCallback(
+		(input: CartAddressSnapshotInput) => {
+			// The form may mutate its values in place; the queued snapshot must describe this particular edit.
+			latest.current = {
+				...input,
+				...(input.shippingAddress && { shippingAddress: { ...input.shippingAddress } }),
+				...(input.billingAddress && { billingAddress: { ...input.billingAddress } }),
+			}
+			const cart = queryClient.getQueryData<Cart>(cartQueryKey) ?? null
+			if (queryClient.isMutating({ mutationKey: scope }) === 0 && !shouldUpdateAddress(latest.current, cart)) {
+				clearSavedFailure(latest.current, cart)
+				latest.current = null
+				push.cancel()
+				markQueued(false)
+				return
+			}
+			markQueued(true)
+			push()
+		},
+		[clearSavedFailure, markQueued, push, queryClient, scope, shouldUpdateAddress],
+	)
+
+	return { error, isPending, onAddressChange, reset, update }
 }
 
 export type CartShippingRatesApi = {

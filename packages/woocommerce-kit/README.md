@@ -209,8 +209,8 @@ that caps its own quantity is `useCartItem({ limits: { maximum: 5 } })` with no 
 
 | Hook | Returns |
 | --- | --- |
-| `useCart()` | `{ cart, items, itemCount, format, isLoading, isMutating, error, refresh }`. The cart as a whole and read-only: `cart` is the store's payload, so totals, coupons and addresses are read from it directly. It performs no action, so it takes no callbacks, and `error` is the fetch failing. |
-| `useCartAddress(options?)` | `{ update, isPending, error, reset }`. The customer's addresses. `update` takes whatever changed — a postcode alone is a valid save, and what makes the store re-quote shipping. The email is a field inside `billingAddress`. |
+| `useCart()` | `{ cart, items, itemCount, format, isLoading, isMutating, isRepricing, error, refresh }`. The cart as a whole and read-only: `cart` is the store's payload, so totals, coupons and addresses are read from it directly. It performs no action, so it takes no callbacks, and `error` is the fetch failing. |
+| `useCartAddress(options?)` | `{ update, onAddressChange, isPending, error, reset }`. The customer's addresses. `update` takes whatever changed — a postcode alone is a valid save, and what makes the store re-quote shipping. The email is a field inside `billingAddress`. |
 | `useCartShippingRates(options?)` | `{ shippingPackages, selectShippingRate, hasSelectedShippingRates, isPending, error, reset }`. The packages the store quoted and the choice of rate. `hasSelectedShippingRates` is the question `cart.hasCalculatedShipping` does not answer: whether a rate is in effect for every package, not whether one was costed. The store's own default rate counts, so it is not proof the shopper chose anything. |
 | `useCartItem(key?, options?)` | `{ addItem, item, quantity, isPending, error, format, remove, reset }`. Everything item-shaped, `quantity` included as a whole control. The key is optional: without one the control is a draft and `addItem` sends it; with one it edits that line, and `item` is `null` once the key leaves the cart. |
 | `useCartCoupon(code?, options?)` | `{ coupons, isPending, error, apply, remove, reset }`. The code is optional, the same way a line's key is: without one the hook is the apply field, with one it is that chip alone, and `remove()` takes no argument because the hook already knows its code. `coupons` is the whole list either way. |
@@ -219,7 +219,7 @@ One hook per subject, so each one's `isPending` and `error` describe its own act
 the rate list, and removing one coupon leaves the apply button and every other chip enabled.
 
 Each hook's last argument is its own [callbacks](#cart-events); `useCartItem` takes `autoCommit`, `debounceMs`,
-`defaultQuantity` and `limits` there too. `useCart` takes nothing, because it performs no action. The client comes from
+`defaultQuantity` and `limits` there too; `useCartAddress` takes `addressDebounceMs` and `shouldUpdateAddress`. `useCart` takes nothing, because it performs no action. The client comes from
 `KizloProvider` and the configuration from `WooCommerceProvider`, so there is nothing else to pass.
 
 `format` is the store's currency and your locale already applied, so a line total is `format(item.totals.total)`. `isMutating`
@@ -242,6 +242,83 @@ for: the save the control owes, and the refetch.
 Every hook, the provider and the core functions carry a JSDoc example, so the shape above is also available from an editor's
 hover.
 
+### Address changes and pricing
+
+Call `useCartAddress().onAddressChange(snapshot)` whenever the form values change. Pass the **whole current address**, not a
+patch for the last field: every included address must have `country`, `state`, `city` and `postcode`, with empty strings for
+unused fields. Include both addresses on every call if the form edits shipping and billing. The exported
+`CartAddressSnapshotInput` type checks this contract. The form owns its values; the hook remembers only the latest snapshot.
+
+After typing pauses for 1500ms (`addressDebounceMs` overrides this), the hook sends a qualifying snapshot through the same
+`update_customer` action and callbacks as `update`. Fields stay editable. If an address request is already running, the latest
+snapshot waits and is compared with the cart after that request finishes. Changing an address back while a request runs is
+therefore saved too. A failed request reports the existing address error and is not automatically retried; the next qualifying
+edit can send again without a dedupe reset. Returning to the saved address clears that settled error without another
+request, so checkout can proceed again. The snapshot must include the addresses and fields from the failed save and match
+all supplied saved values; invalid or unsaved values keep the error. Keep `update(input)` for immediate saves, which still accept partial input.
+
+The default checks **country, state, city and postcode** in both shipping and billing, because tax can depend on billing.
+Names, phone, company and street alone do not trigger a request. Postcode whitespace and case are ignored; the other three
+fields are trimmed. A non-empty country is required, but postcode, state and city can be empty, since country rules differ.
+A later name edit does not lose a pending postcode edit because each snapshot contains all current values.
+
+```tsx
+const { onAddressChange, error } = useCartAddress()
+const { isRepricing } = useCart()
+
+<ShippingAddressFields
+	value={shippingAddress}
+	onValuesChange={(nextAddress) => {
+		setShippingAddress(nextAddress)
+		onAddressChange({ shippingAddress: nextAddress })
+	}}
+/>
+```
+
+`ShippingAddressFields`, its values and validation are owned by your storefront. The fields are not disabled during repricing.
+`shouldUpdateAddress(snapshot, cart)` **replaces** the default check, so it can combine form validation with pricing relevance
+or include street for a carrier that needs it:
+
+```tsx
+const { onAddressChange } = useCartAddress({
+	shouldUpdateAddress: (input, cart) => isValidAddress(input) && hasCarrierAddressChanged(input, cart),
+})
+```
+
+A false predicate cancels queued work once any current address request has settled. Unmounting cancels that hook's queued
+snapshot; an already dispatched request can still finish. The core exports `shippingQuoteSignature` and
+`defaultShouldUpdateAddress` for comparisons outside React.
+
+`useCart().isRepricing` is shared across components and covers both queued snapshots and actual address requests. Show
+“Updating…” beside totals and guard checkout with it, while leaving the fields editable. `isMutating` covers actual cart
+requests only; `useCartAddress().isPending` covers actual address requests only. A settled save failure clears repricing,
+so also guard submission on the address hook's `error` and your own form validity. `useCheckout` does not wait for repricing
+automatically: apply the guard in the submit handler as well as on the order button.
+
+```tsx
+const { cart, format, isRepricing } = useCart()
+const { onAddressChange, error: addressError } = useCartAddress()
+const { confirm, isPending } = useCheckout()
+const canSubmit = isFormValid && !isRepricing && !addressError && !isPending
+
+<form onSubmit={(event) => {
+	event.preventDefault()
+	if (!canSubmit) return
+	confirm(values)
+}}>
+	<AddressFields values={values} onValuesChange={(addresses) => {
+		setValues({ ...values, ...addresses })
+		onAddressChange(addresses)
+	}} />
+	<p>{isRepricing ? "Updating…" : format(cart.totals.total)}</p>
+	{addressError ? <p role="alert">{addressError.message}</p> : null}
+	<button disabled={!canSubmit} type="submit">Place order</button>
+</form>
+```
+
+The address writer and error reader should be the same `useCartAddress` instance: repricing is shared, but an action failure
+belongs to the hook that performed it.
+
 ### Cart events
 
 Callbacks go on the hook that performs the action. Each action reports `onStart` → `onSuccess` | `onError` → `onSettled`, and
@@ -254,7 +331,7 @@ every event carries the action's own payload, narrowed on `type`:
 | `remove_from_cart` | `key`, `item` | `useCartItem(key).remove` |
 | `apply_coupon` | `code` | `useCartCoupon().apply` |
 | `remove_coupon` | `code` | `useCartCoupon(code).remove` |
-| `update_customer` | `input` | `useCartAddress().update` |
+| `update_customer` | `input` | `useCartAddress().update` and `.onAddressChange` |
 | `select_shipping_rate` | `rateId`, `packageId` | `useCartShippingRates().selectShippingRate` |
 
 `onSuccess` adds the new `cart` and `onError` a `CartError`, whose `code` is the failing procedure's own token rather than a
@@ -279,13 +356,17 @@ the form:
 
 ```tsx
 "use client"
-import type { ConfirmCheckoutInput } from "@kizlo/woocommerce-kit"
+import type { CartAddressSnapshotInput, ConfirmCheckoutInput } from "@kizlo/woocommerce-kit"
 import { useCart, useCartAddress, useCartCoupon, useCartShippingRates } from "@kizlo/woocommerce-kit/react/cart"
 import { useCheckout } from "@kizlo/woocommerce-kit/react/checkout"
 
-export function CheckoutForm({ values }: { values: ConfirmCheckoutInput }) {
-	const { cart } = useCart()
-	const { update: updateAddress } = useCartAddress()
+export function CheckoutForm({ values, isFormValid, onAddressValuesChange }: {
+	values: ConfirmCheckoutInput & CartAddressSnapshotInput
+	isFormValid: boolean
+	onAddressValuesChange: (addresses: CartAddressSnapshotInput) => void
+}) {
+	const { cart, isRepricing } = useCart()
+	const { onAddressChange, error: addressError } = useCartAddress()
 	const { selectShippingRate } = useCartShippingRates()
 	const { apply: applyCoupon } = useCartCoupon()
 	const { checkout, confirm, error, isLoading, isPending, refresh, reset } = useCheckout({
@@ -300,18 +381,24 @@ export function CheckoutForm({ values }: { values: ConfirmCheckoutInput }) {
 		return <button onClick={() => void refresh()}>Try checkout again</button>
 	}
 
+	const canSubmit = isFormValid && !isRepricing && !addressError && !isPending
+
 	return (
 		<form
 			onSubmit={(event) => {
 				event.preventDefault()
+				if (!canSubmit) return
 				reset()
 				confirm({ ...values, cancelPath: "/cart", successPath: "/checkout/order-received" })
 			}}
 		>
 			<p>{cart.itemCount} items</p>
-			<button onClick={() => updateAddress({ shippingAddress: values.shippingAddress })} type="button">
-				Calculate shipping
-			</button>
+			<AddressFields values={values} onValuesChange={(addresses) => {
+				onAddressValuesChange(addresses)
+				onAddressChange(addresses)
+			}} />
+			<p>{isRepricing ? "Updating…" : "Totals are current"}</p>
+			{addressError ? <p role="alert">{addressError.message}</p> : null}
 			<button onClick={() => selectShippingRate("flat_rate:1", 0)} type="button">
 				Choose shipping
 			</button>
@@ -319,11 +406,14 @@ export function CheckoutForm({ values }: { values: ConfirmCheckoutInput }) {
 				Apply coupon
 			</button>
 			{error ? <p role="alert">{error.message}</p> : null}
-			<button disabled={isPending} type="submit">Place order</button>
+			<button disabled={!canSubmit} type="submit">Place order</button>
 		</form>
 	)
 }
 ```
+
+`AddressFields` and `onAddressValuesChange` belong to the storefront: the parent updates its form values and validity while
+`onAddressChange` sends the same complete snapshot to the kit.
 
 `confirm(input)` returns nothing: the order and where to send the browser next arrive on the success event. The last fetch or
 confirmation failure is on `error`, including its store code and validation data. `reset()` clears a confirmation failure.

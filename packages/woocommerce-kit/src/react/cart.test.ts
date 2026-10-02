@@ -3,10 +3,18 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { act, renderHook, waitFor } from "@testing-library/react"
 import { createElement, type ReactNode } from "react"
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, expectTypeOf, it, vi } from "vitest"
 import { cartQueryKey } from "../cart"
-import type { Cart, CartError } from "../types"
-import { type CartHookOptions, useCart, useCartAddress, useCartCoupon, useCartItem, useCartShippingRates } from "./cart"
+import type { Cart, CartAddressSnapshotInput, CartError, UpdateCartInput } from "../types"
+import {
+	type CartAddressApi,
+	type CartHookOptions,
+	useCart,
+	useCartAddress,
+	useCartCoupon,
+	useCartItem,
+	useCartShippingRates,
+} from "./cart"
 import { WooCommerceProvider } from "./provider"
 
 /**
@@ -116,6 +124,7 @@ function captureUncaught() {
 
 afterEach(() => {
 	vi.clearAllMocks()
+	vi.useRealTimers()
 })
 
 describe("useCartItem callbacks", () => {
@@ -443,5 +452,452 @@ describe("useCart", () => {
 
 		await waitFor(() => expect(result.current.line.error?.code).toBe("CART_ITEM_EXISTS"))
 		expect(result.current.cart.error?.code).toBe("CART_UNAVAILABLE")
+	})
+})
+
+/** Address fields are partial here so each case shows exactly what is changing. */
+function quoteCart(input: UpdateCartInput = {}) {
+	return {
+		...storeCart([]),
+		shippingAddress: { country: "GB", state: "", city: "London", postcode: "SW1A 1AA", ...input.shippingAddress },
+		billingAddress: { country: "GB", state: "", city: "London", postcode: "SW1A 1AA", ...input.billingAddress },
+	} as Cart
+}
+
+async function settleAddress(ms = 1500) {
+	await act(async () => {
+		await vi.advanceTimersByTimeAsync(ms)
+	})
+}
+
+function addressSnapshot(input: UpdateCartInput = {}): CartAddressSnapshotInput {
+	const cart = quoteCart(input)
+	return {
+		...(input.shippingAddress && { shippingAddress: cart.shippingAddress }),
+		...(input.billingAddress && { billingAddress: cart.billingAddress }),
+	}
+}
+
+describe("useCartAddress snapshots", () => {
+	it("requires complete pricing fields on each included automatic address", () => {
+		expectTypeOf<CartAddressApi["onAddressChange"]>().parameter(0).toEqualTypeOf<CartAddressSnapshotInput>()
+		expectTypeOf<{ shippingAddress: { postcode: string } }>().not.toMatchTypeOf<CartAddressSnapshotInput>()
+		expectTypeOf<{
+			shippingAddress: { country: string; state: string; city: string; postcode: string }
+		}>().toMatchTypeOf<CartAddressSnapshotInput>()
+	})
+
+	it("sends only the latest snapshot 1500ms after the last edit, with the existing callback phases", async () => {
+		vi.useFakeTimers()
+		const input = addressSnapshot({ shippingAddress: { city: "Oxford", postcode: "OX1 1AA" } })
+		const saved = quoteCart(input)
+		procedures.update.call.mockResolvedValue(saved)
+		const { options, phases, seen } = recorder()
+		const { result, queryClient, unmount } = mount(() => useCartAddress(options), quoteCart())
+		act(() => result.current.onAddressChange(addressSnapshot({ shippingAddress: { city: "Oxford" } })))
+		await settleAddress(1000)
+		act(() => result.current.onAddressChange(input))
+		await settleAddress(1499)
+		expect(procedures.update.call).not.toHaveBeenCalled()
+		expect(phases()).toEqual([])
+		expect(result.current.isPending).toBe(false)
+		await settleAddress(1)
+		expect(procedures.update.call).toHaveBeenCalledTimes(1)
+		expect(procedures.update.call).toHaveBeenCalledWith({ body: input })
+		expect(phases()).toEqual(["start", "success", "settled"])
+		expect(seen.every((event) => event.type === "update_customer")).toBe(true)
+		expect(seen.map((event) => event.input)).toEqual([input, input, input])
+		expect(queryClient.getQueryData(cartQueryKey)).toEqual(saved)
+		unmount()
+	})
+
+	it("does not lose pricing changes when a later snapshot edits the name", async () => {
+		vi.useFakeTimers()
+		const input = addressSnapshot({ shippingAddress: { city: "Oxford", postcode: "OX1 1AA", firstName: "Ada" } })
+		procedures.update.call.mockResolvedValue(quoteCart(input))
+		const { result, unmount } = mount(() => useCartAddress(), quoteCart())
+		act(() => result.current.onAddressChange(addressSnapshot({ shippingAddress: { city: "Oxford", postcode: "OX1 1AA" } })))
+		await settleAddress(500)
+		act(() => result.current.onAddressChange(input))
+		await settleAddress()
+		expect(procedures.update.call).toHaveBeenCalledTimes(1)
+		expect(procedures.update.call).toHaveBeenCalledWith({ body: input })
+		unmount()
+	})
+
+	it("sends nothing on mount, for equivalent postcodes or for personal details", async () => {
+		vi.useFakeTimers()
+		const { result, unmount } = mount(() => useCartAddress(), quoteCart())
+		await settleAddress()
+		for (const shippingAddress of [{ postcode: "sw1a\t1aa" }, { firstName: "Ada", phone: "123", company: "One" }]) {
+			act(() => result.current.onAddressChange(addressSnapshot({ shippingAddress })))
+			await settleAddress()
+		}
+		expect(procedures.update.call).not.toHaveBeenCalled()
+		unmount()
+	})
+
+	it.each([{ billingAddress: { city: "Oxford" } }, { shippingAddress: { country: "AE", state: "", city: "Dubai", postcode: "" } }])(
+		"pushes billing and countries without postcodes: %j",
+		async (values) => {
+			vi.useFakeTimers()
+			const input = addressSnapshot(values)
+			procedures.update.call.mockResolvedValue(quoteCart(input))
+			const { result, unmount } = mount(() => useCartAddress(), quoteCart())
+			act(() => result.current.onAddressChange(input))
+			await settleAddress()
+			expect(procedures.update.call).toHaveBeenCalledWith({ body: input })
+			unmount()
+		},
+	)
+
+	it("cancels a pending edit that returns to the saved address before a request starts", async () => {
+		vi.useFakeTimers()
+		const { result, unmount } = mount(() => ({ address: useCartAddress(), cart: useCart() }), quoteCart())
+		act(() => result.current.address.onAddressChange(addressSnapshot({ shippingAddress: { city: "Oxford" } })))
+		await settleAddress(500)
+		expect(result.current.cart.isRepricing).toBe(true)
+		act(() => result.current.address.onAddressChange(addressSnapshot({ shippingAddress: { city: "London" } })))
+		await settleAddress()
+		expect(procedures.update.call).not.toHaveBeenCalled()
+		expect(result.current.cart.isRepricing).toBe(false)
+		unmount()
+	})
+
+	it("fully replaces the default check and uses the configured delay", async () => {
+		vi.useFakeTimers()
+		const shouldUpdateAddress = vi.fn((input: CartAddressSnapshotInput) => (input.shippingAddress?.address1?.length ?? 0) > 3)
+		const input = addressSnapshot({ shippingAddress: { address1: "Street 1" } })
+		procedures.update.call.mockResolvedValue(quoteCart(input))
+		const { result, unmount } = mount(
+			() => ({ address: useCartAddress({ addressDebounceMs: 100, shouldUpdateAddress }), cart: useCart() }),
+			quoteCart(),
+		)
+		act(() => result.current.address.onAddressChange(input))
+		await settleAddress(99)
+		expect(procedures.update.call).not.toHaveBeenCalled()
+		await settleAddress(1)
+		expect(procedures.update.call).toHaveBeenCalledTimes(1)
+		expect(procedures.update.call).toHaveBeenCalledWith({ body: input })
+		act(() => result.current.address.onAddressChange(input))
+		act(() => result.current.address.onAddressChange(addressSnapshot({ shippingAddress: { city: "Oxford" } })))
+		await settleAddress(100)
+		expect(procedures.update.call).toHaveBeenCalledTimes(1)
+		expect(result.current.cart.isRepricing).toBe(false)
+		unmount()
+	})
+
+	it("cancels a trailing push on unmount", async () => {
+		vi.useFakeTimers()
+		const writer = mount(() => useCartAddress(), quoteCart())
+		act(() => writer.result.current.onAddressChange(addressSnapshot({ shippingAddress: { city: "Oxford" } })))
+		writer.unmount()
+		await settleAddress()
+		expect(procedures.update.call).not.toHaveBeenCalled()
+	})
+
+	it("rechecks the cached cart before sending and clears the updating flag on convergence", async () => {
+		vi.useFakeTimers()
+		const input = addressSnapshot({ shippingAddress: { city: "Oxford" } })
+		const { result, queryClient, unmount } = mount(() => ({ address: useCartAddress(), cart: useCart() }), quoteCart())
+		act(() => result.current.address.onAddressChange(input))
+		queryClient.setQueryData(cartQueryKey, quoteCart(input))
+		await settleAddress()
+		await settleAddress(1)
+		expect(procedures.update.call).not.toHaveBeenCalled()
+		expect(result.current.cart.isRepricing).toBe(false)
+		unmount()
+	})
+
+	it("reports a refusal without automatically retrying and sends a correction without reset", async () => {
+		vi.useFakeTimers()
+		const failure = storeError("CART_INVALID_ADDRESS")
+		procedures.update.call.mockRejectedValueOnce(failure)
+		const { options, phases } = recorder()
+		const original = quoteCart()
+		const { result, queryClient, unmount } = mount(() => ({ address: useCartAddress(options), cart: useCart() }), original)
+		act(() => result.current.address.onAddressChange(addressSnapshot({ shippingAddress: { postcode: "bad" } })))
+		await settleAddress()
+		await settleAddress(1)
+		expect(result.current.address.error).toBe(failure)
+		expect(phases()).toEqual(["start", "error", "settled"])
+		expect(queryClient.getQueryData(cartQueryKey)).toEqual(original)
+		expect(result.current.cart.isRepricing).toBe(false)
+		await settleAddress(6000)
+		expect(procedures.update.call).toHaveBeenCalledTimes(1)
+		const correction = addressSnapshot({ shippingAddress: { postcode: "SW1A 2AA" } })
+		procedures.update.call.mockResolvedValueOnce(quoteCart(correction))
+		act(() => result.current.address.onAddressChange(correction))
+		await settleAddress()
+		await settleAddress(1)
+		expect(procedures.update.call).toHaveBeenCalledTimes(2)
+		expect(result.current.address.error).toBeNull()
+		expect(result.current.cart.isRepricing).toBe(false)
+		unmount()
+	})
+
+	it.each(["shippingAddress", "billingAddress"] as const)("clears a rejected %s edit when reverting to the saved address", async (key) => {
+		vi.useFakeTimers()
+		const failure = storeError("CART_INVALID_ADDRESS")
+		procedures.update.call.mockRejectedValueOnce(failure)
+		const original = quoteCart()
+		const { result, queryClient, unmount } = mount(() => ({ address: useCartAddress(), cart: useCart() }), original)
+		act(() => result.current.address.onAddressChange(addressSnapshot({ [key]: { postcode: "bad" } })))
+		await settleAddress()
+		await settleAddress(1)
+		expect(result.current.address.error).toBe(failure)
+		// Normalized pricing values still represent the valid saved address.
+		act(() => result.current.address.onAddressChange(addressSnapshot({ [key]: { country: " GB ", postcode: "sw1a1aa" } })))
+		await settleAddress()
+		expect(procedures.update.call).toHaveBeenCalledTimes(1)
+		expect(queryClient.getQueryData(cartQueryKey)).toEqual(original)
+		expect(result.current.address.error).toBeNull()
+		expect(result.current.cart.isRepricing).toBe(false)
+		const canSubmit = !result.current.cart.isRepricing && !result.current.address.error
+		expect(canSubmit).toBe(true)
+		unmount()
+	})
+
+	it("clears the stale failure after a revert queued during a rejected save", async () => {
+		vi.useFakeTimers()
+		let refuse: (error: CartError) => void = () => {}
+		procedures.update.call.mockReturnValueOnce(
+			new Promise<Cart>((_, reject) => {
+				refuse = reject
+			}),
+		)
+		const { result, unmount } = mount(() => ({ address: useCartAddress(), cart: useCart() }), quoteCart())
+		act(() => result.current.address.onAddressChange(addressSnapshot({ shippingAddress: { postcode: "bad" } })))
+		await settleAddress()
+		act(() => result.current.address.onAddressChange(addressSnapshot({ shippingAddress: {} })))
+		await settleAddress()
+		expect(result.current.cart.isRepricing).toBe(true)
+		await act(async () => refuse(storeError("CART_INVALID_ADDRESS")))
+		await settleAddress(1)
+		expect(result.current.address.error).not.toBeNull()
+		await settleAddress()
+		expect(procedures.update.call).toHaveBeenCalledTimes(1)
+		expect(result.current.address.error).toBeNull()
+		expect(result.current.cart.isRepricing).toBe(false)
+		unmount()
+	})
+
+	it.each([
+		{ label: "empty input", input: {} },
+		{ label: "invalid country", input: { shippingAddress: { country: "" } } },
+		{ label: "omitted failed address", input: { billingAddress: {} } },
+		{ label: "unsaved street", input: { shippingAddress: { address1: "New street" } } },
+		{ label: "unsaved name", input: { shippingAddress: { firstName: "Grace" } } },
+		{ label: "missing cart", input: { shippingAddress: {} }, missingCart: true },
+		{ label: "omitted failed field", input: { shippingAddress: {} }, failedInput: { shippingAddress: { address1: "bad" } } },
+	])("retains the failure for $label instead of dismissing it on a false predicate", async ({ input, missingCart, failedInput }) => {
+		vi.useFakeTimers()
+		const failure = storeError("CART_INVALID_ADDRESS")
+		procedures.update.call.mockRejectedValueOnce(failure)
+		const { result, queryClient, unmount } = mount(
+			() => ({ address: useCartAddress({ shouldUpdateAddress: () => false }), cart: useCart() }),
+			quoteCart(),
+		)
+		act(() => result.current.address.update(failedInput ?? { shippingAddress: { postcode: "bad" } }))
+		await settleAddress(1)
+		expect(result.current.address.error).toBe(failure)
+		if (missingCart) queryClient.setQueryData(cartQueryKey, null)
+		act(() => result.current.address.onAddressChange(addressSnapshot(input)))
+		await settleAddress()
+		expect(procedures.update.call).toHaveBeenCalledTimes(1)
+		expect(result.current.address.error).toBe(failure)
+		expect(result.current.cart.isRepricing).toBe(false)
+		unmount()
+	})
+
+	it.each([false, true])("waits for another hook's immediate save and skips a converged snapshot: %s", async (converged) => {
+		vi.useFakeTimers()
+		let answer: (cart: Cart) => void = () => {}
+		procedures.update.call.mockReturnValueOnce(
+			new Promise<Cart>((resolve) => {
+				answer = resolve
+			}),
+		)
+		const input = addressSnapshot({ shippingAddress: { postcode: "SW1A 2AA" } })
+		if (!converged) procedures.update.call.mockResolvedValueOnce(quoteCart(input))
+		const { result, unmount } = mount(() => ({ first: useCartAddress(), second: useCartAddress() }), quoteCart())
+		act(() => {
+			result.current.first.update({ shippingAddress: { city: "Oxford" } })
+			result.current.second.onAddressChange(input)
+		})
+		await settleAddress()
+		expect(procedures.update.call).toHaveBeenCalledTimes(1)
+		await act(async () => answer(quoteCart(converged ? input : { shippingAddress: { city: "Oxford" } })))
+		await settleAddress()
+		expect(procedures.update.call).toHaveBeenCalledTimes(converged ? 1 : 2)
+		if (!converged) expect(procedures.update.call).toHaveBeenLastCalledWith({ body: input })
+		unmount()
+	})
+
+	it("saves a revert made while the previous snapshot is in flight", async () => {
+		vi.useFakeTimers()
+		let answer: (cart: Cart) => void = () => {}
+		procedures.update.call.mockReturnValueOnce(
+			new Promise<Cart>((resolve) => {
+				answer = resolve
+			}),
+		)
+		const changed = addressSnapshot({ shippingAddress: { postcode: "SW1A 2AA" } })
+		const reverted = addressSnapshot({ shippingAddress: { postcode: "SW1A 1AA" } })
+		procedures.update.call.mockResolvedValueOnce(quoteCart(reverted))
+		const { result, queryClient, unmount } = mount(() => useCartAddress(), quoteCart())
+		act(() => result.current.onAddressChange(changed))
+		await settleAddress()
+		act(() => result.current.onAddressChange(reverted))
+		await act(async () => answer(quoteCart(changed)))
+		await settleAddress()
+		expect(procedures.update.call).toHaveBeenCalledTimes(2)
+		expect(procedures.update.call).toHaveBeenLastCalledWith({ body: reverted })
+		expect(queryClient.getQueryData<Cart>(cartQueryKey)?.shippingAddress.postcode).toBe("SW1A 1AA")
+		unmount()
+	})
+
+	it("retains only the latest snapshot during an in-flight save, without overlap", async () => {
+		vi.useFakeTimers()
+		let answer: (cart: Cart) => void = () => {}
+		procedures.update.call.mockReturnValueOnce(
+			new Promise<Cart>((resolve) => {
+				answer = resolve
+			}),
+		)
+		const first = addressSnapshot({ shippingAddress: { postcode: "SW1A 2AA" } })
+		const latest = addressSnapshot({ shippingAddress: { postcode: "SW1A 3AA" } })
+		procedures.update.call.mockResolvedValueOnce(quoteCart(latest))
+		const { result, unmount } = mount(() => useCartAddress(), quoteCart())
+		act(() => result.current.onAddressChange(first))
+		await settleAddress()
+		act(() => result.current.onAddressChange(addressSnapshot({ shippingAddress: { postcode: "SW1A 2AB" } })))
+		await settleAddress()
+		expect(procedures.update.call).toHaveBeenCalledTimes(1)
+		act(() => result.current.onAddressChange(latest))
+		await act(async () => answer(quoteCart(first)))
+		await settleAddress()
+		expect(procedures.update.call).toHaveBeenCalledTimes(2)
+		expect(procedures.update.call).toHaveBeenLastCalledWith({ body: latest })
+		unmount()
+	})
+
+	it("keeps isRepricing shared through debounce, request and follow-up while isMutating only covers requests", async () => {
+		vi.useFakeTimers()
+		let answerFirst: (cart: Cart) => void = () => {}
+		let answerSecond: (cart: Cart) => void = () => {}
+		procedures.update.call.mockReturnValueOnce(
+			new Promise<Cart>((resolve) => {
+				answerFirst = resolve
+			}),
+		)
+		procedures.update.call.mockReturnValueOnce(
+			new Promise<Cart>((resolve) => {
+				answerSecond = resolve
+			}),
+		)
+		const first = addressSnapshot({ shippingAddress: { city: "Oxford" } })
+		const second = addressSnapshot({ shippingAddress: { city: "Cambridge" } })
+		const { result, unmount } = mount(() => ({ address: useCartAddress(), summary: useCart(), button: useCart() }), quoteCart())
+		act(() => result.current.address.onAddressChange(first))
+		await settleAddress(1)
+		expect(result.current.summary.isRepricing).toBe(true)
+		expect(result.current.button.isRepricing).toBe(true)
+		expect(result.current.summary.isMutating).toBe(false)
+		await settleAddress(1499)
+		expect(procedures.update.call).toHaveBeenCalledTimes(1)
+		await settleAddress(1)
+		expect(result.current.summary.isRepricing).toBe(true)
+		expect(result.current.summary.isMutating).toBe(true)
+		act(() => result.current.address.onAddressChange(second))
+		await settleAddress()
+		expect(procedures.update.call).toHaveBeenCalledTimes(1)
+		await act(async () => answerFirst(quoteCart(first)))
+		await settleAddress(1)
+		expect(result.current.summary.isRepricing).toBe(true)
+		expect(result.current.summary.isMutating).toBe(false)
+		await settleAddress(1499)
+		expect(procedures.update.call).toHaveBeenCalledTimes(2)
+		expect(result.current.summary.isRepricing).toBe(true)
+		await act(async () => answerSecond(quoteCart(second)))
+		await settleAddress(1)
+		expect(result.current.summary.isRepricing).toBe(false)
+		expect(result.current.button.isRepricing).toBe(false)
+		unmount()
+	})
+
+	it("clears only the unmounted writer's marker and still shows its in-flight save", async () => {
+		vi.useFakeTimers()
+		let answer: (cart: Cart) => void = () => {}
+		procedures.update.call.mockReturnValueOnce(
+			new Promise<Cart>((resolve) => {
+				answer = resolve
+			}),
+		)
+		const first = addressSnapshot({ shippingAddress: { city: "Oxford" } })
+		const second = addressSnapshot({ shippingAddress: { city: "Cambridge" } })
+		procedures.update.call.mockResolvedValueOnce(quoteCart(second))
+		const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+		queryClient.setQueryData(cartQueryKey, quoteCart())
+		const wrapper = ({ children }: { children: ReactNode }) =>
+			createElement(QueryClientProvider, { client: queryClient }, createElement(WooCommerceProvider, { cartEnabled: false, children }))
+		const reader = renderHook(() => useCart(), { wrapper })
+		const one = renderHook(() => useCartAddress(), { wrapper })
+		const two = renderHook(() => useCartAddress(), { wrapper })
+		act(() => {
+			one.result.current.onAddressChange(first)
+			two.result.current.onAddressChange(second)
+		})
+		one.unmount()
+		await settleAddress(1)
+		expect(reader.result.current.isRepricing).toBe(true)
+		await settleAddress(1499)
+		expect(procedures.update.call).toHaveBeenCalledTimes(1)
+		expect(procedures.update.call).toHaveBeenCalledWith({ body: second })
+		two.unmount()
+		await settleAddress(1)
+		expect(reader.result.current.isRepricing).toBe(true)
+		await act(async () => answer(quoteCart(second)))
+		await settleAddress(1)
+		// No second request should consume the queued fallback response.
+		procedures.update.call.mockReset()
+	})
+
+	it("waits for an in-flight save before rejecting a queued snapshot and clears repricing", async () => {
+		vi.useFakeTimers()
+		let answer: (cart: Cart) => void = () => {}
+		procedures.update.call.mockReturnValueOnce(
+			new Promise<Cart>((resolve) => {
+				answer = resolve
+			}),
+		)
+		const shouldUpdateAddress = vi.fn((input: CartAddressSnapshotInput) => input.shippingAddress?.country === "GB")
+		const { result, unmount } = mount(() => ({ address: useCartAddress({ shouldUpdateAddress }), cart: useCart() }), quoteCart())
+		act(() => result.current.address.update({ shippingAddress: { city: "Oxford" } }))
+		await settleAddress(1)
+		act(() => result.current.address.onAddressChange(addressSnapshot({ shippingAddress: { country: "", city: "Cambridge" } })))
+		await settleAddress()
+		expect(procedures.update.call).toHaveBeenCalledTimes(1)
+		expect(shouldUpdateAddress).not.toHaveBeenCalled()
+		expect(result.current.cart.isRepricing).toBe(true)
+		await act(async () => answer(quoteCart({ shippingAddress: { city: "Oxford" } })))
+		await settleAddress()
+		await settleAddress(1)
+		expect(procedures.update.call).toHaveBeenCalledTimes(1)
+		expect(shouldUpdateAddress).toHaveBeenCalledTimes(1)
+		expect(result.current.cart.isRepricing).toBe(false)
+		unmount()
+	})
+
+	it("clones the supplied snapshot so later in-place form changes cannot alter the queued request", async () => {
+		vi.useFakeTimers()
+		const input = addressSnapshot({ shippingAddress: { city: "Oxford" } })
+		procedures.update.call.mockResolvedValue(quoteCart(input))
+		const { result, unmount } = mount(() => useCartAddress(), quoteCart())
+		act(() => result.current.onAddressChange(input))
+		if (input.shippingAddress) input.shippingAddress.city = "Cambridge"
+		await settleAddress()
+		expect(procedures.update.call).toHaveBeenCalledWith({ body: addressSnapshot({ shippingAddress: { city: "Oxford" } }) })
+		unmount()
 	})
 })
