@@ -139,6 +139,20 @@ describe("useCartItem callbacks", () => {
 		expect(result.current.error).toBeNull()
 	})
 
+	it("delivers the options of a hook whose key is explicitly undefined", async () => {
+		procedures.items.add.call.mockResolvedValue(storeCart([{ key: "a", quantity: 3 }]))
+		const { options, phases, seen } = recorder()
+		const key: string | undefined = undefined
+
+		const { result } = mount(() => useCartItem(key, { ...options, defaultQuantity: 3 }))
+		expect(result.current.quantity.value).toBe(3)
+		act(() => result.current.addItem({ productId: 7 }))
+
+		// The overload takes `string | undefined`, so an absent key must not be mistaken for the options object.
+		await waitFor(() => expect(phases()).toEqual(["start", "success", "settled"]))
+		expect(seen[0]?.input).toEqual({ productId: 7, quantity: 3 })
+	})
+
 	it("reports a refused add as start, error and settled, with the store's own code on error", async () => {
 		procedures.items.add.call.mockRejectedValue(storeError("CART_ITEM_EXISTS"))
 		const { options, phases, seen } = recorder()
