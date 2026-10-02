@@ -775,7 +775,9 @@ export function useCartItem(options?: CartItemOptions): CartItemApi
 export function useCartItem(key: string | undefined, options?: CartItemOptions): CartItemApi
 export function useCartItem(first?: string | CartItemOptions, second?: CartItemOptions): CartItemApi {
 	const key = typeof first === "string" ? first : undefined
-	const options = typeof first === "string" ? second : first
+	// Decided on the shape of the first argument rather than on whether it is a key, so a draft whose variant is not chosen yet —
+	// `useCartItem(undefined, options)`, or a `null` read off a URL or a map — keeps the options it was passed.
+	const options = typeof first === "object" && first !== null ? first : second
 	const { autoCommit = true, debounceMs = 400, defaultQuantity = 1, limits: draftLimits } = options ?? {}
 
 	const scope = useMemo(() => [...cartMutationKey, "item", key ?? "add"], [key])
