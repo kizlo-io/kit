@@ -90,7 +90,7 @@ describe("the derived types", () => {
 			code: string
 			states: readonly { code: string }[]
 		}>()
-		expectTypeOf<Storefront["address"]["fieldLocations"]>().toExtend<{ address: readonly string[] }>()
+		expectTypeOf<Storefront["address"]["fields"][number]["location"]>().toEqualTypeOf<"address" | "contact" | "order">()
 	})
 
 	it("accept what the kit sends", () => {

@@ -104,3 +104,44 @@ export type Storefront = InferClientData<StorefrontProcedures["get"]>
 
 /** Any way reading the store's settings can fail. */
 export type StorefrontError = InferClientError<StorefrontProcedures["get"]>
+
+/** Field definitions follow the consumer's registered storefront contract. */
+export type StorefrontField = Storefront["address"]["fields"][number]
+export type StorefrontFieldRule = StorefrontField["required"]
+export type FieldSchema = StorefrontField["schema"]
+export type CheckoutFieldLocation = StorefrontField["location"]
+export type FieldPresentation = { row?: string; order?: number }
+export type ResolvedField = Omit<StorefrontField, "required" | "hidden" | "bindings"> & {
+	key: readonly string[]
+	required: boolean
+	hidden: boolean
+	presentation: FieldPresentation
+}
+export type ResolvedFields = { fields: ResolvedField[]; schema: FieldSchema }
+export type FieldResolverOptions<TValues> = {
+	fields: readonly StorefrontField[]
+	values: TValues
+	prefix?: readonly string[]
+	presentation?: Readonly<Record<string, FieldPresentation>>
+}
+export type BillingAddressFieldOptions = FieldResolverOptions<Partial<Cart["billingAddress"]>> & {
+	countries: readonly Storefront["address"]["countries"][number][]
+}
+export type ShippingAddressFieldOptions = FieldResolverOptions<Partial<Cart["shippingAddress"]>> & {
+	countries: readonly Storefront["address"]["countries"][number][]
+}
+export type ContactFieldOptions = FieldResolverOptions<{
+	billingAddress?: Partial<Pick<Checkout["billingAddress"], "email">>
+	additionalFields?: Checkout["additionalFields"]
+}>
+export type OrderFieldOptions = FieldResolverOptions<Pick<Partial<Checkout>, "additionalFields">>
+
+/** Implements Standard Schema v1 without depending on a form library. */
+export type StandardFieldSchema<T> = {
+	readonly "~standard": {
+		readonly version: 1
+		readonly vendor: string
+		readonly types?: { input: T; output: T }
+		readonly validate: (value: unknown) => { value: T } | { issues: { message: string; path?: readonly (string | number)[] }[] }
+	}
+}

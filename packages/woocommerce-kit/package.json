@@ -92,11 +92,13 @@
 		"clean": "git clean -xdf .cache .turbo dist node_modules"
 	},
 	"dependencies": {
+		"@cfworker/json-schema": "^4.1.1",
 		"@kizlo/kit": "workspace:*",
 		"use-debounce": "catalog:"
 	},
 	"devDependencies": {
 		"@kizlo/woocommerce": "catalog:",
+		"@standard-schema/spec": "^1.1.0",
 		"@tanstack/react-query": "catalog:",
 		"@testing-library/react": "catalog:",
 		"@tooling/typescript": "workspace:*",
@@ -113,9 +115,8 @@
 		"vitest": "catalog:"
 	},
 	"peerDependencies": {
-		"@kizlo/woocommerce": "^0.11.0",
 		"@tanstack/react-query": ">=5.102.0",
-		"kizlo": "^0.25.0",
+		"kizlo": "^0.26.0",
 		"nuqs": ">=2.10.0",
 		"react": ">=19.0.0"
 	},

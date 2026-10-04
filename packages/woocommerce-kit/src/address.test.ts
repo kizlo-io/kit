@@ -65,12 +65,8 @@ const address: StorefrontAddress = {
 	],
 	defaultAddressFormat: "{name}\n{address_1}\n{city}\n{state}\n{postcode}\n{country}",
 	defaultCountry: "IN",
-	fieldLocations: {
-		address: ["first_name", "country", "address_1", "city", "state", "postcode", "company"],
-		contact: ["email"],
-		order: [],
-	},
-	fields: {
+
+	fields: Object.entries({
 		address_1: field("Address", 50),
 		city: field("City", 70),
 		company: field("Company", 30, { hidden: true, required: false }),
@@ -79,7 +75,14 @@ const address: StorefrontAddress = {
 		first_name: field("First name", 10),
 		postcode: field("Postal code", 90),
 		state: field("State/County", 80),
-	},
+	}).map(([id, field]) => ({
+		...field,
+		id,
+		location: id === "email" ? ("contact" as const) : ("address" as const),
+		attributes: {},
+		schema: { type: "string" },
+		bindings: {},
+	})),
 }
 
 const keys = (fields: { key: string }[]) => fields.map((entry) => entry.key)
@@ -171,9 +174,22 @@ describe("isAddressComplete", () => {
 	})
 
 	it("reads a rule object as required and visible", () => {
-		const withCity = (city: StorefrontAddress["fields"][string]) => ({ ...address, fields: { ...address.fields, city } })
-		const optionalCity = withCity(field("City", 70, { required: false }))
-		const ruledCity = withCity({ ...field("City", 70), hidden: { type: "object" }, required: { type: "object" } })
+		const withCity = (city: StorefrontAddress["fields"][number]) => ({
+			...address,
+			fields: address.fields.map((field) => (field.id === "city" ? { ...field, ...city } : field)),
+		})
+		const city = address.fields.find((field) => field.id === "city")
+		if (!city) throw new Error("Missing city fixture")
+		const optionalCity = withCity({
+			...city,
+			...field("City", 70, { required: false }),
+		})
+		const ruledCity = withCity({
+			...city,
+			...field("City", 70),
+			hidden: { type: "object" },
+			required: { type: "object" },
+		})
 
 		expect(isAddressComplete(optionalCity, { ...india, city: "" })).toBe(true)
 		expect(isAddressComplete(ruledCity, { ...india, city: "" })).toBe(false)

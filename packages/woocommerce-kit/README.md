@@ -13,9 +13,10 @@ derived model and the cart and checkout contracts, with no React and no URL-stat
 pnpm add @kizlo/woocommerce-kit
 ```
 
-Peer dependencies: `@kizlo/woocommerce` 0.11+ and `kizlo` 0.25+ always, plus `react` 19+ if you import a React entry, `nuqs`
+Peer dependencies: `kizlo` ^0.26.0 always, plus `react` 19+ if you import a React entry, `nuqs`
 2.10+ for the collection and `@tanstack/react-query` 5.102+ for `WooCommerceProvider`, the cart, checkout, search and store settings. Those last three are optional
 peers, so a different framework's adapter does not drag React in and a collection-only storefront installs no query library.
+The storefront field contract requires the matching WooCommerce SDK and plugin release; `@kizlo/woocommerce` is a development contract dependency of this kit, supplied by your app through its Kizlo client.
 Your app supplies the Kizlo client, through `KizloProvider` from [`kizlo/react`](https://www.npmjs.com/package/kizlo) for
 client components and as a prop for server components.
 
@@ -590,12 +591,65 @@ export function ShippingAddress({ address }: { address: { country: string; state
 | --- | --- |
 | `billingCountries(address)` / `shippingCountries(address)` | The countries the store bills to or ships to, in the store's order. |
 | `addressFields(address, country)` | The country's address fields in display order: each default field overlaid with the country's locale, so `label`, `required`, `hidden` and `index` are what that country uses. Hidden fields are included; skip them when rendering. |
-| `resolveAddressCountry(address, country)` | Everything a form needs for one country: its `fields`, its `states` (`[]` when it has none, so the state is free text or hidden) and `stateLabel`, the country's own name for that field — "Emirate", "County" — or the default label. |
+| `resolveAddressCountry(address, country)` | Raw country fields, plus the existing country information: its `fields`, its `states` (`[]` when it has none, so the state is free text or hidden) and `stateLabel`, the country's own name for that field — "Emirate", "County" — or the default label. |
 | `isAddressComplete(address, input)` | Whether the shopper has filled in every field the store needs before it quotes shipping, by WooCommerce's own rule: a country, and each of country, state, postcode and city hidden, optional or filled for that country. |
 
 An unknown or empty country code answers the default fields rather than throwing, so a form keeps rendering while the shopper
 corrects it. A plugin-registered field may carry a JSON Schema rule object in `required` or `hidden` instead of a boolean; the
 kit passes it through untouched, and `isAddressComplete` reads it as required and visible.
+
+### Form field transformations and validation
+
+Resolve each group independently. Your application owns section placement, address cards, saved-address lists, dialogs, form state and rendering.
+
+```ts
+import {
+  resolveBillingAddressFields, resolveShippingAddressFields,
+  resolveContactFields, resolveOrderFields, toStandardSchema,
+} from "@kizlo/woocommerce-kit"
+import type { Cart, Checkout, Storefront } from "@kizlo/woocommerce-kit"
+
+function addressEditor(store: Storefront, initial: Cart["billingAddress"]) {
+  const resolve = (values: typeof initial) => resolveBillingAddressFields({
+    fields: store.address.fields, countries: store.address.countries, values,
+    presentation: {
+      first_name: { row: "name", order: 10 },
+      last_name: { row: "name", order: 20 },
+      phone: { order: 100 },
+    },
+  })
+  return {
+    initialFields: resolve(initial).fields,
+    resolve,
+    validator: toStandardSchema<typeof initial>((values) => resolve(values).schema),
+  }
+}
+
+function checkoutGroups(store: Storefront, checkout: Checkout) {
+  return {
+    billing: resolveBillingAddressFields({fields: store.address.fields, countries: store.address.countries, values: checkout.billingAddress}),
+    shipping: resolveShippingAddressFields({fields: store.address.fields, countries: store.address.countries, values: checkout.shippingAddress}),
+    contact: resolveContactFields({fields: store.address.fields, values: {billingAddress: {email: checkout.billingAddress.email}, additionalFields: checkout.additionalFields}}),
+    order: resolveOrderFields({fields: store.address.fields, values: {additionalFields: checkout.additionalFields}}),
+  }
+}
+```
+
+Each call returns `{ fields, schema }`. Recompute fields with current form values when dependencies change. Pass the Standard Schema validator to a supporting form library's validation configuration; the factory resolves against each candidate value. `toStandardSchema(schema)` also supports a fixed schema when conditions cannot change.
+
+A resolved field keeps `id`, `location`, rendering attributes and its value schema, adds `key` as a segment array, and returns `required`/`hidden` booleans. Billing `first_name` uses `["firstName"]`, Tax ID uses `["taxId"]`, and extras use `["additionalFields", "plugin/a.b[0]"]`. The complete ID stays one segment. An optional `prefix: ["billingAddress"]` prefixes both keys and the generated object schema. Form adapters own the conversion to their library's naming syntax.
+
+The SDK's definitions supply bindings from its address/projection contract; Kit never imports the integration at runtime or carries its own key table. Country locale changes labels/order/requirements/visibility. Country options respect billing/shipping eligibility; state options use `{ value, label }`, with select/text control behavior provided directly. `presentation` provides optional row/order hints; it does not choose sections or markup.
+
+The complete JSON Schema validates the same object shape the API accepts. Visible required strings must be nonblank, required checkboxes must be true, selects enforce their options, optional string fields accept empty strings, and hidden/skipped fields impose no validation. Unrelated and retained additional values are allowed and never removed. Declared regex `pattern` is supported; this change adds no Tax ID regex.
+
+Rules evaluate against a locally reconstructed Woo-shaped document using current values, not an optional context bag. Core address properties retain their empty-string defaults only in the evaluation document; submitted values are never changed. Billing Tax ID checks whether the scoped address has an email property, including an empty email. Shipping has no email projection. Contact/order values keep their respective Woo rule scopes even though Kizlo stores both in checkout `additionalFields`.
+
+Unsupported individual definitions, malformed schemas, unsafe bindings and conditions requiring unavailable data are skipped. Missing optional rendering data gets defaults; unfamiliar string controls become text inputs. The result never includes statuses, configuration errors or null schemas, and a bad plugin field cannot throw out the other fields. Skipping does not erase existing values or bypass server requirements. Invalid external adapter schemas also degrade to pass-through validation. Server sanitization and PHP validation remain authoritative.
+
+The resolvers and Standard Schema adapter use `@cfworker/json-schema` with draft-07 rules and built-in format checks. Malformed schemas and unknown keywords/formats are rejected during field resolution. Schemas are cloned before evaluation; undefined object properties count as missing only in the validation copy. The adapter returns the original submitted values without coercion or defaults.
+
+Submit the form's unchanged API shape through `cart.update({body: {billingAddress: values}})` for an address edit or the existing checkout confirmation input for checkout submission. The SDK handles Store API wire serialization; consumers do not flatten or rename fields.
 
 `isAddressComplete` checks completeness, not validity, exactly as WooCommerce's own check does. It does not check that the
 store ships to the country or that the state belongs to it, so offer only `shippingCountries` in the country picker and clear

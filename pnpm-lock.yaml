@@ -7,8 +7,8 @@ settings:
 catalogs:
   default:
     '@kizlo/woocommerce':
-      specifier: ^0.11.0
-      version: 0.11.0
+      specifier: ^0.12.0
+      version: 0.12.0
     '@tanstack/react-query':
       specifier: ^5.102.0
       version: 5.104.0
@@ -22,8 +22,8 @@ catalogs:
       specifier: ^20.14.5
       version: 20.14.5
     kizlo:
-      specifier: ^0.25.0
-      version: 0.25.0
+      specifier: ^0.26.0
+      version: 0.26.0
     nuqs:
       specifier: ^2.10.0
       version: 2.10.1
@@ -96,6 +96,9 @@ importers:
 
   packages/woocommerce-kit:
     dependencies:
+      '@cfworker/json-schema':
+        specifier: ^4.1.1
+        version: 4.1.1
       '@kizlo/kit':
         specifier: workspace:*
         version: link:../kit
@@ -105,7 +108,10 @@ importers:
     devDependencies:
       '@kizlo/woocommerce':
         specifier: 'catalog:'
-        version: 0.11.0(kizlo@0.25.0(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(typescript@5.9.3)(ws@8.22.0))
+        version: 0.12.0(kizlo@0.26.0(@cfworker/json-schema@4.1.1)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(typescript@5.9.3)(ws@8.22.0))
+      '@standard-schema/spec':
+        specifier: ^1.1.0
+        version: 1.1.0
       '@tanstack/react-query':
         specifier: 'catalog:'
         version: 5.104.0(react@19.3.0)
@@ -129,7 +135,7 @@ importers:
         version: 20.14.5
       kizlo:
         specifier: 'catalog:'
-        version: 0.25.0(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(typescript@5.9.3)(ws@8.22.0)
+        version: 0.26.0(@cfworker/json-schema@4.1.1)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(typescript@5.9.3)(ws@8.22.0)
       nuqs:
         specifier: 'catalog:'
         version: 2.10.1(react@19.3.0)
@@ -240,6 +246,9 @@ packages:
     engines: {node: '>=14.21.3'}
     cpu: [x64]
     os: [win32]
+
+  '@cfworker/json-schema@4.1.1':
+    resolution: {integrity: sha512-gAmrUZSGtKc3AiBL71iNWxDsyUC5uMaKKGdvzYsBoTW/xi42JQHl7eKV2OYzCUqvc+D2RCcf7EXY2iCyFIk6og==}
 
   '@changesets/apply-release-plan@7.1.1':
     resolution: {integrity: sha512-9qPCm/rLx/xoOFXIHGB229+4GOL76S4MC+7tyOuTsR6+1jYlfFDQORdvwR5hDA6y4FL2BPt3qpbcQIS+dW85LA==}
@@ -507,8 +516,8 @@ packages:
     resolution: {integrity: sha512-Bv/mQ2CFd5bpMxIrcxm67aPWwPAcF8c8rtfGiB2DC56bALYAc9Zp8iRwJ1gFTj+5Neun97jGUCx14cx4hGrnkw==}
     engines: {node: '>=22.14.0'}
 
-  '@kizlo/woocommerce@0.11.0':
-    resolution: {integrity: sha512-eT4+WQqrCdNcKNIovEHPVtCtNvD+Aw8XOSK3IqnrqdwnImZJ3rNTJUedQNsJVuFd2rubhPasBjGjQUVr0niCOA==}
+  '@kizlo/woocommerce@0.12.0':
+    resolution: {integrity: sha512-3GEK2WQC5T+dPVprZcAxHKZkWAfbwwgNIfeUz4tOuQ9oi+nSMBskXc8WpKmFBD+DTwCHBW/xbf1GfuDMhs3gYQ==}
     engines: {node: '>=22.14.0'}
     peerDependencies:
       kizlo: '>=0.16.0'
@@ -1498,8 +1507,8 @@ packages:
   jsonfile@4.0.0:
     resolution: {integrity: sha512-m6F1R3z8jjlf2imQHS2Qez5sjKWQzbuuhuJ/FKYFRZvPE3PuHcSMVZzfsLhGVOkfd20obL5SWEBew5ShlquNxg==}
 
-  kizlo@0.25.0:
-    resolution: {integrity: sha512-uWgcSAe5sZqDKc7ulKqOFJyvRJLXLelpUoA+CoW5Okvm2Z7Uc5Mzo0C2NngFny6Fau+/1PnxLdxlwWvukFvb0g==}
+  kizlo@0.26.0:
+    resolution: {integrity: sha512-CK6QNpdP3gQF6E9m8ZrTztzlV1z5nVKz680Sweceuq6uhrb304166rPW14zX7lLcLmmDfzAUxurJrxcxAHDHPA==}
     engines: {node: '>=22.14.0'}
     hasBin: true
     peerDependencies:
@@ -2246,6 +2255,8 @@ snapshots:
   '@biomejs/cli-win32-x64@2.5.14':
     optional: true
 
+  '@cfworker/json-schema@4.1.1': {}
+
   '@changesets/apply-release-plan@7.1.1':
     dependencies:
       '@changesets/config': 3.1.4
@@ -2546,11 +2557,11 @@ snapshots:
       ua-parser-js: 2.0.10
       zod: 4.6.5
 
-  '@kizlo/woocommerce@0.11.0(kizlo@0.25.0(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(typescript@5.9.3)(ws@8.22.0))':
+  '@kizlo/woocommerce@0.12.0(kizlo@0.26.0(@cfworker/json-schema@4.1.1)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(typescript@5.9.3)(ws@8.22.0))':
     dependencies:
       '@kizlo/shared': 0.10.0
       jose: 6.1.0
-      kizlo: 0.25.0(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(typescript@5.9.3)(ws@8.22.0)
+      kizlo: 0.26.0(@cfworker/json-schema@4.1.1)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(typescript@5.9.3)(ws@8.22.0)
       zod: 4.6.5
 
   '@manypkg/find-root@1.1.0':
@@ -2569,7 +2580,7 @@ snapshots:
       globby: 11.1.0
       read-yaml-file: 1.1.0
 
-  '@modelcontextprotocol/sdk@1.30.1(zod@4.6.5)':
+  '@modelcontextprotocol/sdk@1.30.1(@cfworker/json-schema@4.1.1)(zod@4.6.5)':
     dependencies:
       '@hono/node-server': 2.1.1(hono@4.13.9)
       ajv: 8.20.0
@@ -2588,6 +2599,8 @@ snapshots:
       raw-body: 3.0.2
       zod: 4.6.5
       zod-to-json-schema: 3.25.2(zod@4.6.5)
+    optionalDependencies:
+      '@cfworker/json-schema': 4.1.1
     transitivePeerDependencies:
       - supports-color
 
@@ -3496,11 +3509,11 @@ snapshots:
     optionalDependencies:
       graceful-fs: 4.2.11
 
-  kizlo@0.25.0(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(typescript@5.9.3)(ws@8.22.0):
+  kizlo@0.26.0(@cfworker/json-schema@4.1.1)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(typescript@5.9.3)(ws@8.22.0):
     dependencies:
       '@clack/prompts': 1.8.1
       '@kizlo/shared': 0.10.0
-      '@modelcontextprotocol/sdk': 1.30.1(zod@4.6.5)
+      '@modelcontextprotocol/sdk': 1.30.1(@cfworker/json-schema@4.1.1)(zod@4.6.5)
       '@orpc/client': 1.15.4
       '@orpc/contract': 1.15.4
       '@orpc/openapi': 1.15.4(ws@8.22.0)
