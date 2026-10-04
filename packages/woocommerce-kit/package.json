@@ -93,6 +93,8 @@
 	},
 	"dependencies": {
 		"@kizlo/kit": "workspace:*",
+		"ajv": "^8.20.0",
+		"ajv-formats": "^3.0.1",
 		"use-debounce": "catalog:"
 	},
 	"devDependencies": {
@@ -113,9 +115,9 @@
 		"vitest": "catalog:"
 	},
 	"peerDependencies": {
-		"@kizlo/woocommerce": "^0.11.0",
+		"@kizlo/woocommerce": "^0.12.0",
 		"@tanstack/react-query": ">=5.102.0",
-		"kizlo": "^0.25.0",
+		"kizlo": "^0.26.0",
 		"nuqs": ">=2.10.0",
 		"react": ">=19.0.0"
 	},

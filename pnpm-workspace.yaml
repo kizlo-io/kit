@@ -7,12 +7,12 @@ allowBuilds:
   unrs-resolver: true
 
 catalog:
-  '@kizlo/woocommerce': ^0.11.0
+  '@kizlo/woocommerce': https://pkg.pr.new/@kizlo/woocommerce@3129ca0
   '@tanstack/react-query': ^5.102.0
   '@testing-library/react': ^16.3.3
   '@types/node': ^22.18.12
   happy-dom: ^20.14.5
-  kizlo: ^0.25.0
+  kizlo: https://pkg.pr.new/kizlo@3129ca0
   nuqs: ^2.10.0
   tsdown: ^0.15.6
   typescript: ^5.9.3
@@ -33,3 +33,8 @@ minimumReleaseAgeExclude:
 onlyBuiltDependencies:
   - esbuild
   - unrs-resolver
+
+# Previews rewrite unchanged shared dependencies to URLs; keep the already verified published shared package.
+overrides:
+  '@kizlo/woocommerce>@kizlo/shared': 0.10.0
+  'kizlo>@kizlo/shared': 0.10.0

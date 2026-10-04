@@ -104,3 +104,70 @@ export type Storefront = InferClientData<StorefrontProcedures["get"]>
 
 /** Any way reading the store's settings can fail. */
 export type StorefrontError = InferClientError<StorefrontProcedures["get"]>
+
+/** Metadata types follow the consumer's registered storefront procedure. */
+export type StorefrontFieldRule = Storefront["address"]["fields"][string]["required"]
+export type CheckoutFieldLocation = keyof Storefront["address"]["fieldLocations"]
+export type Customer = InferClientData<Procedures["customers"]["get"]>
+export type CheckoutFieldDocument = {
+	cart?: Record<string, unknown>
+	customer?: Record<string, unknown>
+	checkout?: Record<string, unknown>
+}
+export type CheckoutFieldContext = {
+	checkout?: Partial<Checkout> & Pick<Partial<ConfirmCheckoutInput>, "createAccount">
+	cart?: Partial<Cart>
+	customer?: Partial<Customer>
+	/** Explicit Woo-shaped data for values the normalized API does not expose (for example prefers_collection). */
+	document?: CheckoutFieldDocument
+}
+export type CheckoutFieldResolution =
+	| { status: "resolved"; required: boolean; hidden: boolean }
+	| {
+			status: "unresolved"
+			required: boolean | null
+			hidden: boolean | null
+			issues: { reason: "missing-context" | "unsupported-rule"; detail: string }[]
+	  }
+
+/** Segment paths keep a plugin ID containing dots/brackets intact; adapters own their form-library names. */
+export type CheckoutFieldValuePath =
+	| { [K in Exclude<keyof Checkout["billingAddress"], "additionalFields">]: readonly ["billingAddress", K] }[Exclude<
+			keyof Checkout["billingAddress"],
+			"additionalFields"
+	  >]
+	| { [K in Exclude<keyof Checkout["shippingAddress"], "additionalFields">]: readonly ["shippingAddress", K] }[Exclude<
+			keyof Checkout["shippingAddress"],
+			"additionalFields"
+	  >]
+	| readonly ["billingAddress", "additionalFields", string]
+	| readonly ["shippingAddress", "additionalFields", string]
+	| readonly ["additionalFields", string]
+
+export type ResolvedCheckoutField = Storefront["address"]["fields"][string] & {
+	key: string
+	location: CheckoutFieldLocation
+	group: "billing" | "shipping" | "other" | null
+	valuePath: CheckoutFieldValuePath | null
+	resolved: CheckoutFieldResolution
+}
+
+/** The value at a resolved segment path, read from the consumer's active checkout contract. */
+export type CheckoutFieldValue<TPath extends CheckoutFieldValuePath> = TPath extends readonly [
+	"billingAddress",
+	infer K extends keyof Checkout["billingAddress"],
+]
+	? Checkout["billingAddress"][K]
+	: TPath extends readonly ["shippingAddress", infer K extends keyof Checkout["shippingAddress"]]
+		? Checkout["shippingAddress"][K]
+		: TPath extends readonly ["billingAddress", "additionalFields", infer K extends keyof Checkout["billingAddress"]["additionalFields"]]
+			? Checkout["billingAddress"]["additionalFields"][K]
+			: TPath extends readonly [
+						"shippingAddress",
+						"additionalFields",
+						infer K extends keyof Checkout["shippingAddress"]["additionalFields"],
+					]
+				? Checkout["shippingAddress"]["additionalFields"][K]
+				: TPath extends readonly ["additionalFields", infer K extends keyof Checkout["additionalFields"]]
+					? Checkout["additionalFields"][K]
+					: never

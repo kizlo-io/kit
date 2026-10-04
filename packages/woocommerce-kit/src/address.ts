@@ -9,7 +9,8 @@
  * block's `getFieldsForCountry` builds them.
  */
 
-import type { Storefront } from "./types"
+import { resolveFields } from "./fields"
+import type { CheckoutFieldContext, ResolvedCheckoutField, Storefront } from "./types"
 
 /** The store's address data: its countries, their states and locale overrides, and the default field definitions. */
 export type StorefrontAddress = Storefront["address"]
@@ -24,7 +25,7 @@ export type StorefrontState = StorefrontCountry["states"][number]
  * One address field as it applies to a country.
  *
  * `required` and `hidden` stay as the store sent them: a boolean, or a JSON Schema rule object for a plugin-registered field.
- * The kit does not evaluate rule objects; {@link isAddressComplete} reads one as required and visible.
+ * Resolved fields expose evaluated rules separately; {@link isAddressComplete} reads raw rules as required and visible.
  */
 export type AddressField = StorefrontAddress["fields"][string] & { key: string }
 
@@ -35,7 +36,7 @@ export type AddressCountryModel = {
 	/** The store's country, or `null` for a code it does not know. */
 	country: StorefrontCountry | null
 	/** The country's address fields in display order, hidden ones included. The default fields for an unknown country. */
-	fields: AddressField[]
+	fields: ResolvedCheckoutField[]
 	/** The country's states in the store's order, or `[]` when it has none and the state is free text or absent. */
 	states: readonly StorefrontState[]
 	/** What the country calls its state field — "Province", "County", "Prefecture" — or the default label. */
@@ -83,10 +84,24 @@ export function addressFields(address: StorefrontAddress, countryCode: string | 
 	return fields.sort((a, b) => (a.index ?? Number.POSITIVE_INFINITY) - (b.index ?? Number.POSITIVE_INFINITY))
 }
 
-/** Everything an address form needs for one country: its fields, its states and the local name of the state field. */
-export function resolveAddressCountry(address: StorefrontAddress, countryCode: string | null | undefined): AddressCountryModel {
+/**
+ * Country metadata with effective options and rules. Supply `group` to resolve SDK targets and scope Woo's customer.address.
+ * Existing two-argument calls retain country/locale behavior; address value paths remain null until the group is supplied.
+ */
+export function resolveAddressCountry(
+	address: StorefrontAddress,
+	countryCode: string | null | undefined,
+	context: CheckoutFieldContext & { group?: "billing" | "shipping" } = {},
+): AddressCountryModel {
 	const country = findCountry(address, countryCode) ?? null
-	const fields = addressFields(address, countryCode)
+	const fields = resolveFields(address, addressFields(address, countryCode), "address", context, context.group).map((field) => {
+		if (field.key !== "state" || !country) return field
+		return {
+			...field,
+			type: country.states.length ? "select" : "text",
+			options: country.states.map((state) => ({ value: state.code, label: state.name })),
+		}
+	})
 
 	return {
 		code: countryCode ?? "",
