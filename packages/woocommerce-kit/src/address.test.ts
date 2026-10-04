@@ -136,7 +136,9 @@ describe("resolveAddressCountry", () => {
 	it("falls back for an unknown country code rather than throwing", () => {
 		const model = resolveAddressCountry(address, "ZZ")
 		expect(model).toMatchObject({ code: "ZZ", country: null, stateLabel: "State/County", states: [] })
-		expect(model.fields).toEqual(addressFields(address, undefined))
+		expect(model.fields.map(({ location: _location, group: _group, valuePath: _path, resolved: _resolved, ...field }) => field)).toEqual(
+			addressFields(address, undefined),
+		)
 	})
 })
 

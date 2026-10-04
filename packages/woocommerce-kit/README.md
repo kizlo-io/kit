@@ -590,12 +590,94 @@ export function ShippingAddress({ address }: { address: { country: string; state
 | --- | --- |
 | `billingCountries(address)` / `shippingCountries(address)` | The countries the store bills to or ships to, in the store's order. |
 | `addressFields(address, country)` | The country's address fields in display order: each default field overlaid with the country's locale, so `label`, `required`, `hidden` and `index` are what that country uses. Hidden fields are included; skip them when rendering. |
-| `resolveAddressCountry(address, country)` | Everything a form needs for one country: its `fields`, its `states` (`[]` when it has none, so the state is free text or hidden) and `stateLabel`, the country's own name for that field — "Emirate", "County" — or the default label. |
+| `resolveAddressCountry(address, country, context?)` | Resolved descriptors, plus the existing country information: its `fields`, its `states` (`[]` when it has none, so the state is free text or hidden) and `stateLabel`, the country's own name for that field — "Emirate", "County" — or the default label. |
 | `isAddressComplete(address, input)` | Whether the shopper has filled in every field the store needs before it quotes shipping, by WooCommerce's own rule: a country, and each of country, state, postcode and city hidden, optional or filled for that country. |
 
 An unknown or empty country code answers the default fields rather than throwing, so a form keeps rendering while the shopper
 corrects it. A plugin-registered field may carry a JSON Schema rule object in `required` or `hidden` instead of a boolean; the
 kit passes it through untouched, and `isAddressComplete` reads it as required and visible.
+
+### Resolved checkout fields
+
+`resolveAddressCountry(address, country, context)` adds SDK segment paths, registration locations/groups, effective controls,
+options, and `resolved` visibility/requiredness. Supply `group: "billing"` or `"shipping"` to scope an address. The two-argument
+helper still returns the country's fields, states, and label; its address paths are `null` until a group is supplied.
+`addressFields` remains the raw locale-overlaid metadata helper, and `isAddressComplete` retains its conservative behavior.
+
+```ts
+import { resolveAddressCountry, resolveCheckoutFields } from "@kizlo/woocommerce-kit"
+import type { Checkout, Storefront } from "@kizlo/woocommerce-kit"
+
+function checkoutControls(storefront: Storefront, checkout: Checkout) {
+	const context = { checkout }
+	return [
+		...resolveAddressCountry(storefront.address, checkout.billingAddress.country, { ...context, group: "billing" }).fields,
+		...resolveAddressCountry(storefront.address, checkout.shippingAddress.country, { ...context, group: "shipping" }).fields,
+		...resolveCheckoutFields(storefront.address, "contact", context),
+		...resolveCheckoutFields(storefront.address, "order", context),
+	]
+}
+```
+
+Each descriptor retains `key`, `required`, `hidden`, labels, locale ordering and plugin options. Its `valuePath` identifies the
+SDK value: `first_name` becomes `["billingAddress", "firstName"]`, contact `email` becomes `["billingAddress", "email"]`, and
+registered billing `kizlo/tax-id` becomes `["billingAddress", "taxId"]` through the SDK's projection contract. Unprojected
+address extras target `["shippingAddress", "additionalFields", "plugin/a.b[0]"]`; that entire plugin ID stays one segment.
+Contact/order extras both target `["additionalFields", id]` while preserving their separate `location`. A missing group or
+ambiguous identity has a `null` path. The adapter owns field-name escaping and remapping for copied billing controls.
+
+The state descriptor has `type: "select"` and `options: [{ value, label }]` when a known country has states, or `type: "text"`
+and no options otherwise. Locale-hidden states stay hidden. An unknown country retains default metadata and options.
+No country/state table or code/name conversion is needed in the form.
+
+```tsx
+import type { ResolvedCheckoutField } from "@kizlo/woocommerce-kit"
+
+// A storefront-owned custom control; read/write its value using field.valuePath in the form adapter.
+function CustomControl({ field, value, onChange }: {
+	field: ResolvedCheckoutField
+	value: string | boolean | undefined
+	onChange: (value: string | boolean) => void
+}) {
+	if (field.valuePath === null || field.resolved.status === "unresolved") {
+		return <p role="status">Field configuration is unavailable.</p>
+	}
+	if (field.resolved.hidden) return null
+	if (field.type === "select") {
+		return <select aria-label={field.label} required={field.resolved.required} value={String(value ?? "")}
+			onChange={(event) => onChange(event.target.value)}>
+			{field.options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+		</select>
+	}
+	if (field.type === "checkbox") {
+		return <input aria-label={field.label} type="checkbox" required={field.resolved.required} checked={value === true}
+			onChange={(event) => onChange(event.target.checked)} />
+	}
+	return <input aria-label={field.label} required={field.resolved.required} value={String(value ?? "")}
+		onChange={(event) => onChange(event.target.value)} />
+}
+```
+
+`Checkout`, `Storefront`, `CheckoutFieldValuePath`, and `CheckoutFieldValue<Path>` derive from `ActiveKizloClient` in
+`types.ts`. A consumer's generated schema registry preserves its registered checkbox/text types; wrong core paths or value
+types fail compilation. Runtime identity and reverse projection use the SDK helpers, rather than importing SDK model types.
+
+Rules use WooCommerce 11.0.1's draft-07 document convention, evaluated with AJV and standard formats. Supply complete current
+checkout, cart, or customer snapshots in `context`; recompute when they change. Contact values appear only in
+`customer.additional_fields`, order values only in `checkout.additional_fields`, and address extras/native projections in
+Woo's flattened address objects. Billing/shipping controls additionally receive their scoped `customer.address`.
+An empty billing email still has an email property; shipping has none. Hidden fields cannot be effectively required.
+
+Unavailable referenced data produces `resolved.status: "unresolved"`, with `missing-context` issues and `null` for unknown
+booleans. Unknown keywords/formats, invalid schemas, unsupported drafts, and schema references produce `unsupported-rule`.
+Consumers must handle this state explicitly; a rule object or `null` is never permission to mark a field optional or hidden.
+Compound rules conservatively require their referenced contexts, except unused `if` branches. Raw rules remain available.
+
+For Woo values absent from the normalized SDK, such as `cart.prefers_collection`, supply an explicit Woo-shaped override:
+`{ checkout, document: { cart: { prefers_collection: true } } }`. Overrides supplement each document bucket and preserve
+known false/empty values. Resolution performs no fetching, form synchronization, value clearing, or billing-copy policy.
+Shipping metadata can name an excluded registered field; that does not enable shipping persistence. Server sanitization
+and PHP validation callbacks remain authoritative.
 
 `isAddressComplete` checks completeness, not validity, exactly as WooCommerce's own check does. It does not check that the
 store ships to the country or that the state belongs to it, so offer only `shippingCountries` in the country picker and clear
