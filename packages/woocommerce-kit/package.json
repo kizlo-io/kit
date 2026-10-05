@@ -1,6 +1,6 @@
 {
 	"name": "@kizlo/woocommerce-kit",
-	"version": "0.6.0",
+	"version": "0.7.0",
 	"type": "module",
 	"description": "Headless WooCommerce storefront components for Kizlo, with framework-agnostic bones.",
 	"keywords": [
