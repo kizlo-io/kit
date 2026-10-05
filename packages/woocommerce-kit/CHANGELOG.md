@@ -1,5 +1,11 @@
 # @kizlo/woocommerce-kit
 
+## 0.7.0
+
+### Minor Changes
+
+- [#26](https://github.com/kizlo-io/kit/pull/26) [`9ccb18c`](https://github.com/kizlo-io/kit/commit/9ccb18c5beb616a3f44f3bacaee041c780a986e0) Thanks [@IDJGILL](https://github.com/IDJGILL)! - Resolve independent form field groups and JSON Schema validation with safe per-field fallbacks on Kizlo 0.26.
+
 ## 0.6.0
 
 ### Minor Changes
