@@ -24,9 +24,9 @@ export type StorefrontState = StorefrontCountry["states"][number]
  * One address field as it applies to a country.
  *
  * `required` and `hidden` stay as the store sent them: a boolean, or a JSON Schema rule object for a plugin-registered field.
- * The kit does not evaluate rule objects; {@link isAddressComplete} reads one as required and visible.
+ * Group-specific field resolvers evaluate these rules; {@link isAddressComplete} reads raw rules as required and visible.
  */
-export type AddressField = StorefrontAddress["fields"][string] & { key: string }
+export type AddressField = StorefrontAddress["fields"][number] & { key: string }
 
 /** Everything an address form needs to know about one country. */
 export type AddressCountryModel = {
@@ -73,17 +73,16 @@ export function addressFields(address: StorefrontAddress, countryCode: string | 
 	const locale = findCountry(address, countryCode)?.locale ?? {}
 
 	const fields: AddressField[] = []
-	for (const key of address.fieldLocations.address) {
-		const field = address.fields[key]
-		if (!field) continue
-		fields.push({ ...field, ...locale[key], key })
+	for (const field of address.fields) {
+		if (field.location !== "address") continue
+		fields.push({ ...field, ...locale[field.id], key: field.id })
 	}
 
 	// `sort` is stable, so fields without an index keep the store's own order after those that have one.
 	return fields.sort((a, b) => (a.index ?? Number.POSITIVE_INFINITY) - (b.index ?? Number.POSITIVE_INFINITY))
 }
 
-/** Everything an address form needs for one country: its fields, its states and the local name of the state field. */
+/** Country metadata and locale fields, retained for address display and completeness consumers. */
 export function resolveAddressCountry(address: StorefrontAddress, countryCode: string | null | undefined): AddressCountryModel {
 	const country = findCountry(address, countryCode) ?? null
 	const fields = addressFields(address, countryCode)
@@ -93,7 +92,7 @@ export function resolveAddressCountry(address: StorefrontAddress, countryCode: s
 		country,
 		fields,
 		states: country?.states ?? [],
-		stateLabel: fields.find((field) => field.key === "state")?.label ?? address.fields.state?.label ?? "",
+		stateLabel: fields.find((field) => field.key === "state")?.label ?? address.fields.find((field) => field.id === "state")?.label ?? "",
 	}
 }
 
