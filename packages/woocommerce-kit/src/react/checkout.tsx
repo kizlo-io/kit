@@ -8,7 +8,7 @@
  * one cart.
  */
 
-import { isServer, useIsMutating, useMutation, useQuery } from "@tanstack/react-query"
+import { useIsMutating, useMutation } from "@tanstack/react-query"
 import { useKizloContext } from "kizlo/react"
 import { useCallback } from "react"
 import { cartQueryKey } from "../cart"
@@ -16,6 +16,7 @@ import { type CheckoutCallbacks, type CheckoutSuccessEvent, checkoutQueryKey, re
 import type { Checkout, CheckoutError, ConfirmCheckoutInput } from "../types"
 import { useWooCommerceContext } from "./context"
 import { notify } from "./notify"
+import { useCheckoutQuery } from "./session-queries"
 
 /** The core checkout types, available beside the hook that returns them. */
 export type {
@@ -102,16 +103,7 @@ export function useCheckout(options?: CheckoutHookOptions): CheckoutApi {
 	const { client } = useKizloContext()
 	const { queryClient } = useWooCommerceContext()
 
-	const checkoutQuery = useQuery<Checkout, CheckoutError>({
-		enabled: !isServer,
-		// React Query reports a failure by rejection, which is what `.call` does.
-		queryFn: async () => {
-			const checkout = await client.woocommerce.checkout.get.call()
-			queryClient.setQueryData(cartQueryKey, checkout.cart)
-			return checkout
-		},
-		queryKey: checkoutQueryKey,
-	})
+	const checkoutQuery = useCheckoutQuery()
 
 	// One confirmation, run by React Query: the phases, the pending state and the last failure are all the mutation's own. The
 	// options are read from the last committed render, which is what a callback ref used to buy.

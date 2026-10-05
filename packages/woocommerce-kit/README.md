@@ -598,58 +598,160 @@ An unknown or empty country code answers the default fields rather than throwing
 corrects it. A plugin-registered field may carry a JSON Schema rule object in `required` or `hidden` instead of a boolean; the
 kit passes it through untouched, and `isAddressComplete` reads it as required and visible.
 
-### Form field transformations and validation
+### Checkout fields and validation
 
-Resolve each group independently. Your application owns section placement, address cards, saved-address lists, dialogs, form state and rendering.
+`useCheckoutFields({ values } = {})` is the optional checkout integration. It reads storefront definitions, checkout identity
+and the latest acknowledged cart through the app's existing QueryClient. It returns all four groups together and builds the
+Woo condition document internally. Mount the existing `KizloProvider`, `QueryClientProvider` and `WooCommerceProvider`;
+there is no feature provider or form-library dependency.
 
-```ts
-import {
-  resolveBillingAddressFields, resolveShippingAddressFields,
-  resolveContactFields, resolveOrderFields, toStandardSchema,
-} from "@kizlo/woocommerce-kit"
-import type { Cart, Checkout, Storefront } from "@kizlo/woocommerce-kit"
+| Result | Meaning |
+| --- | --- |
+| `fields.billing`, `.shipping`, `.contact`, `.order` | Metadata in field order, including labels, options, attributes, full submission `key` paths and resolved `required`/`hidden` booleans. |
+| `defaultValues` | A fresh loaded editable checkout snapshot, or `null` before checkout and cart are available. The application decides when to initialize or replace its form. |
+| `schema` | Standard Schema v1 validation for `CheckoutFieldValues`, or `null` before all sources are available. A captured validator reads the latest committed sources and resolves conditions against every candidate. |
+| `unsupported` | Field/group/path/reason diagnostics for unavailable data, invalid schemas/bindings, binding collisions and widgets requiring application integration. |
+| `isLoading`, `isRepricing`, `error` | Initial loading, queued/in-flight address or shipping-rate changes, and source fetch failures. Unsupported definitions are reported separately from fetch errors. |
 
-function addressEditor(store: Storefront, initial: Cart["billingAddress"]) {
-  const resolve = (values: typeof initial) => resolveBillingAddressFields({
-    fields: store.address.fields, countries: store.address.countries, values,
-    presentation: {
-      first_name: { row: "name", order: 10 },
-      last_name: { row: "name", order: 20 },
-      phone: { order: 100 },
-    },
-  })
-  return {
-    initialFields: resolve(initial).fields,
-    resolve,
-    validator: toStandardSchema<typeof initial>((values) => resolve(values).schema),
+Supply the **complete current editable snapshot**, not a patch for the last change. `CheckoutFieldValues` derives from the
+consumer's confirmation input, including custom additional fields and other submission controls. With `values` absent,
+rendering uses loaded defaults. Once values are supplied, empty strings, `false`, missing optional values and omitted optional
+groups are authoritative; loaded additional fields are never merged back over edits. The hook never resets values, removes
+hidden values, saves an address, selects shipping or confirms checkout.
+
+This controlled example initializes once, renders every group and submits separately. `CheckoutFieldControl` is application-owned code: adapt its markup and attributes as needed. Keep plugin IDs as single segments instead of splitting on dots, brackets or slashes.
+
+```tsx
+"use client"
+import { useEffect, useState } from "react"
+import type { ResolvedField } from "@kizlo/woocommerce-kit"
+import { useCheckoutFields, type CheckoutFieldValues } from "@kizlo/woocommerce-kit/react/checkout-fields"
+import { useCheckout } from "@kizlo/woocommerce-kit/react/checkout"
+
+function readAt(value: unknown, path: readonly string[]): unknown {
+  for (const key of path) {
+    if (!value || typeof value !== "object") return undefined
+    value = (value as Record<string, unknown>)[key]
   }
+  return value
 }
 
-function checkoutGroups(store: Storefront, checkout: Checkout) {
-  return {
-    billing: resolveBillingAddressFields({fields: store.address.fields, countries: store.address.countries, values: checkout.billingAddress}),
-    shipping: resolveShippingAddressFields({fields: store.address.fields, countries: store.address.countries, values: checkout.shippingAddress}),
-    contact: resolveContactFields({fields: store.address.fields, values: {billingAddress: {email: checkout.billingAddress.email}, additionalFields: checkout.additionalFields}}),
-    order: resolveOrderFields({fields: store.address.fields, values: {additionalFields: checkout.additionalFields}}),
-  }
+function writeAt(value: object, path: readonly string[], next: unknown): object {
+  const [key, ...rest] = path
+  if (!key) return value
+  const current = readAt(value, [key])
+  return { ...value, [key]: rest.length
+    ? writeAt(current && typeof current === "object" ? current : {}, rest, next)
+    : next }
+}
+
+function CheckoutFieldControl({ field, value, onChange }: {
+  field: ResolvedField; value: unknown; onChange: (value: unknown) => void
+}) {
+  const id = JSON.stringify(field.key)
+  const text = typeof value === "string" || typeof value === "number" ? String(value) : ""
+  const props = { ...field.attributes, id, required: field.required, autoComplete: field.autocomplete ?? undefined }
+  const control = field.type === "select"
+    ? <select {...props} value={text} onChange={(event) => onChange(event.currentTarget.value)}>
+        <option value="">Select…</option>
+        {field.options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+      </select>
+    : field.type === "textarea"
+      ? <textarea {...props} value={text} onChange={(event) => onChange(event.currentTarget.value)} />
+      : <input {...props} type={field.type ?? "text"} checked={field.type === "checkbox" ? value === true : undefined}
+          value={field.type === "checkbox" ? undefined : text} onChange={(event) => onChange(
+            field.type === "checkbox" ? event.currentTarget.checked
+              : field.type === "number" ? (event.currentTarget.value === "" ? undefined : event.currentTarget.valueAsNumber)
+              : event.currentTarget.value
+          )} />
+  return <label htmlFor={id}>{field.label}{control}</label>
+}
+
+export function CheckoutForm() {
+  const [values, setValues] = useState<CheckoutFieldValues>()
+  const [issues, setIssues] = useState<readonly { message: string; path?: readonly (string | number)[] }[]>([])
+  const { fields, defaultValues, schema, unsupported, isLoading, isRepricing, error } = useCheckoutFields({ values })
+  const { confirm, isPending } = useCheckout({ onSuccess: ({ redirectUrl }) => {
+    if (redirectUrl) window.location.assign(redirectUrl)
+  } })
+
+  // This application chooses one-time initialization; refreshed defaults do not reset an edited form.
+  useEffect(() => {
+    if (values === undefined && defaultValues) setValues(defaultValues)
+  }, [values, defaultValues])
+
+  if (isLoading) return <p>Loading checkout…</p>
+  if (!values || !schema) return <p>{error?.message ?? "Checkout is unavailable"}</p>
+
+  return <form onSubmit={async (event) => {
+    event.preventDefault()
+    if (isRepricing || isPending || unsupported.length) return
+    const result = await schema["~standard"].validate(values)
+    if ("issues" in result) { setIssues(result.issues); return }
+    setIssues([])
+    if (values.billingAddress && values.paymentMethod) {
+      confirm({ ...values, billingAddress: values.billingAddress, paymentMethod: values.paymentMethod })
+    }
+  }}>
+    {(["billing", "shipping", "contact", "order"] as const).map((group) => <section key={group}>
+      <h2>{group}</h2>
+      {fields[group].filter((field) => !field.hidden).map((field) => <CheckoutFieldControl
+        key={JSON.stringify(field.key)} field={field} value={readAt(values, field.key)}
+        onChange={(next) => setValues((current) => writeAt(current ?? {}, field.key, next) as CheckoutFieldValues)}
+      />)}
+    </section>)}
+    {/* Payment-method selection and other checkout controls also update this same full snapshot. */}
+    {issues.map((issue) => <p key={JSON.stringify(issue)}>{issue.message}</p>)}
+    {error ? <p role="alert">{error.message}</p> : null}
+    {unsupported.length ? <p>Some checkout fields require application integration.</p> : null}
+    {isRepricing ? <p>Updating totals…</p> : null}
+    <button type="submit" disabled={isPending || isRepricing || unsupported.length > 0}>Place order</button>
+  </form>
 }
 ```
 
-Each call returns `{ fields, schema }`. Recompute fields with current form values when dependencies change. Pass the Standard Schema validator to a supporting form library's validation configuration; the factory resolves against each candidate value. `toStandardSchema(schema)` also supports a fixed schema when conditions cannot change.
+The validator evaluates all four groups against each candidate and current sources, reports SDK submission paths and returns
+the **same candidate object** on success. There is no coercion, trimming, default insertion or field removal. Required strings
+must be nonblank, required checkboxes must be true, selects enforce their options, optional strings accept empty strings, and
+hidden fields impose no widget or value-schema requirements until visible. Hidden metadata and submitted values are retained.
+When the acknowledged cart has `needsShipping: false`, `fields.shipping` is empty and shipping fields are excluded from validation;
+any supplied shipping values remain unchanged. Rendering metadata retains the producer's value schema; the returned `schema` is
+the whole-form validator to pass to a Standard Schema form adapter.
 
-A resolved field keeps `id`, `location`, rendering attributes and its value schema, adds `key` as a segment array, and returns `required`/`hidden` booleans. Billing `first_name` uses `["firstName"]`, Tax ID uses `["taxId"]`, and extras use `["additionalFields", "plugin/a.b[0]"]`. The complete ID stays one segment. An optional `prefix: ["billingAddress"]` prefixes both keys and the generated object schema. Form adapters own the conversion to their library's naming syntax.
+Billing paths start with `billingAddress`, shipping paths with `shippingAddress`, and contact/order extras use
+`["additionalFields", "plugin/a.b[0]"]`. Native billing Tax ID uses `["billingAddress", "taxId"]` and remains absent from
+shipping. Country locale changes labels/order/requirements/visibility; country options respect group eligibility and state
+options switch between select and text controls. Server failures keep their native targets: the seeded `qa/pickup-reference`
+requiredness failure targets the `additionalFields` **group**, while client validation knows its leaf path. Do not fabricate
+a leaf identity for a group-level server error from `useCheckout`.
 
-The SDK's definitions supply bindings from its address/projection contract; Kit never imports the integration at runtime or carries its own key table. Country locale changes labels/order/requirements/visibility. Country options respect billing/shipping eligibility; state options use `{ value, label }`, with select/text control behavior provided directly. `presentation` provides optional row/order hints; it does not choose sections or markup.
+Checkout bootstrap seeds the existing cart cache. A fields-only consumer waits for this seed before enabling its own cart
+fetch; `cartEnabled: false` still permits cache subscriptions and forbids that fetch. Existing cart consumers keep their own
+configuration. During repricing, conditions use acknowledged totals and selected methods, never optimistic totals or an
+unsaved pickup choice. A failed refresh exposes its error while retained acknowledged data stays available.
 
-The complete JSON Schema validates the same object shape the API accepts. Visible required strings must be nonblank, required checkboxes must be true, selects enforce their options, optional string fields accept empty strings, and hidden/skipped fields impose no validation. Unrelated and retained additional values are allowed and never removed. Declared regex `pattern` is supported; this change adds no Tax ID regex.
+The condition engine uses AJV draft-07 with `$data`, PHP-compatible email, date/time/URI formats and custom error messages.
+Schemas and references are isolated per field. Only compiled schemas are cached; documents and resolved results contain no
+shared shopper state. Unknown keywords/formats, malformed schemas, missing producer dependencies and custom widgets produce
+diagnostics and validation issues rather than a silent successful validation. The application must integrate unsupported
+widgets explicitly; server sanitization and validation remain authoritative.
 
-Rules evaluate against a locally reconstructed Woo-shaped document using current values, not an optional context bag. Core address properties retain their empty-string defaults only in the evaluation document; submitted values are never changed. Billing Tax ID checks whether the scoped address has an email property, including an empty email. Shipping has no email projection. Contact/order values keep their respective Woo rule scopes even though Kizlo stores both in checkout `additionalFields`.
+The [pinned producer mapping](https://github.com/kizlo-io/kizlo/blob/77df467557d310521180588e13415313401bfb01/packages/woocommerce/docs/checkout-conditions.md)
+uses rounded-up purchasable quantities, dense distinct item types/rates, unchanged fractional counts/weight, numeric minor-unit
+totals and opaque extension namespaces. Collection is true when any acknowledged selected method intersects
+`Storefront.checkout.localPickup.methodIds`. `null`/missing classification is unavailable; `[]` is known empty. Use the
+matching SDK/plugin contract when deploying the hook. The SDK's extracted reserved `kizlo` namespace stays unavailable.
+Unlike PHP, arrays remain dense/distinct and quantity ceiling follows JavaScript; unlike Woo's browser UI helper, collection
+uses PHP's any-selected-method predicate. There is no byte-for-byte PHP serialization claim.
 
-Unsupported individual definitions, malformed schemas, unsafe bindings and conditions requiring unavailable data are skipped. Missing optional rendering data gets defaults; unfamiliar string controls become text inputs. The result never includes statuses, configuration errors or null schemas, and a bad plugin field cannot throw out the other fields. Skipping does not erase existing values or bypass server requirements. Invalid external adapter schemas also degrade to pass-through validation. Server sanitization and PHP validation remain authoritative.
+### Existing independent resolvers
 
-The resolvers and Standard Schema adapter use `@cfworker/json-schema` with draft-07 rules and built-in format checks. Malformed schemas and unknown keywords/formats are rejected during field resolution. Schemas are cloned before evaluation; undefined object properties count as missing only in the validation copy. The adapter returns the original submitted values without coercion or defaults.
-
-Submit the form's unchanged API shape through `cart.update({body: {billingAddress: values}})` for an address edit or the existing checkout confirmation input for checkout submission. The SDK handles Store API wire serialization; consumers do not flatten or rename fields.
+`resolveBillingAddressFields`, `resolveShippingAddressFields`, `resolveContactFields`, `resolveOrderFields` and
+`toStandardSchema` remain available for compatibility. Each resolver returns `{ fields, schema }` for its individual input
+group, supports prefixes and presentation hints, and uses `@cfworker/json-schema`. Their local documents skip cart dependencies
+and `$data` without diagnostics; invalid external adapter schemas retain their existing pass-through behavior. Use
+`useCheckoutFields` for checkout's coordinated conditions and whole-form validation. Customer profiles and multiple-address
+management remain independent application features.
 
 `isAddressComplete` checks completeness, not validity, exactly as WooCommerce's own check does. It does not check that the
 store ships to the country or that the state belongs to it, so offer only `shippingCountries` in the country picker and clear
@@ -667,6 +769,7 @@ client from `QueryClientProvider`.
 | `@kizlo/woocommerce-kit` | The core. Collection grammar and model, cart and checkout cache keys and events, search request, href and cache helpers, quantity, money and address helpers, and every type. No framework. |
 | `@kizlo/woocommerce-kit/react` | `ProductCollectionProvider`, `useProductCollection`, and the model types it returns. Carries `"use client"`. |
 | `@kizlo/woocommerce-kit/react/cart` | `useCart`, `useCartAddress`, `useCartShippingRates`, `useCartItem`, `useCartCoupon`. Carries `"use client"`. Needs `@tanstack/react-query`. |
+| `@kizlo/woocommerce-kit/react/checkout-fields` | `useCheckoutFields` and its controlled-value, result and diagnostic types. Carries `"use client"`. Needs `@tanstack/react-query`. |
 | `@kizlo/woocommerce-kit/react/checkout` | `useCheckout` and its callback types. Carries `"use client"`. Needs `@tanstack/react-query`. |
 | `@kizlo/woocommerce-kit/react/provider` | `WooCommerceProvider`, this kit's app-level configuration. Carries `"use client"`. Needs `@tanstack/react-query`. |
 | `@kizlo/woocommerce-kit/react/search` | `useProductSearch`. Carries `"use client"`. Needs `@tanstack/react-query`. |

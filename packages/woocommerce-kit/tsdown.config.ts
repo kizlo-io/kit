@@ -11,6 +11,8 @@ import { defineConfig } from "tsdown"
 const clientModules = [
 	"src/react/cart.tsx",
 	"src/react/checkout.tsx",
+	"src/react/checkout-fields.tsx",
+	"src/react/session-queries.tsx",
 	"src/react/client.tsx",
 	"src/react/context.tsx",
 	"src/react/provider.tsx",
@@ -31,6 +33,7 @@ export default defineConfig({
 		index: "src/index.ts",
 		"react/cart": "src/react/cart.tsx",
 		"react/checkout": "src/react/checkout.tsx",
+		"react/checkout-fields": "src/react/checkout-fields.tsx",
 		"react/client": "src/react/client.tsx",
 		"react/provider": "src/react/provider.tsx",
 		"react/search": "src/react/search.tsx",
