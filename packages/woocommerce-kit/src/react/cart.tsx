@@ -101,7 +101,7 @@ function cartRequest(procedures: CartProcedures, variables: CartActionPayload): 
 	}
 }
 
-/** Neither outcome interests the quantity control's write: its promise says only that the save settled. */
+/** Legacy quantity saves report failures on the hook instead of rejecting. */
 const noop = () => {}
 
 /**
@@ -172,18 +172,14 @@ function useCartAction(scope: readonly string[], options: CartHookOptions | unde
 		if (!isPending) reset()
 	}, [isPending, reset])
 
-	// `mutate` is what the public actions hand out, because none of them has anything to report. The quantity control is the one
-	// caller that awaits its save, to know the store has answered; the failure itself is already on `error`.
-	const write = useCallback((variables: CartActionPayload) => mutateAsync(variables).then(noop, noop), [mutateAsync])
-
 	return {
 		...data,
 		error: mutation.error,
 		failedAddressInput: mutation.error && mutation.variables?.type === "update_customer" ? mutation.variables.input : null,
 		isPending,
 		mutate,
+		mutateAsync,
 		reset: clearSettled,
-		write,
 	}
 }
 
@@ -268,10 +264,14 @@ export type CartAddressApi = {
 	isPending: boolean
 	/** Debounces the current form snapshot, retaining the latest values while an address save runs. */
 	onAddressChange: (input: CartAddressSnapshotInput) => void
+	/** Awaits the latest coalesced snapshot; skipped or cancelled queued edits resolve undefined. */
+	onAddressChangeAsync: (input: CartAddressSnapshotInput) => Promise<Cart | undefined>
 	/** Clears the last failure once it has settled. */
 	reset: () => void
 	/** Saves the customer's addresses. The email is a field inside `billingAddress` rather than a sibling of it. */
 	update: (input: UpdateCartInput) => void
+	/** Saves the same address patch and returns the acknowledged cart; rejects on failure. */
+	updateAsync: (input: UpdateCartInput) => Promise<Cart>
 }
 
 function matchesSavedAddresses(input: CartAddressSnapshotInput, cart: Cart | null, failedInput: UpdateCartInput): boolean {
@@ -337,10 +337,11 @@ function matchesSavedAddresses(input: CartAddressSnapshotInput, cart: Cart | nul
  */
 export function useCartAddress(options?: CartAddressHookOptions): CartAddressApi {
 	const scope = useMemo(() => addressMutationKey, [])
-	const { error, failedAddressInput, isPending, mutate, reset } = useCartAction(scope, options)
+	const { error, failedAddressInput, isPending, mutate, mutateAsync, reset } = useCartAction(scope, options)
 	const { queryClient } = useWooCommerceContext()
 	const owner = useId()
 	const latest = useRef<CartAddressSnapshotInput | null>(null)
+	const waiters = useRef<{ resolve: (cart: Cart | undefined) => void; reject: (error: unknown) => void }[]>([])
 	const { addressDebounceMs = 1500, shouldUpdateAddress = defaultShouldUpdateAddress } = options ?? {}
 
 	const markQueued = useCallback(
@@ -356,12 +357,14 @@ export function useCartAddress(options?: CartAddressHookOptions): CartAddressApi
 	useEffect(
 		() => () => {
 			latest.current = null
+			for (const waiter of waiters.current.splice(0)) waiter.resolve(undefined)
 			markQueued(false)
 		},
 		[markQueued],
 	)
 
 	const update = useCallback((input: UpdateCartInput) => mutate({ input, type: "update_customer" }), [mutate])
+	const updateAsync = useCallback((input: UpdateCartInput) => mutateAsync({ input, type: "update_customer" }), [mutateAsync])
 
 	const clearSavedFailure = useCallback(
 		(input: CartAddressSnapshotInput, cart: Cart | null) => {
@@ -380,8 +383,23 @@ export function useCartAddress(options?: CartAddressHookOptions): CartAddressApi
 		}
 		latest.current = null
 		const cart = queryClient.getQueryData<Cart>(cartQueryKey) ?? null
-		if (shouldUpdateAddress(input, cart)) update(input)
-		else clearSavedFailure(input, cart)
+		// Detach this batch before dispatch so edits during the request belong to the next batch.
+		const batch = waiters.current.splice(0)
+		if (shouldUpdateAddress(input, cart)) {
+			if (batch.length === 0) update(input)
+			else
+				void updateAsync(input).then(
+					(saved) => {
+						for (const waiter of batch) waiter.resolve(saved)
+					},
+					(error) => {
+						for (const waiter of batch) waiter.reject(error)
+					},
+				)
+		} else {
+			clearSavedFailure(input, cart)
+			for (const waiter of batch) waiter.resolve(undefined)
+		}
 		markQueued(false)
 	}, addressDebounceMs)
 
@@ -398,6 +416,7 @@ export function useCartAddress(options?: CartAddressHookOptions): CartAddressApi
 				clearSavedFailure(latest.current, cart)
 				latest.current = null
 				push.cancel()
+				for (const waiter of waiters.current.splice(0)) waiter.resolve(undefined)
 				markQueued(false)
 				return
 			}
@@ -407,7 +426,16 @@ export function useCartAddress(options?: CartAddressHookOptions): CartAddressApi
 		[clearSavedFailure, markQueued, push, queryClient, scope, shouldUpdateAddress],
 	)
 
-	return { error, isPending, onAddressChange, reset, update }
+	const onAddressChangeAsync = useCallback(
+		(input: CartAddressSnapshotInput): Promise<Cart | undefined> =>
+			new Promise((resolve, reject) => {
+				waiters.current.push({ resolve, reject })
+				onAddressChange(input)
+			}),
+		[onAddressChange],
+	)
+
+	return { error, isPending, onAddressChange, onAddressChangeAsync, reset, update, updateAsync }
 }
 
 export type CartShippingRatesApi = {
@@ -421,6 +449,8 @@ export type CartShippingRatesApi = {
 	reset: () => void
 	/** Chooses one of a package's rates. Pass the package's own `id`; omit it for a cart with a single package. */
 	selectShippingRate: (rateId: string, packageId?: string | number | null) => void
+	/** Chooses the same rate and returns the acknowledged cart; rejects on failure. */
+	selectShippingRateAsync: (rateId: string, packageId?: string | number | null) => Promise<Cart>
 	/** The store's packages, each with its rates and which of them is selected. Empty while there is no cart. */
 	shippingPackages: Cart["shippingPackages"]
 }
@@ -478,11 +508,16 @@ export type CartShippingRatesApi = {
  */
 export function useCartShippingRates(options?: CartHookOptions): CartShippingRatesApi {
 	const scope = useMemo(() => [...cartMutationKey, "shippingRate"], [])
-	const { cart, error, isPending, mutate, reset } = useCartAction(scope, options)
+	const { cart, error, isPending, mutate, mutateAsync, reset } = useCartAction(scope, options)
 
 	const selectShippingRate = useCallback(
 		(rateId: string, packageId?: string | number | null) => mutate({ packageId, rateId, type: "select_shipping_rate" }),
 		[mutate],
+	)
+
+	const selectShippingRateAsync = useCallback(
+		(rateId: string, packageId?: string | number | null) => mutateAsync({ packageId, rateId, type: "select_shipping_rate" }),
+		[mutateAsync],
 	)
 
 	return {
@@ -491,6 +526,7 @@ export function useCartShippingRates(options?: CartHookOptions): CartShippingRat
 		isPending,
 		reset,
 		selectShippingRate,
+		selectShippingRateAsync,
 		shippingPackages: cart?.shippingPackages ?? noShippingPackages,
 	}
 }
@@ -523,6 +559,8 @@ type QuantityButtonProps = {
 export type CartItemQuantity = {
 	/** Saves a pending edit now instead of waiting out the debounce. Resolves immediately when keyless or clean. */
 	commit: () => Promise<void>
+	/** Saves the pending edit and returns the acknowledged cart; rejects on failure, or resolves undefined when nothing can be saved. */
+	commitAsync: () => Promise<Cart | undefined>
 	/** The quantity the store holds. Without a key there is no store value, so this is `value`. */
 	committed: number
 	decrementProps: QuantityButtonProps
@@ -562,8 +600,8 @@ type QuantityFieldOptions = {
 	/** The line to save to. Without one the control is a draft and commits nothing. */
 	itemKey: string | undefined
 	limits: CartItemLimits
-	/** Writes one quantity to the store. Never rejects — a failure arrives on the hook's `error`. */
-	write: (quantity: number) => Promise<void>
+	/** Writes one quantity to the store, or skips a missing line. */
+	write: (quantity: number) => Promise<Cart | undefined>
 }
 
 /**
@@ -592,18 +630,20 @@ function useQuantityField({ autoCommit, committed, debounceMs, itemKey, limits, 
 		setPending(quantity)
 	}, [])
 
-	const save = useCallback(
+	const saveAsync = useCallback(
 		async (quantity: number) => {
 			sentRef.current = quantity
-			await writeLatest.current(quantity)
-
-			// A failed save leaves the store unchanged, so the edit is dropped here: the control falls back to the line's quantity
-			// with the failure on `error`. A successful one has already been dropped by the effect below.
-			if (pendingRef.current === quantity) setPendingQuantity(null)
+			try {
+				return await writeLatest.current(quantity)
+			} finally {
+				// Both APIs drop a refused edit and fall back to the acknowledged line quantity.
+				if (pendingRef.current === quantity) setPendingQuantity(null)
+			}
 		},
 		[setPendingQuantity, writeLatest],
 	)
 
+	const save = useCallback((quantity: number) => saveAsync(quantity).then(noop, noop), [saveAsync])
 	const schedule = useDebouncedCallback((quantity: number) => void save(quantity), debounceMs)
 
 	// The store caught up — through this hook's save, or a cart changed in another tab — so nothing is owed any more, and a save
@@ -642,7 +682,7 @@ function useQuantityField({ autoCommit, committed, debounceMs, itemKey, limits, 
 			const quantity = pendingRef.current
 			if (quantity === null || quantity === sentRef.current || !autoCommitLatest.current) return
 
-			void writeLatest.current(quantity)
+			void writeLatest.current(quantity).then(noop, noop)
 		},
 		[autoCommitLatest, writeLatest],
 	)
@@ -697,6 +737,13 @@ function useQuantityField({ autoCommit, committed, debounceMs, itemKey, limits, 
 		await save(quantity)
 	}, [keyed, save, schedule])
 
+	const commitAsync = useCallback(async () => {
+		const quantity = pendingRef.current
+		if (!keyed || quantity === null) return
+		schedule.cancel()
+		return saveAsync(quantity)
+	}, [keyed, saveAsync, schedule])
+
 	const revert = useCallback(() => {
 		schedule.cancel()
 		setPendingQuantity(null)
@@ -719,6 +766,7 @@ function useQuantityField({ autoCommit, committed, debounceMs, itemKey, limits, 
 
 	return {
 		commit,
+		commitAsync,
 		committed: keyed ? committed : value,
 		decrementProps: {
 			disabled: !limits.editable || value <= limits.minimum,
@@ -789,6 +837,8 @@ function quantityLimits(
 export type CartItemApi = {
 	/** Puts a product in the cart. Available with or without a key, because a product page has no line yet. */
 	addItem: (input: AddCartItemInput) => void
+	/** Adds with the same draft quantity default and returns the acknowledged cart; rejects on failure. */
+	addItemAsync: (input: AddCartItemInput) => Promise<Cart>
 	error: CartError | null
 	format: (amount: number) => string
 	/** This hook's own action is in flight. Another saving line does not set it. */
@@ -798,6 +848,8 @@ export type CartItemApi = {
 	/** The whole quantity control: what it shows, the range it stays in, and the props that drive it. */
 	quantity: CartItemQuantity
 	remove: () => void
+	/** Returns the acknowledged cart, or undefined when there is nothing to remove; rejects on failure. */
+	removeAsync: () => Promise<Cart | undefined>
 	/** Clears the last failure once it has settled. An uncommitted edit is discarded with `quantity.revert()`. */
 	reset: () => void
 }
@@ -868,16 +920,16 @@ export function useCartItem(first?: string | CartItemOptions, second?: CartItemO
 	const { autoCommit = true, debounceMs = 400, defaultQuantity = 1, limits: draftLimits } = options ?? {}
 
 	const scope = useMemo(() => [...cartMutationKey, "item", key ?? "add"], [key])
-	const { cart, error, format, isPending, mutate, reset, write } = useCartAction(scope, options)
+	const { cart, error, format, isPending, mutate, mutateAsync, reset } = useCartAction(scope, options)
 	const item = key === undefined ? null : (cart?.items.find((candidate) => candidate.key === key) ?? null)
 
 	const writeQuantity = useCallback(
 		(quantity: number) => {
-			if (!item || key === undefined) return Promise.resolve()
+			if (!item || key === undefined) return Promise.resolve(undefined)
 
-			return write({ key, previousQuantity: item.quantity, quantity, type: "update_cart_item" })
+			return mutateAsync({ key, previousQuantity: item.quantity, quantity, type: "update_cart_item" })
 		},
-		[item, key, write],
+		[item, key, mutateAsync],
 	)
 
 	const limits = quantityLimits(item, key !== undefined, draftLimits)
@@ -911,6 +963,14 @@ export function useCartItem(first?: string | CartItemOptions, second?: CartItemO
 		[draft, key, mutate],
 	)
 
+	const addItemAsync = useCallback(
+		(input: AddCartItemInput) => {
+			const body = key === undefined && input.quantity === undefined ? { ...input, quantity: draft } : input
+			return mutateAsync({ input: body, type: "add_to_cart" })
+		},
+		[draft, key, mutateAsync],
+	)
+
 	const remove = useCallback(() => {
 		if (!item || key === undefined) return
 
@@ -918,14 +978,21 @@ export function useCartItem(first?: string | CartItemOptions, second?: CartItemO
 		mutate({ item, key, type: "remove_from_cart" })
 	}, [item, key, mutate])
 
+	const removeAsync = useCallback(async () => {
+		if (!item || key === undefined) return
+		return mutateAsync({ item, key, type: "remove_from_cart" })
+	}, [item, key, mutateAsync])
+
 	return {
 		addItem,
+		addItemAsync,
 		error,
 		format,
 		isPending,
 		item,
 		quantity,
 		remove,
+		removeAsync,
 		reset,
 	}
 }
@@ -938,6 +1005,8 @@ export type CartCouponApi = {
 	 * chip pending. Apply from the field, or from a hook bound to the code being applied.
 	 */
 	apply: (code: string) => void
+	/** Applies the same code and returns the acknowledged cart; rejects on failure. */
+	applyAsync: (code: string) => Promise<Cart>
 	coupons: Cart["coupons"]
 	/** The last failure of this hook's code — or of the apply field, without one. */
 	error: CartError | null
@@ -945,6 +1014,8 @@ export type CartCouponApi = {
 	isPending: boolean
 	/** Removes this hook's code. Without one — no code, or an empty one — there is nothing to remove, so it does nothing. */
 	remove: () => void
+	/** Returns the acknowledged cart, or undefined when there is nothing to remove; rejects on failure. */
+	removeAsync: () => Promise<Cart | undefined>
 	/** Clears the last failure once it has settled. */
 	reset: () => void
 }
@@ -1023,12 +1094,13 @@ export function useCartCoupon(first?: string | CartHookOptions, second?: CartHoo
 		() => (code === undefined ? [...cartMutationKey, "coupon", "field"] : [...cartMutationKey, "coupon", "code", code]),
 		[code],
 	)
-	const { cart, error, isPending, mutate, reset } = useCartAction(scope, options)
+	const { cart, error, isPending, mutate, mutateAsync, reset } = useCartAction(scope, options)
 
 	// Deliberately the argument's code rather than this hook's, because the field form has no code of its own — the same latitude
 	// `addItem` has on a keyed `useCartItem`. The pending state and the failure still belong to this hook's scope, which is what
 	// the `apply` doc on `CartCouponApi` says.
 	const apply = useCallback((applied: string) => mutate({ code: applied, type: "apply_coupon" }), [mutate])
+	const applyAsync = useCallback((applied: string) => mutateAsync({ code: applied, type: "apply_coupon" }), [mutateAsync])
 
 	const remove = useCallback(() => {
 		if (code === undefined) return
@@ -1036,12 +1108,19 @@ export function useCartCoupon(first?: string | CartHookOptions, second?: CartHoo
 		mutate({ code, type: "remove_coupon" })
 	}, [code, mutate])
 
+	const removeAsync = useCallback(async () => {
+		if (code === undefined) return
+		return mutateAsync({ code, type: "remove_coupon" })
+	}, [code, mutateAsync])
+
 	return {
 		apply,
+		applyAsync,
 		coupons: cart?.coupons ?? noCoupons,
 		error,
 		isPending,
 		remove,
+		removeAsync,
 		reset,
 	}
 }

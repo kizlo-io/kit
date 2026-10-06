@@ -233,12 +233,54 @@ state held above them.
 line that went out of stock, a coupon that stopped applying — read straight off `cart` as `{ code, message }`. A hook's `error` is
 the failure of the request that hook just made.
 
-**An action returns nothing.** `addItem`, `remove`, `apply`, `update` and the rest report the outcome through callbacks
-instead, so there is no promise to await and no call site needs a `try`/`catch`. The last failure stays on the hook's `error` as
-`{ code, message }` — the store's code intact, so you can answer `CART_ITEM_EXISTS` in your own words — until `reset()`, the next
-action or the next success clears it. `reset()` clears a failure that has settled; an action still in flight keeps reporting its
-own outcome. `quantity.commit()` and `refresh()` are the two that still resolve, because each has something to wait
-for: the save the control owes, and the refetch.
+Existing action names return immediately and report outcomes through callbacks and the hook's `error`. Their paired
+`Async` methods await the same mutation: the acknowledged cart or checkout is returned after cache updates and callback
+delivery, and a request failure rejects with the original SDK error. Callback signatures remain synchronous.
+
+| Hook | Immediate handler | Awaitable handler | Awaited result |
+| -- | -- | -- | -- |
+| `useCheckout` | `confirm(input)` | `confirmAsync(input)` | `Checkout` |
+| `useCartAddress` | `update(input)` | `updateAsync(input)` | `Cart` |
+| `useCartShippingRates` | `selectShippingRate(rateId, packageId?)` | `selectShippingRateAsync(rateId, packageId?)` | `Cart` |
+| `useCartItem` | `addItem(input)` | `addItemAsync(input)` | `Cart` |
+| `useCartItem(key)` | `remove()` | `removeAsync()` | `Cart` or `undefined` |
+| `useCartCoupon` | `apply(code)` | `applyAsync(code)` | `Cart` |
+| `useCartCoupon(code)` | `remove()` | `removeAsync()` | `Cart` or `undefined` |
+| `useCartAddress` | `onAddressChange(snapshot)` | `onAddressChangeAsync(snapshot)` | `Cart` or `undefined` |
+| `useCartItem(key).quantity` | `set(n)` and automatic saves | `commitAsync()` | `Cart` or `undefined` |
+
+Item removal without a current line and coupon removal without a bound code resolve `undefined` and emit no action callbacks.
+Both add handlers fill an omitted quantity from the keyless draft; an explicit quantity wins.
+
+`onAddressChangeAsync` takes the same complete snapshot and uses the same validation, debounce and latest-snapshot queue as
+`onAddressChange`. Calls coalesced before dispatch all await the final snapshot's result, which may differ from their own
+input. A skipped snapshot, a revert that cancels a queued edit, or unmount before dispatch resolves `undefined` without action
+callbacks. After dispatch the request settles normally even after unmount; edits during that request form a separate batch.
+The queue rechecks against the acknowledged cart before sending a follow-up.
+
+`quantity.commitAsync()` cancels the debounce timer and saves the captured pending quantity. Clean, keyless and missing-line
+controls resolve `undefined`. A failure rejects and discards that edit, leaving the control on the acknowledged quantity;
+set the desired quantity again to retry. The existing `quantity.commit(): Promise<void>` and automatic saves still swallow
+request failures and report them on the hook. `refresh()` still resolves after refetching.
+
+The last failure stays on the acting hook's `error`, with its store code intact, until `reset()`, the next action or the next
+success clears it. `reset()` clears only settled failures; an action still in flight keeps reporting its own outcome.
+
+Direct calls are independent requests, including concurrent calls on one hook. Async handlers do not prevent duplicate
+submissions or add an idempotency guarantee. Address coalescing is the existing exception. A form library should return the
+async promise from its submission callback, handle rejection, and use its submission guard to prevent another submission.
+A React event handler itself does not await its returned promise.
+
+```tsx
+const { apply, applyAsync } = useCartCoupon()
+// A direct event handler keeps the existing contract.
+const onApplyClick = () => apply(code)
+// Return this promise from a form library's submission callback.
+const onSubmit = async (values: { code: string }) => {
+  const cart = await applyAsync(values.code)
+  return cart
+}
+```
 
 Every hook, the provider and the core functions carry a JSDoc example, so the shape above is also available from an editor's
 hover.
@@ -416,8 +458,23 @@ export function CheckoutForm({ values, isFormValid, onAddressValuesChange }: {
 `AddressFields` and `onAddressValuesChange` belong to the storefront: the parent updates its form values and validity while
 `onAddressChange` sends the same complete snapshot to the kit.
 
-`confirm(input)` returns nothing: the order and where to send the browser next arrive on the success event. The last fetch or
-confirmation failure is on `error`, including its store code and validation data. `reset()` clears a confirmation failure.
+`confirm(input)` returns immediately. `confirmAsync(input)` returns the acknowledged `Checkout`, and rejects on failure.
+Both report where to send the browser through the success event's `redirectUrl`; the hook performs no navigation. The last
+fetch or confirmation failure is on `error`, including its store code and validation data. `reset()` clears a settled failure.
+
+```tsx
+import type { ConfirmCheckoutInput } from "@kizlo/woocommerce-kit"
+import { useCheckout } from "@kizlo/woocommerce-kit/react/checkout"
+
+const { confirmAsync } = useCheckout({ onSuccess: ({ redirectUrl }) => {
+  if (redirectUrl) window.location.assign(redirectUrl)
+} })
+// The form owns validation and submission guards; returning this promise keeps it submitting until settlement.
+const onSubmit = async (values: ConfirmCheckoutInput) => {
+  const checkout = await confirmAsync(values)
+  return checkout
+}
+```
 
 Confirmation uses the cart callback lifecycle: `onStart` → `onSuccess` | `onError` → `onSettled`, passed to `useCheckout`
 itself. A throwing listener does not suppress a later phase or fail the confirmation:

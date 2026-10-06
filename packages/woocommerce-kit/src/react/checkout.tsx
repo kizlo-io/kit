@@ -38,6 +38,8 @@ export type CheckoutApi = {
 	error: CheckoutError | null
 	/** Places the order. Returns nothing: the order and where to send the browser next arrive on the success event. */
 	confirm: (input: ConfirmCheckoutInput) => void
+	/** Places the order and returns the acknowledged checkout; rejects with the original SDK error. */
+	confirmAsync: (input: ConfirmCheckoutInput) => Promise<Checkout>
 	isLoading: boolean
 	isPending: boolean
 	refresh: () => Promise<void>
@@ -62,8 +64,8 @@ function checkoutSuccessEvent(checkout: Checkout, input: ConfirmCheckoutInput): 
  * Loads and confirms the store checkout while keeping the shared cart cache in step.
  *
  * The hook owns no form state and performs no navigation. Render fields from `checkout`, use the cart hooks for shipping and
- * coupons, and send the browser to the `redirectUrl` the success event carries — `confirm` returns nothing to await, because
- * the redirect is derived on that event and was never on a return value. Its callbacks run in the four phases
+ * coupons, and send the browser to the `redirectUrl` the success event carries. `confirm` returns immediately;
+ * `confirmAsync` awaits the same mutation and returns the checkout. Its callbacks run in the four phases
  * `onStart` → `onSuccess` | `onError` → `onSettled`.
  *
  * Needs `KizloProvider` and `WooCommerceProvider` above it. It takes no client.
@@ -150,6 +152,7 @@ export function useCheckout(options?: CheckoutHookOptions): CheckoutApi {
 	return {
 		checkout: checkoutQuery.data ?? null,
 		confirm: mutation.mutate,
+		confirmAsync: mutation.mutateAsync,
 		error: mutation.error ?? checkoutQuery.error,
 		isLoading: checkoutQuery.isPending,
 		isPending,
