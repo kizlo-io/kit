@@ -901,3 +901,390 @@ describe("useCartAddress snapshots", () => {
 		unmount()
 	})
 })
+
+function deferredCart() {
+	let resolve!: (cart: Cart) => void
+	let reject!: (error: unknown) => void
+	const promise = new Promise<Cart>((yes, no) => {
+		resolve = yes
+		reject = no
+	})
+	return { promise, resolve, reject }
+}
+
+const directActions = ["address", "shipping", "add", "itemRemove", "apply", "couponRemove"] as const
+function useActionHook(action: (typeof directActions)[number], options: CartHookOptions) {
+	const address = useCartAddress(options)
+	const shipping = useCartShippingRates(options)
+	const item = useCartItem("a", options)
+	const coupon = useCartCoupon("SAVE", options)
+	const other = useCartItem("b")
+	const cart = useCart()
+	switch (action) {
+		case "address":
+			return {
+				...address,
+				cart,
+				other,
+				call: () => address.update({ shippingAddress: { postcode: "OX1" } }),
+				callAsync: () => address.updateAsync({ shippingAddress: { postcode: "OX1" } }),
+			}
+		case "shipping":
+			return {
+				...shipping,
+				cart,
+				other,
+				call: () => shipping.selectShippingRate("rate", 2),
+				callAsync: () => shipping.selectShippingRateAsync("rate", 2),
+			}
+		case "add":
+			return { ...item, cart, other, call: () => item.addItem({ productId: 7 }), callAsync: () => item.addItemAsync({ productId: 7 }) }
+		case "itemRemove":
+			return { ...item, cart, other, call: item.remove, callAsync: item.removeAsync }
+		case "apply":
+			return { ...coupon, cart, other, call: () => coupon.apply("WELCOME"), callAsync: () => coupon.applyAsync("WELCOME") }
+		case "couponRemove":
+			return { ...coupon, cart, other, call: coupon.remove, callAsync: coupon.removeAsync }
+	}
+}
+const actionProcedures = {
+	address: procedures.update,
+	shipping: procedures.selectShippingRate,
+	add: procedures.items.add,
+	itemRemove: procedures.items.remove,
+	apply: procedures.coupons.apply,
+	couponRemove: procedures.coupons.remove,
+}
+
+describe("paired cart actions", () => {
+	it.each(directActions)("%s preserves inputs, cache, lifecycle and immediate return", async (action) => {
+		const saved = storeCart([{ key: "a", quantity: 2 }])
+		const procedure = actionProcedures[action].call
+		procedure.mockResolvedValue(saved)
+		const { options, phases } = recorder()
+		const { result, queryClient } = mount(() => useActionHook(action, options), storeCart([{ key: "a", quantity: 1 }]))
+		act(() => expect(result.current.call()).toBeUndefined())
+		await waitFor(() => expect(phases()).toHaveLength(3))
+		const firstInput = procedure.mock.calls[0]
+		await act(async () => expect(await result.current.callAsync()).toBe(saved))
+		expect(procedure).toHaveBeenCalledTimes(2)
+		expect(procedure.mock.calls[1]).toEqual(firstInput)
+		expect(phases()).toEqual(["start", "success", "settled", "start", "success", "settled"])
+		expect(queryClient.getQueryData(cartQueryKey)).toEqual(saved)
+	})
+
+	it.each(directActions)("%s awaits rejection, preserves scope and permits retry", async (action) => {
+		const request = deferredCart()
+		const error = storeError("CART_UNAVAILABLE")
+		const procedure = actionProcedures[action].call
+		procedure.mockReturnValueOnce(request.promise)
+		const { options, phases } = recorder()
+		const { result } = mount(() => useActionHook(action, options), storeCart([{ key: "a", quantity: 1 }]), { mutations: { retry: 2 } })
+		let settled = false
+		let promise!: Promise<Cart | undefined>
+		act(() => {
+			promise = result.current.callAsync()
+			void promise.then(
+				() => {
+					settled = true
+				},
+				() => {
+					settled = true
+				},
+			)
+		})
+		await waitFor(() => expect(result.current.isPending).toBe(true))
+		expect(result.current.other.isPending).toBe(false)
+		expect(result.current.cart.isMutating).toBe(true)
+		expect(settled).toBe(false)
+		await act(async () => {
+			request.reject(error)
+			await expect(promise).rejects.toBe(error)
+		})
+		expect(procedure).toHaveBeenCalledTimes(1)
+		expect(phases()).toEqual(["start", "error", "settled"])
+		await waitFor(() => expect(result.current.error).toBe(error))
+		const saved = storeCart([{ key: "a", quantity: 2 }])
+		procedure.mockResolvedValueOnce(saved)
+		await act(async () => expect(await result.current.callAsync()).toBe(saved))
+		await waitFor(() => expect(result.current.error).toBeNull())
+	})
+
+	it("skips missing removals and preserves draft quantity defaults", async () => {
+		const { options, phases } = recorder()
+		const { result } = mount(
+			() => ({
+				draft: useCartItem({ ...options, defaultQuantity: 4 }),
+				missing: useCartItem("missing", options),
+				coupon: useCartCoupon("", options),
+			}),
+			storeCart([]),
+		)
+		await act(async () => {
+			expect(await result.current.draft.removeAsync()).toBeUndefined()
+			expect(await result.current.missing.removeAsync()).toBeUndefined()
+			expect(await result.current.coupon.removeAsync()).toBeUndefined()
+		})
+		expect(phases()).toEqual([])
+		expect(procedures.items.remove.call).not.toHaveBeenCalled()
+		expect(procedures.coupons.remove.call).not.toHaveBeenCalled()
+		procedures.items.add.call.mockResolvedValue(storeCart([]))
+		await act(async () => {
+			await result.current.draft.addItemAsync({ productId: 7 })
+		})
+		expect(procedures.items.add.call).toHaveBeenLastCalledWith({ body: { productId: 7, quantity: 4 } })
+		await act(async () => {
+			await result.current.draft.addItemAsync({ productId: 7, quantity: 2 })
+		})
+		expect(procedures.items.add.call).toHaveBeenLastCalledWith({ body: { productId: 7, quantity: 2 } })
+	})
+
+	it("keeps a listener failure separate from the async request outcome", async () => {
+		const saved = storeCart([])
+		procedures.items.add.call.mockResolvedValueOnce(saved)
+		const listenerFailure = new Error("listener failed")
+		const { restore, uncaught } = captureUncaught()
+		const settled = vi.fn()
+		try {
+			const { result } = mount(() =>
+				useCartItem({
+					onSuccess: () => {
+						throw listenerFailure
+					},
+					onSettled: settled,
+				}),
+			)
+			await act(async () => expect(await result.current.addItemAsync({ productId: 7 })).toBe(saved))
+			expect(settled).toHaveBeenCalledTimes(1)
+			expect(result.current.error).toBeNull()
+			await waitFor(() => expect(uncaught).toContain(listenerFailure))
+		} finally {
+			restore()
+		}
+	})
+
+	it("does not deduplicate concurrent direct calls", async () => {
+		const first = deferredCart()
+		const second = deferredCart()
+		procedures.coupons.apply.call.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise)
+		const { options, phases } = recorder()
+		const { result } = mount(() => useCartCoupon(options), storeCart([]))
+		let a!: Promise<Cart>
+		let b!: Promise<Cart>
+		act(() => {
+			a = result.current.applyAsync("SAVE")
+			b = result.current.applyAsync("SAVE")
+		})
+		await waitFor(() => expect(procedures.coupons.apply.call).toHaveBeenCalledTimes(2))
+		const saved = storeCart([])
+		await act(async () => {
+			second.resolve(saved)
+			await b
+		})
+		expect(result.current.isPending).toBe(true)
+		await act(async () => {
+			first.resolve(saved)
+			await a
+		})
+		expect(phases().filter((phase) => phase === "settled")).toHaveLength(2)
+	})
+})
+
+describe("awaitable address queue", () => {
+	it("coalesces mixed handlers into the latest snapshot and awaits acknowledgement", async () => {
+		vi.useFakeTimers()
+		const request = deferredCart()
+		procedures.update.call.mockReturnValueOnce(request.promise)
+		const { options, phases } = recorder()
+		const { result, unmount } = mount(() => useCartAddress(options), quoteCart())
+		let a!: Promise<Cart | undefined>
+		let b!: Promise<Cart | undefined>
+		act(() => {
+			a = result.current.onAddressChangeAsync(addressSnapshot({ shippingAddress: { city: "Oxford" } }))
+		})
+		await settleAddress(500)
+		const input = addressSnapshot({ shippingAddress: { city: "Cambridge", postcode: "CB1" } })
+		act(() => {
+			b = result.current.onAddressChangeAsync(input)
+			result.current.onAddressChange(input)
+		})
+		let settled = false
+		void a.then(() => {
+			settled = true
+		})
+		await settleAddress(1499)
+		expect(procedures.update.call).not.toHaveBeenCalled()
+		await settleAddress(1)
+		expect(settled).toBe(false)
+		expect(procedures.update.call).toHaveBeenCalledWith({ body: input })
+		const saved = quoteCart(input)
+		await act(async () => {
+			request.resolve(saved)
+			expect(await a).toBe(saved)
+			expect(await b).toBe(saved)
+		})
+		expect(procedures.update.call).toHaveBeenCalledTimes(1)
+		expect(phases()).toEqual(["start", "success", "settled"])
+		unmount()
+	})
+
+	it("settles skipped, reverted and unmounted queued batches without a request", async () => {
+		vi.useFakeTimers()
+		const { options, phases } = recorder()
+		const { result, unmount } = mount(() => useCartAddress(options), quoteCart())
+		await act(async () =>
+			expect(await result.current.onAddressChangeAsync(addressSnapshot({ shippingAddress: { country: "" } }))).toBeUndefined(),
+		)
+		let pending!: Promise<Cart | undefined>
+		act(() => {
+			pending = result.current.onAddressChangeAsync(addressSnapshot({ shippingAddress: { city: "Oxford" } }))
+			result.current.onAddressChange(addressSnapshot({ shippingAddress: {} }))
+		})
+		await expect(pending).resolves.toBeUndefined()
+		act(() => {
+			pending = result.current.onAddressChangeAsync(addressSnapshot({ shippingAddress: { city: "Oxford" } }))
+		})
+		unmount()
+		await expect(pending).resolves.toBeUndefined()
+		await settleAddress()
+		expect(procedures.update.call).not.toHaveBeenCalled()
+		expect(phases()).toEqual([])
+	})
+
+	it("rechecks a queued batch against the acknowledged cart and custom guard", async () => {
+		vi.useFakeTimers()
+		let allow = true
+		const { result, unmount } = mount(() => useCartAddress({ shouldUpdateAddress: () => allow }), quoteCart())
+		let pending!: Promise<Cart | undefined>
+		act(() => {
+			pending = result.current.onAddressChangeAsync(addressSnapshot({ shippingAddress: { city: "Oxford" } }))
+		})
+		allow = false
+		await settleAddress()
+		await expect(pending).resolves.toBeUndefined()
+		expect(procedures.update.call).not.toHaveBeenCalled()
+		unmount()
+	})
+
+	it("keeps edits during a request in a separate batch, preserving rejection and retry", async () => {
+		vi.useFakeTimers()
+		const first = deferredCart()
+		const second = deferredCart()
+		procedures.update.call.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise)
+		const { result, unmount } = mount(() => useCartAddress(), quoteCart())
+		let a!: Promise<Cart | undefined>
+		let b!: Promise<Cart | undefined>
+		const oxford = addressSnapshot({ shippingAddress: { city: "Oxford" } })
+		act(() => {
+			a = result.current.onAddressChangeAsync(oxford)
+		})
+		await settleAddress()
+		act(() => {
+			b = result.current.onAddressChangeAsync(addressSnapshot({ shippingAddress: {} }))
+		})
+		await settleAddress()
+		expect(procedures.update.call).toHaveBeenCalledTimes(1)
+		await act(async () => {
+			first.resolve(quoteCart(oxford))
+			await a
+		})
+		await settleAddress()
+		expect(procedures.update.call).toHaveBeenCalledTimes(2)
+		const error = storeError("CART_UNAVAILABLE")
+		await act(async () => {
+			second.reject(error)
+			await expect(b).rejects.toBe(error)
+		})
+		const saved = quoteCart()
+		procedures.update.call.mockResolvedValueOnce(saved)
+		act(() => {
+			b = result.current.onAddressChangeAsync(addressSnapshot({ shippingAddress: {} }))
+		})
+		await settleAddress()
+		await expect(b).resolves.toBe(saved)
+		unmount()
+	})
+
+	it("allows dispatched requests to settle after unmount", async () => {
+		vi.useFakeTimers()
+		const request = deferredCart()
+		procedures.update.call.mockReturnValueOnce(request.promise)
+		const { options, phases } = recorder()
+		const { result, unmount } = mount(() => useCartAddress(options), quoteCart())
+		let pending!: Promise<Cart | undefined>
+		act(() => {
+			pending = result.current.onAddressChangeAsync(addressSnapshot({ shippingAddress: { city: "Oxford" } }))
+		})
+		await settleAddress()
+		unmount()
+		const saved = quoteCart({ shippingAddress: { city: "Oxford" } })
+		request.resolve(saved)
+		await expect(pending).resolves.toBe(saved)
+		expect(phases()).toEqual(["start", "success", "settled"])
+	})
+})
+
+describe("awaitable quantity commits", () => {
+	it("cancels the timer and awaits the single save with the normal lifecycle", async () => {
+		vi.useFakeTimers()
+		const request = deferredCart()
+		procedures.items.update.call.mockReturnValueOnce(request.promise)
+		const { options, phases } = recorder()
+		const { result, unmount } = mount(() => useCartItem("a", options), storeCart([{ key: "a", quantity: 1 }]))
+		let pending!: Promise<Cart | undefined>
+		let settled = false
+		act(() => {
+			result.current.quantity.set(3)
+			pending = result.current.quantity.commitAsync()
+			void pending.then(() => {
+				settled = true
+			})
+		})
+		await settleAddress(400)
+		expect(settled).toBe(false)
+		expect(procedures.items.update.call).toHaveBeenCalledTimes(1)
+		const saved = storeCart([{ key: "a", quantity: 3 }])
+		await act(async () => {
+			request.resolve(saved)
+			expect(await pending).toBe(saved)
+		})
+		expect(result.current.quantity.isDirty).toBe(false)
+		expect(phases()).toEqual(["start", "success", "settled"])
+		unmount()
+	})
+
+	it("rejects, discards the refused edit and allows a new explicit retry", async () => {
+		const error = storeError("CART_INVALID_QUANTITY")
+		procedures.items.update.call.mockRejectedValueOnce(error)
+		const { result } = mount(() => useCartItem("a", { autoCommit: false }), storeCart([{ key: "a", quantity: 1 }]))
+		await act(async () => {
+			result.current.quantity.set(3)
+			await expect(result.current.quantity.commitAsync()).rejects.toBe(error)
+		})
+		expect(result.current.quantity.value).toBe(1)
+		expect(result.current.quantity.isDirty).toBe(false)
+		await waitFor(() => expect(result.current.error).toBe(error))
+		const saved = storeCart([{ key: "a", quantity: 3 }])
+		procedures.items.update.call.mockResolvedValueOnce(saved)
+		await act(async () => {
+			result.current.quantity.set(3)
+			expect(await result.current.quantity.commitAsync()).toBe(saved)
+		})
+		await waitFor(() => expect(result.current.error).toBeNull())
+	})
+
+	it("skips clean, keyless and missing-line controls", async () => {
+		const { result } = mount(
+			() => ({ clean: useCartItem("a"), draft: useCartItem(), missing: useCartItem("missing") }),
+			storeCart([{ key: "a", quantity: 1 }]),
+		)
+		await act(async () => {
+			expect(await result.current.clean.quantity.commitAsync()).toBeUndefined()
+			result.current.draft.quantity.set(3)
+			expect(await result.current.draft.quantity.commitAsync()).toBeUndefined()
+			result.current.missing.quantity.set(3)
+			expect(await result.current.missing.quantity.commitAsync()).toBeUndefined()
+		})
+		expect(procedures.items.update.call).not.toHaveBeenCalled()
+	})
+})

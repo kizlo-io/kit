@@ -112,3 +112,84 @@ describe("useCheckout confirmation", () => {
 		await waitFor(() => expect(result.current.error?.code).toBe("CHECKOUT_PAYMENT_FAILED"))
 	})
 })
+
+describe("awaitable checkout", () => {
+	it.each([false, true])("awaits submission settlement (failure: %s) and retries", async (fails) => {
+		const fetched = storeCheckout(null, 2)
+		const confirmed = storeCheckout(42, 0)
+		const error = storeError("PAYMENT_DECLINED")
+		procedures.get.call.mockResolvedValue(fetched)
+		let answer!: (checkout: Checkout) => void
+		let refuse!: (error: unknown) => void
+		procedures.confirm.call.mockReturnValueOnce(
+			new Promise<Checkout>((resolve, reject) => {
+				answer = resolve
+				refuse = reject
+			}),
+		)
+		const phases: string[] = []
+		const { result, queryClient } = mount(
+			{
+				onStart: () => phases.push("start"),
+				onSuccess: (event) => {
+					expect(event.redirectUrl).toContain("/checkout/order-received")
+					phases.push("success")
+				},
+				onError: () => phases.push("error"),
+				onSettled: () => phases.push("settled"),
+			},
+			{ retry: 2 },
+		)
+		await waitFor(() => expect(result.current.checkout).not.toBeNull())
+		// A form library's submission contract without adding a dependency to the package.
+		const submission = { pending: false, error: null as unknown }
+		const submit = async () => {
+			submission.pending = true
+			try {
+				return await result.current.confirmAsync(input)
+			} catch (cause) {
+				submission.error = cause
+				throw cause
+			} finally {
+				submission.pending = false
+			}
+		}
+		let pending!: Promise<Checkout>
+		act(() => {
+			pending = submit()
+			void pending.catch(() => {})
+		})
+		await waitFor(() => expect(result.current.isPending).toBe(true))
+		expect(submission.pending).toBe(true)
+		expect(phases).toEqual(["start"])
+		await act(async () => {
+			if (fails) {
+				refuse(error)
+				await expect(pending).rejects.toBe(error)
+			} else {
+				answer(confirmed)
+				expect(await pending).toBe(confirmed)
+			}
+		})
+		expect(submission.pending).toBe(false)
+		expect(procedures.confirm.call).toHaveBeenCalledTimes(1)
+		expect(procedures.confirm.call).toHaveBeenCalledWith({ body: input })
+		expect(phases).toEqual(["start", fails ? "error" : "success", "settled"])
+		if (fails) {
+			expect(submission.error).toBe(error)
+			await waitFor(() => expect(result.current.error).toBe(error))
+			procedures.confirm.call.mockResolvedValueOnce(confirmed)
+			await act(async () => expect(await result.current.confirmAsync(input)).toBe(confirmed))
+		}
+		expect(queryClient.getQueryData(checkoutQueryKey)).toEqual(confirmed)
+		expect(queryClient.getQueryData(cartQueryKey)).toEqual(confirmed.cart)
+	})
+
+	it("returns immediately from the legacy handler", async () => {
+		procedures.get.call.mockResolvedValue(storeCheckout(null, 2))
+		procedures.confirm.call.mockResolvedValue(storeCheckout(42, 0))
+		const { result } = mount()
+		act(() => expect(result.current.confirm(input)).toBeUndefined())
+		await waitFor(() => expect(result.current.isPending).toBe(false))
+	})
+})
