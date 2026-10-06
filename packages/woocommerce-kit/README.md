@@ -476,6 +476,10 @@ const onSubmit = async (values: ConfirmCheckoutInput) => {
 }
 ```
 
+Server validation reaches `error` and `onError` through the active client's `CHECKOUT_VALIDATION_FAILED.data = { issues }` contract. The legacy `data.fields` dictionary and draft `data.upstream` payload are removed. Install the matching SDK as an app runtime dependency and import `resolveCheckoutValidationIssues` from `@kizlo/woocommerce/checkout-validation`; supply definitions loaded from the same storefront and register the updated generated client contract for Kit's inference. See [the SDK client requirements](https://github.com/kizlo-io/kizlo/blob/main/packages/woocommerce/docs/checkout-validation.md#consume-errors-through-kit) and [breaking migration guide](https://github.com/kizlo-io/kizlo/blob/main/packages/woocommerce/docs/checkout-validation-migration.md).
+
+[KIT-28](https://linear.app/kizlo/issue/KIT-28/integrate-checkout-server-errors-into-usecheckoutfields) owns error IDs and submission-batch identities, Nanostores storage, automatic `useCheckoutFields` integration, safe form-name/address projection, grouped section messages and selective store/form clearing. This change adds no automatic runtime integration.
+
 Confirmation uses the cart callback lifecycle: `onStart` → `onSuccess` | `onError` → `onSettled`, passed to `useCheckout`
 itself. A throwing listener does not suppress a later phase or fail the confirmation:
 

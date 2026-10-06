@@ -79,8 +79,8 @@ export type ConfirmCheckoutInput = InferClientInput<CheckoutProcedures["confirm"
 /**
  * Any way reading or confirming a checkout can fail.
  *
- * `CHECKOUT_VALIDATION_FAILED` carries the offending `fields` on `data`, which is what lets a consumer map a refusal back onto
- * its own form rather than showing one message for every cause.
+ * Validation data follows the registered SDK contract. The issues-only SDK exposes messages, source evidence and domain
+ * targets; consumers resolve those targets using loaded definitions and their own form handler.
  */
 export type CheckoutError = InferClientError<CheckoutProcedures["get"]> | InferClientError<CheckoutProcedures["confirm"]>
 

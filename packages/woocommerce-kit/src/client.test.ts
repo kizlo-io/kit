@@ -8,7 +8,7 @@
  * the drift surfacing in a storefront.
  */
 
-import type { ActiveKizloClient } from "kizlo"
+import type { ActiveKizloClient, InferClientError } from "kizlo"
 import { describe, expectTypeOf, it } from "vitest"
 import type {
 	AddCartItemInput,
@@ -29,6 +29,7 @@ import type {
 
 type CartProcedures = ActiveKizloClient["woocommerce"]["cart"]
 type ProductProcedures = ActiveKizloClient["woocommerce"]["products"]
+type CheckoutProcedures = ActiveKizloClient["woocommerce"]["checkout"]
 
 describe("the registered Kizlo client", () => {
 	it("answers the cart procedures the cart hooks call", () => {
@@ -114,9 +115,9 @@ describe("the error types", () => {
 	})
 
 	it("narrow their payload with the code", () => {
-		expectTypeOf<Extract<CheckoutError, { code: "CHECKOUT_VALIDATION_FAILED" }>["data"]>().toEqualTypeOf<{
-			fields: Record<string, string>
-		}>()
+		expectTypeOf<Extract<CheckoutError, { code: "CHECKOUT_VALIDATION_FAILED" }>["data"]>().toEqualTypeOf<
+			Extract<InferClientError<CheckoutProcedures["confirm"]>, { code: "CHECKOUT_VALIDATION_FAILED" }>["data"]
+		>()
 		// A code the store declares without a payload has nothing to read, rather than an `unknown` a call site must guess at.
 		expectTypeOf<Extract<CartError, { code: "CART_ITEM_EXISTS" }>["data"]>().toBeNever()
 	})
