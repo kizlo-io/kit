@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { cartQueryKey } from "../cart"
 import { checkoutQueryKey } from "../checkout"
 import { field, fixtures } from "../test/checkout-fields-fixture"
-import type { Cart, Checkout, CheckoutFieldValues } from "../types"
+import type { Cart, Checkout, CheckoutFieldValues, CheckoutFormValues } from "../types"
 import { useCart, useCartAddress, useCartShippingRates } from "./cart"
 import { useCheckout } from "./checkout"
 import { useCheckoutFields } from "./checkout-fields"
@@ -71,7 +71,7 @@ describe("useCheckoutFields shared sources", () => {
 		expect(procedures.cart.get.call).not.toHaveBeenCalled()
 		await act(async () => checkout.resolve(source.checkout))
 		await waitFor(() => expect(result.current.schema).not.toBeNull())
-		expect(result.current.defaultValues).toMatchObject(source.values)
+		expect(result.current.defaultValues).toMatchObject(result.current.getInput(source.values))
 		expect(result.current.fields.order[0]?.required).toBe(true)
 		expect(client.getQueryData(cartQueryKey)).toEqual(source.cart)
 		expect(procedures.cart.get.call).not.toHaveBeenCalled()
@@ -94,7 +94,7 @@ describe("useCheckoutFields shared sources", () => {
 		procedures.checkout.get.call.mockReturnValue(checkout.promise)
 		const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 		client.setQueryData(cartQueryKey, source.cart)
-		const { result } = mount(() => useCheckoutFields({ values: source.values }), { client })
+		const { result } = mount(() => useCheckoutFields({ getValues: () => source.values }), { client })
 		await waitFor(() => expect(result.current.fields.order[0]?.required).toBe(true))
 		expect(result.current.defaultValues).toBeNull()
 		expect(result.current.schema).toBeNull()
@@ -104,7 +104,7 @@ describe("useCheckoutFields shared sources", () => {
 	})
 	it("respects cartEnabled false and still subscribes to later cart data", async () => {
 		const source = fixtures()
-		const { result, client } = mount(() => useCheckoutFields({ values: source.values }), { cartEnabled: false })
+		const { result, client } = mount(() => useCheckoutFields({ getValues: () => source.values }), { cartEnabled: false })
 		await waitFor(() => expect(result.current.schema).not.toBeNull())
 		const captured = result.current.schema
 		if (!captured) throw new Error("Expected checkout schema")
@@ -119,7 +119,7 @@ describe("useCheckoutFields shared sources", () => {
 		const source = fixtures()
 		const selected = deferred<Cart>()
 		procedures.cart.selectShippingRate.call.mockReturnValue(selected.promise)
-		const { result } = mount(() => ({ fields: useCheckoutFields({ values: source.values }), shipping: useCartShippingRates() }), {
+		const { result } = mount(() => ({ fields: useCheckoutFields({ getValues: () => source.values }), shipping: useCartShippingRates() }), {
 			cartEnabled: false,
 		})
 		await waitFor(() => expect(result.current.fields.schema).not.toBeNull())
@@ -138,7 +138,7 @@ describe("useCheckoutFields shared sources", () => {
 		const source = fixtures()
 		const pending = deferred<Cart>()
 		procedures.cart.update.call.mockReturnValue(pending.promise)
-		const { result, client } = mount(() => ({ fields: useCheckoutFields({ values: source.values }), address: useCartAddress() }), {
+		const { result, client } = mount(() => ({ fields: useCheckoutFields({ getValues: () => source.values }), address: useCartAddress() }), {
 			cartEnabled: false,
 		})
 		await waitFor(() => expect(result.current.fields.schema).not.toBeNull())
@@ -154,14 +154,14 @@ describe("useCheckoutFields shared sources", () => {
 	it("validates different candidates before rendering and never resets a controlled snapshot", async () => {
 		const source = fixtures()
 		let values: CheckoutFieldValues = { ...source.values, customerNote: "", additionalFields: {} }
-		const { result, client, rerender } = mount(() => useCheckoutFields({ values }))
+		const { result, client, rerender } = mount(() => useCheckoutFields({ getValues: () => values }))
 		await waitFor(() => expect(result.current.schema).not.toBeNull())
 		const captured = result.current.schema
 		if (!captured) throw new Error("Expected checkout schema")
 		expect(captured["~standard"].validate(values)).toHaveProperty("issues")
 		expect(captured["~standard"].validate(source.values)).toHaveProperty("value", source.values)
 		act(() => client.setQueryData(checkoutQueryKey, { ...source.checkout, customerNote: "refreshed" }))
-		await waitFor(() => expect(result.current.defaultValues?.customerNote).toBe("refreshed"))
+		await waitFor(() => expect(result.current.defaultValues?.customerNote).toBe("saved"))
 		expect(values.customerNote).toBe("")
 		values = source.values
 		rerender()
@@ -206,7 +206,7 @@ describe("useCheckoutFields shared sources", () => {
 		const checks: boolean[] = []
 		const { result, client } = mount(
 			() => {
-				const fields = useCheckoutFields({ values: empty })
+				const fields = useCheckoutFields({ getValues: () => empty })
 				const required = fields.fields.order[0]?.required
 				useLayoutEffect(() => {
 					if (required !== undefined && fields.schema) checks.push("issues" in fields.schema["~standard"].validate(empty))
@@ -224,7 +224,7 @@ describe("useCheckoutFields shared sources", () => {
 	it("updates a captured validator from refreshed customer identity and closes paid checkout initialization", async () => {
 		const source = fixtures([field("guest", { required: { properties: { customer: { properties: { id: { const: 0 } } } } } })])
 		procedures.storefront.get.call.mockResolvedValue(source.storefront)
-		const { result, client } = mount(() => useCheckoutFields({ values: source.values }))
+		const { result, client } = mount(() => useCheckoutFields({ getValues: () => source.values }))
 		await waitFor(() => expect(result.current.schema).not.toBeNull())
 		const captured = result.current.schema
 		if (!captured) throw new Error("Expected checkout schema")
@@ -251,7 +251,7 @@ describe("useCheckoutFields shared sources", () => {
 		const values = Object.freeze({ ...remaining, additionalFields: { custom: "retained" } })
 		procedures.storefront.get.call.mockResolvedValue(source.storefront)
 		procedures.checkout.get.call.mockResolvedValue(source.checkout)
-		const { result, client } = mount(() => useCheckoutFields({ values }), { cartEnabled: false })
+		const { result, client } = mount(() => useCheckoutFields({ getValues: () => values }), { cartEnabled: false })
 		await waitFor(() => expect(result.current.schema).not.toBeNull())
 		const captured = result.current.schema
 		if (!captured) throw new Error("Expected checkout schema")
@@ -280,5 +280,138 @@ describe("useCheckoutFields shared sources", () => {
 		await waitFor(() => expect(procedures.checkout.get.call).toHaveBeenCalledTimes(2))
 		expect(procedures.storefront.get.call).toHaveBeenCalledTimes(1)
 		expect(procedures.cart.get.call).not.toHaveBeenCalled()
+	})
+})
+
+describe("checkout field events", () => {
+	function addressSource() {
+		const source = fixtures([
+			field("country", { location: "address", bindings: { billing: ["country"], shipping: ["country"] } }),
+			field("state", { location: "address", bindings: { billing: ["state"], shipping: ["state"] } }),
+			field("needs-account", { required: { properties: { checkout: { properties: { create_account: { const: true } } } } } }),
+		])
+		source.checkout.shippingAddress.country = "IN"
+		source.checkout.shippingAddress.state = "KA"
+		procedures.storefront.get.call.mockResolvedValue(source.storefront)
+		procedures.checkout.get.call.mockResolvedValue(source.checkout)
+		return source
+	}
+	it("reads committed values, applies dependency options synchronously and resolves only the resulting snapshot", async () => {
+		const source = addressSource()
+		let values: CheckoutFormValues = { ...source.values }
+		const steps: unknown[] = []
+		const getter = vi.fn(() => {
+			steps.push(["read", values.billingAddress?.state])
+			return values
+		})
+		const setter = vi.fn((updates) => {
+			steps.push(["write", updates])
+			values = { ...values, billingAddress: { ...source.checkout.billingAddress, country: "GB", state: updates[0].value } }
+			// Even a misconfigured consumer cannot recurse into the same dependency event.
+			result.current.handleFieldChange("billingAddress.country", "GB")
+		})
+		const { result } = mount(() => useCheckoutFields({ getValues: getter, setValues: setter }))
+		await waitFor(() => expect(result.current.schema).not.toBeNull())
+		steps.length = 0
+		getter.mockClear()
+		values = { ...values, billingAddress: { ...source.checkout.billingAddress, country: "GB" } }
+		act(() => result.current.handleFieldChange("billingAddress.country", "GB"))
+		expect(steps).toEqual([
+			["read", "KA"],
+			["write", [{ name: "billingAddress.state", value: "", options: { runListeners: false, meta: "preserve", validate: false } }]],
+			["read", ""],
+		])
+		expect(setter).toHaveBeenCalledTimes(1)
+		expect(getter).toHaveBeenCalledTimes(2)
+		expect(result.current.fields.billing.find((field) => field.id === "state")).toMatchObject({ type: "text", label: "County" })
+		expect(procedures.cart.update.call).not.toHaveBeenCalled()
+		expect(procedures.checkout.confirm.call).not.toHaveBeenCalled()
+	})
+	it("ignores accessor identities/rerenders and uses the latest accessors on the next event", async () => {
+		const source = addressSource()
+		let values: CheckoutFormValues = source.values
+		const oldGetter = vi.fn(() => values)
+		const newGetter = vi.fn(() => values)
+		let getter = oldGetter
+		const { result, rerender } = mount(() => useCheckoutFields({ getValues: () => getter() }))
+		await waitFor(() => expect(result.current.schema).not.toBeNull())
+		const fields = result.current.fields
+		const billingCountry = fields.billing[0]
+		oldGetter.mockClear()
+		getter = newGetter
+		values = { ...values, createAccount: true }
+		rerender()
+		expect(oldGetter).not.toHaveBeenCalled()
+		expect(newGetter).not.toHaveBeenCalled()
+		expect(result.current.fields).toBe(fields)
+		act(() => result.current.handleFieldChange("createAccount", true))
+		expect(newGetter).toHaveBeenCalledTimes(2)
+		expect(result.current.fields.order[0]?.required).toBe(true)
+		expect(result.current.fields.billing).toBe(fields.billing)
+		expect(result.current.fields.billing[0]).toBe(billingCountry)
+		const updated = result.current.fields
+		values = { ...values, customerNote: "ordinary edit" }
+		act(() => result.current.handleFieldChange("customerNote", "ordinary edit"))
+		expect(result.current.fields).toBe(updated)
+	})
+	it("reevaluates silent coherent prefill without clears and ignores unrelated application events", async () => {
+		const source = addressSource()
+		let values: CheckoutFormValues = source.values
+		const getter = vi.fn(() => values)
+		const setter = vi.fn()
+		const { result, rerender } = mount(() => useCheckoutFields({ getValues: getter, setValues: setter }))
+		await waitFor(() => expect(result.current.schema).not.toBeNull())
+		values = {
+			...result.current.getInput(source.values),
+			billingAddress: { ...source.checkout.billingAddress, country: "GB", state: "London" },
+		}
+		getter.mockClear()
+		rerender()
+		expect(getter).not.toHaveBeenCalled()
+		expect(result.current.fields.billing[1]?.type).toBe("select")
+		act(() => result.current.reevaluate())
+		expect(getter).toHaveBeenCalledTimes(1)
+		expect(setter).not.toHaveBeenCalled()
+		expect(values.billingAddress?.state).toBe("London")
+		expect(result.current.fields.billing[1]).toMatchObject({ type: "text", label: "County" })
+		getter.mockClear()
+		// @ts-expect-error An application-only control is outside Kit's registered field contract.
+		act(() => result.current.handleFieldChange("app-only", "value"))
+		expect(getter).not.toHaveBeenCalled()
+	})
+	it("keeps defaults and drafts stable across refresh and validates a different supplied candidate without accessors", async () => {
+		const source = addressSource()
+		let values: CheckoutFormValues = { ...source.values, customerNote: "draft", createAccount: true }
+		const getter = vi.fn(() => values)
+		const setter = vi.fn()
+		const { result, client } = mount(() => useCheckoutFields({ getValues: getter, setValues: setter }))
+		await waitFor(() => expect(result.current.schema).not.toBeNull())
+		const defaults = result.current.defaultValues
+		const schema = result.current.schema
+		act(() => client.setQueryData(checkoutQueryKey, { ...source.checkout, customerNote: "server refresh" }))
+		await waitFor(() => expect(getter.mock.calls.length).toBeGreaterThan(1))
+		expect(result.current.defaultValues).toBe(defaults)
+		expect(values.customerNote).toBe("draft")
+		getter.mockClear()
+		const fields = result.current.fields
+		const candidate = result.current.getInput(source.values)
+		expect(schema?.["~standard"].validate(candidate)).toHaveProperty("value", candidate)
+		expect(schema?.["~standard"].validate(values)).toHaveProperty("issues")
+		result.current.getOutput(candidate)
+		expect(getter).not.toHaveBeenCalled()
+		expect(setter).not.toHaveBeenCalled()
+		expect(result.current.fields).toBe(fields)
+		values = { ...values, createAccount: false }
+		act(() => client.setQueryData(cartQueryKey, { ...source.cart, itemCount: 5 }))
+		await waitFor(() => expect(result.current.fields.order[0]?.required).toBe(false))
+		expect(result.current.defaultValues).toBe(defaults)
+	})
+	it("requires event accessors but permits metadata-only consumers and source reevaluation", async () => {
+		addressSource()
+		const { result } = mount(() => useCheckoutFields())
+		await waitFor(() => expect(result.current.schema).not.toBeNull())
+		expect(() => result.current.handleFieldChange("createAccount", true)).toThrow("getValues")
+		act(() => result.current.reevaluate())
+		expect(result.current.fields.billing).toHaveLength(2)
 	})
 })

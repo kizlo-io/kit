@@ -661,135 +661,109 @@ kit passes it through untouched, and `isAddressComplete` reads it as required an
 
 ### Checkout fields and validation
 
-`useCheckoutFields({ values } = {})` is the optional checkout integration. It reads storefront definitions, checkout identity
-and the latest acknowledged cart through the app's existing QueryClient. It returns all four groups together and builds the
-Woo condition document internally. Mount the existing `KizloProvider`, `QueryClientProvider` and `WooCommerceProvider`;
-there is no feature provider or form-library dependency.
+`useCheckoutFields({ getValues?, setValues? } = {})` supplies checkout field metadata, native control bindings and a
+Standard Schema for your form library. Mount the existing providers once; the hook reads their QueryClient and does not
+create a provider, cache or checkout action. Your form library owns editable values, errors, dirty/touched state, validation
+timing and submission.
 
-| Result | Meaning |
-| --- | --- |
-| `fields.billing`, `.shipping`, `.contact`, `.order` | Metadata in field order, including labels, options, attributes, full submission `key` paths and resolved `required`/`hidden` booleans. |
-| `defaultValues` | A fresh loaded editable checkout snapshot, or `null` before checkout and cart are available. The application decides when to initialize or replace its form. |
-| `schema` | Standard Schema v1 validation for `CheckoutFieldValues`, or `null` before all sources are available. A captured validator reads the latest committed sources and resolves conditions against every candidate. |
-| `unsupported` | Field/group/path/reason diagnostics for unavailable data, invalid schemas/bindings, binding collisions and widgets requiring application integration. |
-| `isLoading`, `isRepricing`, `error` | Initial loading, queued/in-flight address or shipping-rate changes, and source fetch failures. Unsupported definitions are reported separately from fetch errors. |
+| Return value | Meaning |
+| -- | -- |
+| `fields` | `{ contact, shipping, billing, order }`. Definitions retain metadata and raw SDK `key` segments, and add a safe form `name` and `getProps(binding)`. Skip `hidden` fields when rendering; their values remain stored. |
+| `defaultValues` | An encoded `CheckoutFormValues` initial snapshot, or `null` while sources are unavailable or checkout is paid. Its identity and content stay stable for the same checkout session across refreshes. Initialize the form once. |
+| `schema` | Standard Schema v1 for the encoded form representation, or `null` while sources are unavailable. A captured validator reads current committed source rules and validates its supplied candidate. |
+| `handleFieldChange(name, value)` | Reads the committed form, applies local dependencies synchronously and resolves metadata from the resulting snapshot. Country edits clear that address's state. |
+| `reevaluate()` | Explicitly reads the form after silent prefill/reset, without edit-dependency clears. |
+| `getInput(raw)` | Pure conversion from SDK `CheckoutFieldValues` to the form representation, for initialization/prefill/reset. |
+| `getOutput(values)` | Pure synchronous conversion from the supplied form representation to SDK field values. Decodes IDs, applies address sharing, retains extensions and strips form-only controls. |
+| `canUseShippingAsBilling` | Whether native address sharing is available: shipping is needed and the store does not force separate billing. |
+| `unsupported` | Field diagnostics for unsupported widgets, invalid schemas/bindings and unavailable condition dependencies. |
+| `isLoading`, `isRepricing`, `error` | Shared source loading, acknowledged cart repricing/rate selection and the latest source failure. |
 
-Supply the **complete current editable snapshot**, not a patch for the last change. `CheckoutFieldValues` derives from the
-consumer's confirmation input, including custom additional fields and other submission controls. With `values` absent,
-rendering uses loaded defaults. Once values are supplied, empty strings, `false`, missing optional values and omitted optional
-groups are authoritative; loaded additional fields are never merged back over edits. The hook never resets values, removes
-hidden values, saves an address, selects shipping or confirms checkout.
-
-This controlled example initializes once, renders every group and submits separately. `CheckoutFieldControl` is application-owned code: adapt its markup and attributes as needed. Keep plugin IDs as single segments instead of splitting on dots, brackets or slashes.
+Pass `getValues` and `setValues` from your form integration. The getter returns its current complete snapshot, not a last-edit
+patch. The setter synchronously applies only the named fields before returning. Metadata/bootstrap consumers can omit both.
+Field events require the getter, and country dependencies require the setter; missing accessors throw on those events.
 
 ```tsx
-"use client"
-import { useEffect, useState } from "react"
-import type { ResolvedField } from "@kizlo/woocommerce-kit"
-import { useCheckoutFields, type CheckoutFieldValues } from "@kizlo/woocommerce-kit/react/checkout-fields"
-import { useCheckout } from "@kizlo/woocommerce-kit/react/checkout"
-
-function readAt(value: unknown, path: readonly string[]): unknown {
-  for (const key of path) {
-    if (!value || typeof value !== "object") return undefined
-    value = (value as Record<string, unknown>)[key]
-  }
-  return value
-}
-
-function writeAt(value: object, path: readonly string[], next: unknown): object {
-  const [key, ...rest] = path
-  if (!key) return value
-  const current = readAt(value, [key])
-  return { ...value, [key]: rest.length
-    ? writeAt(current && typeof current === "object" ? current : {}, rest, next)
-    : next }
-}
-
-function CheckoutFieldControl({ field, value, onChange }: {
-  field: ResolvedField; value: unknown; onChange: (value: unknown) => void
-}) {
-  const id = JSON.stringify(field.key)
-  const text = typeof value === "string" || typeof value === "number" ? String(value) : ""
-  const props = { ...field.attributes, id, required: field.required, autoComplete: field.autocomplete ?? undefined }
-  const control = field.type === "select"
-    ? <select {...props} value={text} onChange={(event) => onChange(event.currentTarget.value)}>
-        <option value="">Select…</option>
-        {field.options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-      </select>
-    : field.type === "textarea"
-      ? <textarea {...props} value={text} onChange={(event) => onChange(event.currentTarget.value)} />
-      : <input {...props} type={field.type ?? "text"} checked={field.type === "checkbox" ? value === true : undefined}
-          value={field.type === "checkbox" ? undefined : text} onChange={(event) => onChange(
-            field.type === "checkbox" ? event.currentTarget.checked
-              : field.type === "number" ? (event.currentTarget.value === "" ? undefined : event.currentTarget.valueAsNumber)
-              : event.currentTarget.value
-          )} />
-  return <label htmlFor={id}>{field.label}{control}</label>
-}
-
-export function CheckoutForm() {
-  const [values, setValues] = useState<CheckoutFieldValues>()
-  const [issues, setIssues] = useState<readonly { message: string; path?: readonly (string | number)[] }[]>([])
-  const { fields, defaultValues, schema, unsupported, isLoading, isRepricing, error } = useCheckoutFields({ values })
-  const { confirm, isPending } = useCheckout({ onSuccess: ({ redirectUrl }) => {
-    if (redirectUrl) window.location.assign(redirectUrl)
-  } })
-
-  // This application chooses one-time initialization; refreshed defaults do not reset an edited form.
-  useEffect(() => {
-    if (values === undefined && defaultValues) setValues(defaultValues)
-  }, [values, defaultValues])
-
-  if (isLoading) return <p>Loading checkout…</p>
-  if (!values || !schema) return <p>{error?.message ?? "Checkout is unavailable"}</p>
-
-  return <form onSubmit={async (event) => {
-    event.preventDefault()
-    if (isRepricing || isPending || unsupported.length) return
-    const result = await schema["~standard"].validate(values)
-    if ("issues" in result) { setIssues(result.issues); return }
-    setIssues([])
-    if (values.billingAddress && values.paymentMethod) {
-      confirm({ ...values, billingAddress: values.billingAddress, paymentMethod: values.paymentMethod })
+const fields = useCheckoutFields({
+  getValues: () => form.getValues(),
+  setValues: (updates) => {
+    for (const { name, value, options } of updates) {
+      form.setValue(name, value, {
+        shouldDirty: options.meta === "update",
+        shouldTouch: options.meta === "update",
+        shouldValidate: false,
+      })
+      if (options.runListeners) fields.handleFieldChange(name, value)
     }
-  }}>
-    {(["billing", "shipping", "contact", "order"] as const).map((group) => <section key={group}>
-      <h2>{group}</h2>
-      {fields[group].filter((field) => !field.hidden).map((field) => <CheckoutFieldControl
-        key={JSON.stringify(field.key)} field={field} value={readAt(values, field.key)}
-        onChange={(next) => setValues((current) => writeAt(current ?? {}, field.key, next) as CheckoutFieldValues)}
-      />)}
-    </section>)}
-    {/* Payment-method selection and other checkout controls also update this same full snapshot. */}
-    {issues.map((issue) => <p key={JSON.stringify(issue)}>{issue.message}</p>)}
-    {error ? <p role="alert">{error.message}</p> : null}
-    {unsupported.length ? <p>Some checkout fields require application integration.</p> : null}
-    {isRepricing ? <p>Updating totals…</p> : null}
-    <button type="submit" disabled={isPending || isRepricing || unsupported.length > 0}>Place order</button>
-  </form>
-}
+    const names = updates.filter((update) => update.options.validate).map((update) => update.name)
+    if (names.length) void form.trigger(names)
+  },
+})
 ```
 
-The validator evaluates all four groups against each candidate and current sources, reports SDK submission paths and returns
-the **same candidate object** on success. There is no coercion, trimming, default insertion or field removal. Required strings
-must be nonblank, required checkboxes must be true, selects enforce their options, optional strings accept empty strings, and
-hidden fields impose no widget or value-schema requirements until visible. Hidden metadata and submitted values are retained.
-When the acknowledged cart has `needsShipping: false`, `fields.shipping` is empty and shipping fields are excluded from validation;
-any supplied shipping values remain unchanged. Rendering metadata retains the producer's value schema; the returned `schema` is
-the whole-form validator to pass to a Standard Schema form adapter.
+Choose one edit route: either a form listener or a field callback calls `handleFieldChange` **once, after the form commits**
+the normalized value. `getProps` only forwards edits to your callback; it does not also dispatch dependencies. Payment method,
+order note, account creation and `useShippingAsBilling` edits also participate in reevaluation. Unrelated application controls
+are ignored. Ordinary React renders and new accessor identities do not read the draft or reevaluate fields; subsequent events
+use the latest committed accessors. Identical derived metadata retains its identity.
 
-Billing paths start with `billingAddress`, shipping paths with `shippingAddress`, and contact/order extras use
-`["additionalFields", "plugin/a.b[0]"]`. Native billing Tax ID uses `["billingAddress", "taxId"]` and remains absent from
-shipping. Country locale changes labels/order/requirements/visibility; country options respect group eligibility and state
-options switch between select and text controls. Server failures keep their native targets: the seeded `qa/pickup-reference`
-requiredness failure targets the `additionalFields` **group**, while client validation knows its leaf path. Do not fabricate
-a leaf identity for a group-level server error from `useCheckout`.
+```tsx
+const control = definition.getProps({
+  value: formFieldValue,
+  onValueChange: formFieldChange,
+  onBlur: formFieldBlur,
+  invalid: hasFieldError,
+})
+// Discriminate control.kind: "input", "select" or "textarea", then spread control.props.
+// Render your label/options and associate the error message with control.errorId.
+```
+
+Bindings provide a controlled string value, checkbox boolean or number matching the supported field contract, plus name,
+IDs, required/autocomplete and accessibility props. An empty number control emits `undefined`; string-contract number widgets
+emit strings. Supported merchant attributes include disabled/read-only, min/max/step, length bounds, pattern and title.
+Merchant attributes cannot replace generated bindings or handlers. Custom controls can use metadata and `name` directly.
+
+Dependency-only clears request `{ runListeners: false, meta: "preserve", validate: false }`. Preserving metadata keeps
+existing dirty/touched flags, even on an already dirty field. A synchronous loop is sufficient; notifications need not be
+atomic. Apply every patch before requested validation. TanStack needs all three independent flags: `dontRunListeners`,
+`dontUpdateMeta` and `dontValidate`. If you explicitly call `validateField`, preserve interaction flags around it too: that
+method can mark an untouched field touched.
+
+A single form containing all four groups and the relevant checkout controls is the recommended integration. The complete,
+typechecked [TanStack Form example](./types/checkout-fields.example.tsx) and
+[React Hook Form example](./types/checkout-fields-rhf.example.tsx) use the
+[application-owned native markup](./types/checkout-field-control.example.tsx). Both are mounted in tests against their real
+APIs. Neither form library is a production dependency. The examples confirm through the separate `useCheckout` hook; they
+perform no address update or confirmation on field edits. If the app chooses repricing, its callbacks separately compose
+`useCartAddress` and shipping hooks.
+
+`useShippingAsBilling` is an optional form-only boolean, off when omitted. When enabled and eligible, common native billing
+controls are hidden and output/validation copy their values from shipping. Billing email and Tax ID, separate additional
+fields and extension data remain independent. Copied-address issues target the editable shipping controls. Shipping-free
+carts omit shipping output; forced billing ignores the sharing control. Country eligibility, locale labels, state options
+and conditional rules are resolved consistently from the effective addresses.
+
+```tsx
+form.reset(fields.getInput(savedFields))
+fields.reevaluate() // preserves the prefilled country/state pair
+const output = fields.getOutput(formValues) // SDK representation, independent of validation or submission
+```
+
+Only literal additional-field IDs are escaped; structural paths retain their meaning. For example, raw
+`["additionalFields", "plugin/a.b[0]'%"]` becomes `additionalFields.plugin%2Fa%2Eb%5B0%5D%27%25`.
+Defaults, names, input conversion and issue paths use the same collision-free encoding. `getOutput` restores the original ID,
+including encoded-looking IDs. Always submit `getOutput(values)`: validation preserves encoded values on success and TanStack
+submits its stored values. Conversion and validation never read/write the form, invoke callbacks, mutate cache data or start
+checkout/cart actions. You may validate a candidate and retain it for a review step before confirming separately.
 
 Checkout bootstrap seeds the existing cart cache. A fields-only consumer waits for this seed before enabling its own cart
 fetch; `cartEnabled: false` still permits cache subscriptions and forbids that fetch. Existing cart consumers keep their own
-configuration. During repricing, conditions use acknowledged totals and selected methods, never optimistic totals or an
-unsaved pickup choice. A failed refresh exposes its error while retained acknowledged data stays available.
+configuration. Refreshes invalidate metadata against the draft without replacing defaults, overwriting edits or running
+country-reset dependencies. During repricing, conditions use acknowledged totals and selected methods. Failed refreshes
+expose their error while retained source data remains usable.
+
+Replacing `{ values }` is a breaking 0.x API change. See the [migration guide](./docs/checkout-fields-migration.md) for the
+accessor/event migration and raw-versus-form type boundaries. The independent core resolvers keep their existing contracts.
 
 The condition engine uses AJV draft-07 with `$data`, PHP-compatible email, date/time/URI formats and custom error messages.
 Schemas and references are isolated per field. Only compiled schemas are cached; documents and resolved results contain no
@@ -830,7 +804,7 @@ client from `QueryClientProvider`.
 | `@kizlo/woocommerce-kit` | The core. Collection grammar and model, cart and checkout cache keys and events, search request, href and cache helpers, quantity, money and address helpers, and every type. No framework. |
 | `@kizlo/woocommerce-kit/react` | `ProductCollectionProvider`, `useProductCollection`, and the model types it returns. Carries `"use client"`. |
 | `@kizlo/woocommerce-kit/react/cart` | `useCart`, `useCartAddress`, `useCartShippingRates`, `useCartItem`, `useCartCoupon`. Carries `"use client"`. Needs `@tanstack/react-query`. |
-| `@kizlo/woocommerce-kit/react/checkout-fields` | `useCheckoutFields` and its controlled-value, result and diagnostic types. Carries `"use client"`. Needs `@tanstack/react-query`. |
+| `@kizlo/woocommerce-kit/react/checkout-fields` | `useCheckoutFields` and its form values, field bindings, updates, result and diagnostic types. Carries `"use client"`. Needs `@tanstack/react-query`. |
 | `@kizlo/woocommerce-kit/react/checkout` | `useCheckout` and its callback types. Carries `"use client"`. Needs `@tanstack/react-query`. |
 | `@kizlo/woocommerce-kit/react/provider` | `WooCommerceProvider`, this kit's app-level configuration. Carries `"use client"`. Needs `@tanstack/react-query`. |
 | `@kizlo/woocommerce-kit/react/search` | `useProductSearch`. Carries `"use client"`. Needs `@tanstack/react-query`. |

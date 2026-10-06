@@ -1,0 +1,261 @@
+import { describe, expect, it } from "vitest"
+import { checkoutFieldProps } from "./checkout-field-bindings"
+import {
+	canShareCheckoutAddress,
+	checkoutFormInput,
+	checkoutFormName,
+	checkoutFormOutput,
+	checkoutFormSchema,
+	resolveCheckoutForm,
+} from "./checkout-form"
+import { field, fixtures } from "./test/checkout-fields-fixture"
+import type { CheckoutFieldValues, CheckoutFormValues } from "./types"
+
+const native = (id: string, input: string, overrides: Parameters<typeof field>[1] = {}) =>
+	field(id, {
+		location: "address",
+		bindings: { billing: [input], shipping: [input] },
+		...overrides,
+	})
+function schema(source: ReturnType<typeof fixtures>) {
+	return checkoutFormSchema(() => source)["~standard"]
+}
+
+describe("checkout form representation", () => {
+	it("round-trips opaque IDs at every additional-fields root while preserving native paths and extensions", () => {
+		const ids = ["plugin/a.b[0]'%", 'plugin/"quoted"', "a.b", "a%2Eb", "a/b", "a%2Fb", "percent%25", "unicode/नमस्ते"]
+		const extra = Object.fromEntries(ids.map((id, index) => [id, String(index)]))
+		const source = fixtures(ids.map((id) => field(id)))
+		const raw = {
+			...source.values,
+			additionalFields: extra,
+			billingAddress: { ...source.checkout.billingAddress, additionalFields: extra },
+			shippingAddress: { ...source.checkout.shippingAddress, additionalFields: extra },
+			extensions: { plugin: { "a.b": [false, 0] } },
+		} as CheckoutFieldValues
+		const input = checkoutFormInput(Object.freeze(raw))
+		expect(input.additionalFields).toHaveProperty("plugin%2Fa%2Eb%5B0%5D%27%25", "0")
+		expect(Object.keys(input.additionalFields ?? {})).toHaveLength(ids.length)
+		expect(checkoutFormOutput(source, input)).toEqual(raw)
+		expect(checkoutFormName(["billingAddress", "country"])).toBe("billingAddress.country")
+		expect(checkoutFormName(["shippingAddress", "additionalFields", ids[0] ?? ""])).toBe(
+			"shippingAddress.additionalFields.plugin%2Fa%2Eb%5B0%5D%27%25",
+		)
+		expect(input.extensions).toEqual(raw.extensions)
+		expect(raw.additionalFields).toEqual(extra)
+	})
+	it("maps validation errors to the same safe paths and returns the supplied form representation", () => {
+		const id = "plugin/a.b[0]'%"
+		const source = fixtures([field(id, { required: true })])
+		const input = checkoutFormInput({ ...source.values, additionalFields: { [id]: "" } })
+		expect(schema(source).validate(input)).toHaveProperty(
+			"issues",
+			expect.arrayContaining([expect.objectContaining({ path: ["additionalFields", "plugin%2Fa%2Eb%5B0%5D%27%25"] })]),
+		)
+		const candidate = checkoutFormInput({ ...source.values, additionalFields: { [id]: "complete" } })
+		expect(schema(source).validate(candidate)).toEqual({ value: candidate })
+		expect((schema(source).validate(candidate) as { value: unknown }).value).toBe(candidate)
+	})
+	it("decodes registered bindings for conditions and keeps hidden values in output", () => {
+		const id = "plugin/a.b"
+		const source = fixtures([
+			field(id),
+			field("dependent", {
+				hidden: {
+					properties: { checkout: { properties: { additional_fields: { properties: { [id]: { const: "hide" } }, required: [id] } } } },
+				},
+			}),
+		])
+		const values = checkoutFormInput({ ...source.values, additionalFields: { [id]: "hide", dependent: "stored" } })
+		expect(resolveCheckoutForm(source, values).fields.order[1]).toMatchObject({ hidden: true })
+		expect(checkoutFormOutput(source, values).additionalFields).toEqual({ [id]: "hide", dependent: "stored" })
+	})
+	it("filters form-only controls while preserving current custom root bindings", () => {
+		const source = fixtures([field("note", { bindings: { other: ["customRoot", "note"] } })])
+		const values = { ...checkoutFormInput(source.values), useShippingAsBilling: false, unrelated: "ignore", customRoot: { note: "bound" } }
+		const output = checkoutFormOutput(source, values)
+		expect(output).not.toHaveProperty("useShippingAsBilling")
+		expect(output).not.toHaveProperty("unrelated")
+		expect(output).toHaveProperty("customRoot.note", "bound")
+	})
+	it("rejects collisions and invalid controls without modifying a candidate", () => {
+		const source = fixtures()
+		const values = { additionalFields: { "a.b": "one", "a%2Eb": "two" } }
+		expect(schema(source).validate(values)).toHaveProperty("issues")
+		expect(() => checkoutFormOutput(source, values)).toThrow("Colliding")
+		expect(schema(source).validate({ useShippingAsBilling: "yes" })).toHaveProperty("issues.0.path", ["useShippingAsBilling"])
+		expect(schema(source).validate(null)).toHaveProperty("issues")
+		expect(schema(source).validate({ billingAddress: [], useShippingAsBilling: true })).toHaveProperty("issues.0.path", ["billingAddress"])
+		expect(schema(source).validate({ billingAddress: { additionalFields: [] } })).toHaveProperty("issues.0.path", [
+			"billingAddress",
+			"additionalFields",
+		])
+	})
+})
+
+describe("address presentation and projection", () => {
+	it("copies only common native members and preserves independent fields, billing email and Tax ID", () => {
+		const source = fixtures([
+			native("first_name", "firstName", { required: true }),
+			native("country", "country"),
+			field("email", { location: "contact", bindings: { other: ["billingAddress", "email"] } }),
+			field("kizlo/tax-id", { location: "address", bindings: { billing: ["taxId"] } }),
+			native("custom/a.b", "additionalFields", {
+				bindings: { billing: ["additionalFields", "custom/a.b"], shipping: ["additionalFields", "custom/a.b"] },
+			}),
+		])
+		const values: CheckoutFormValues = {
+			...checkoutFormInput(source.values),
+			useShippingAsBilling: true,
+			billingAddress: { ...source.checkout.billingAddress, additionalFields: { "custom%2Fa%2Eb": "billing" } },
+			shippingAddress: {
+				...source.checkout.shippingAddress,
+				firstName: "Grace",
+				country: "IN",
+				additionalFields: { "custom%2Fa%2Eb": "shipping" },
+			},
+		}
+		const before = structuredClone(values)
+		expect(canShareCheckoutAddress(source)).toBe(true)
+		const model = resolveCheckoutForm(source, values)
+		expect(model.fields.billing.find((f) => f.id === "first_name")?.hidden).toBe(true)
+		expect(model.fields.billing.find((f) => f.id === "custom/a.b")?.hidden).toBe(false)
+		expect(model.fields.billing.find((f) => f.id === "kizlo/tax-id")?.hidden).toBe(false)
+		const output = checkoutFormOutput(source, values)
+		expect(output.billingAddress).toMatchObject({
+			firstName: "Grace",
+			country: "IN",
+			email: "ada@example.com",
+			taxId: "TAX",
+			additionalFields: { "custom/a.b": "billing" },
+		})
+		expect(output.shippingAddress?.additionalFields).toEqual({ "custom/a.b": "shipping" })
+		expect(schema(source).validate(values)).toEqual({ value: values })
+		expect(values).toEqual(before)
+	})
+	it("validates copied billing constraints and targets the editable shipping control", () => {
+		const source = fixtures([native("first_name", "firstName", { required: true })])
+		const values = {
+			...checkoutFormInput(source.values),
+			useShippingAsBilling: true,
+			shippingAddress: { ...source.checkout.shippingAddress, firstName: "" },
+		}
+		const result = schema(source).validate(values)
+		expect(result).toHaveProperty("issues", expect.arrayContaining([expect.objectContaining({ path: ["shippingAddress", "firstName"] })]))
+		expect(values.billingAddress?.firstName).toBe("Ada")
+	})
+	it.each(["shipping-free", "forced-billing"] as const)("disables sharing for %s while retaining editable billing values", (scenario) => {
+		const source = fixtures([native("first_name", "firstName", { required: true })])
+		if (scenario === "shipping-free") source.cart.needsShipping = false
+		else source.storefront.checkout.forcedBillingAddress = true
+		const values = {
+			...checkoutFormInput(source.values),
+			useShippingAsBilling: true,
+			shippingAddress: { ...source.checkout.shippingAddress, firstName: "Grace" },
+		}
+		expect(canShareCheckoutAddress(source)).toBe(false)
+		expect(resolveCheckoutForm(source, values).fields.billing[0]?.hidden).toBe(false)
+		expect(checkoutFormOutput(source, values).billingAddress?.firstName).toBe("Ada")
+		if (scenario === "shipping-free") {
+			expect(resolveCheckoutForm(source, values).fields.shipping).toEqual([])
+			expect(checkoutFormOutput(source, values)).not.toHaveProperty("shippingAddress")
+		}
+	})
+	it("resolves copied locale/options and independent candidate countries", () => {
+		const source = fixtures([native("country", "country"), native("state", "state")])
+		const values = {
+			...checkoutFormInput(source.values),
+			useShippingAsBilling: true,
+			shippingAddress: { ...source.checkout.shippingAddress, country: "IN", state: "KA" },
+		}
+		expect(resolveCheckoutForm(source, values).fields.billing[1]).toMatchObject({
+			hidden: true,
+			type: "select",
+			options: [{ value: "KA", label: "Karnataka" }],
+		})
+		const prefilled = {
+			...values,
+			useShippingAsBilling: false,
+			billingAddress: { ...source.checkout.billingAddress, country: "GB", state: "London" },
+		}
+		expect(resolveCheckoutForm(source, prefilled).fields.billing[1]).toMatchObject({ hidden: false, type: "text", label: "County" })
+	})
+})
+
+describe("native field bindings", () => {
+	it.each(["text", "select", "textarea", "checkbox", "number"])(
+		"normalizes %s edits and protects controlled/accessibility props",
+		(type) => {
+			const source = fixtures([
+				field("plugin/a.b", {
+					type,
+					schema: { type: type === "number" ? "number" : type === "checkbox" ? "boolean" : "string" },
+					required: true,
+					autocomplete: "name",
+					attributes: {
+						name: "wrong",
+						id: "wrong",
+						value: "wrong",
+						checked: false,
+						onChange: "wrong",
+						required: false,
+						min: 1,
+						disabled: false,
+					},
+				}),
+			])
+			const resolved = resolveCheckoutForm(source).fields.order[0]
+			if (!resolved) throw new Error("Missing field")
+			const edits: unknown[] = []
+			const control = checkoutFieldProps(resolved, checkoutFormName(resolved.key), {
+				value: undefined,
+				onValueChange: (value) => edits.push(value),
+				invalid: true,
+			})
+			expect(control.props).toMatchObject({
+				name: "additionalFields.plugin%2Fa%2Eb",
+				id: "checkout-additionalFields.plugin%2Fa%2Eb",
+				required: true,
+				autoComplete: "name",
+				"aria-invalid": true,
+				"aria-describedby": control.errorId,
+				min: 1,
+			})
+			// Model the native currentTarget without mounting a form library.
+			control.props.onChange({ currentTarget: { value: "7", valueAsNumber: 7, checked: true } } as {
+				currentTarget: HTMLInputElement & HTMLSelectElement & HTMLTextAreaElement
+			})
+			expect(edits).toEqual([type === "number" ? 7 : type === "checkbox" ? true : "7"])
+			if (control.kind === "input" && type === "checkbox") {
+				expect(control.props.checked).toBe(false)
+				expect(control.props).not.toHaveProperty("value")
+			}
+			if (control.kind === "input" && type === "number") {
+				control.props.onChange({ currentTarget: { value: "" } } as {
+					currentTarget: HTMLInputElement & HTMLSelectElement & HTMLTextAreaElement
+				})
+				expect(edits[1]).toBeUndefined()
+			}
+		},
+	)
+	it("keeps number widgets with string contracts as strings and forwards blur once", () => {
+		const resolved = resolveCheckoutForm(fixtures([field("number-text", { type: "number", schema: { type: "string" } })])).fields.order[0]
+		if (!resolved) throw new Error("Missing field")
+		const edits: unknown[] = []
+		let blurs = 0
+		const control = checkoutFieldProps(resolved, checkoutFormName(resolved.key), {
+			value: "12",
+			onValueChange: (value) => edits.push(value),
+			onBlur: () => {
+				blurs++
+			},
+		})
+		control.props.onChange({ currentTarget: { value: "14", valueAsNumber: 14 } } as {
+			currentTarget: HTMLInputElement & HTMLSelectElement & HTMLTextAreaElement
+		})
+		control.props.onBlur?.()
+		expect(edits).toEqual(["14"])
+		expect(blurs).toBe(1)
+		expect(control.props["aria-describedby"]).toBeUndefined()
+	})
+})

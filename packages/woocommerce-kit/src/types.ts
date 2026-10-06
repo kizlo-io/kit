@@ -146,7 +146,7 @@ export type StandardFieldSchema<T> = {
 	}
 }
 
-/** The application's complete editable snapshot; omitted optional values are authoritative. */
+/** Raw SDK-shaped field values, also used by the independent core resolvers. */
 export type CheckoutFieldValues = Partial<ConfirmCheckoutInput>
 export type CheckoutFieldGroup = "billing" | "shipping" | "contact" | "order"
 export type CheckoutFieldDiagnostic = {
@@ -161,8 +161,108 @@ export type CheckoutFieldsModel = {
 	defaultValues: CheckoutFieldValues | null
 	unsupported: CheckoutFieldDiagnostic[]
 }
-export type CheckoutFieldsApi = CheckoutFieldsModel & {
-	schema: StandardFieldSchema<CheckoutFieldValues> | null
+/** Opaque additional-field IDs are encoded independently of structural form paths. */
+type FormEscape = { "%": "%25"; "/": "%2F"; ".": "%2E"; "[": "%5B"; "]": "%5D"; "'": "%27"; '"': "%22" }
+type FormId<T extends string, Encoded extends string = ""> = string extends T
+	? string
+	: T extends `${infer Head}${infer Tail}`
+		? FormId<Tail, `${Encoded}${Head extends keyof FormEscape ? FormEscape[Head] : Head}`>
+		: Encoded
+export type CheckoutFormId<T extends string> = FormId<T>
+type FormAdditionalFields<T> = T extends object ? { [K in keyof T as K extends string ? CheckoutFormId<K> : K]: T[K] } : T
+type FormRepresentation<T> = {
+	[K in keyof T]: K extends "additionalFields"
+		? FormAdditionalFields<T[K]>
+		: K extends "billingAddress" | "shippingAddress"
+			? FormRepresentation<T[K]>
+			: T[K]
+}
+/** The form library's encoded representation; form-only controls never reach SDK output. */
+export type CheckoutFormValues = FormRepresentation<CheckoutFieldValues> & { useShippingAsBilling?: boolean }
+type ScalarName<T> = { [K in keyof T & string]: NonNullable<T[K]> extends string | boolean | number ? K : never }[keyof T & string]
+type AddressFormNames<T> =
+	| ScalarName<T>
+	| (T extends { additionalFields?: infer F } ? `additionalFields.${keyof NonNullable<F> & string}` : never)
+export type CheckoutFormFieldName =
+	| ScalarName<CheckoutFormValues>
+	| `billingAddress.${AddressFormNames<NonNullable<CheckoutFormValues["billingAddress"]>>}`
+	| `shippingAddress.${AddressFormNames<NonNullable<CheckoutFormValues["shippingAddress"]>>}`
+	| `additionalFields.${keyof NonNullable<CheckoutFormValues["additionalFields"]> & string}`
+type ScalarValue<T> = T extends object ? { [K in keyof T]: ScalarValue<T[K]> }[keyof T] : Extract<T, string | boolean | number>
+export type CheckoutFieldValue = ScalarValue<
+	Pick<
+		CheckoutFormValues,
+		"billingAddress" | "shippingAddress" | "additionalFields" | "paymentMethod" | "customerNote" | "createAccount" | "useShippingAsBilling"
+	>
+>
+export type CheckoutFieldUpdate = {
+	name: CheckoutFormFieldName
+	value: CheckoutFieldValue | undefined
+	options: { runListeners: boolean; meta: "preserve" | "update"; validate: boolean }
+}
+export type CheckoutFieldsOptions = {
+	getValues?: () => CheckoutFormValues | undefined
+	setValues?: (updates: readonly CheckoutFieldUpdate[]) => void
+}
+export type CheckoutFieldBinding = {
+	value: CheckoutFieldValue | undefined
+	onValueChange: (value: CheckoutFieldValue | undefined) => void
+	onBlur?: () => void
+	invalid?: boolean
+}
+export type CheckoutControlProps = {
+	id: string
+	name: CheckoutFormFieldName
+	required: boolean
+	autoComplete?: string
+	placeholder?: string
+	"aria-invalid": boolean
+	"aria-describedby"?: string
+	onBlur?: () => void
+	disabled?: boolean
+	readOnly?: boolean
+	min?: string | number
+	max?: string | number
+	step?: string | number
+	minLength?: number
+	maxLength?: number
+	pattern?: string
+	title?: string
+}
+export type CheckoutNativeControl =
+	| {
+			kind: "input"
+			errorId: string
+			props: CheckoutControlProps & {
+				type: string
+				value?: string | number
+				checked?: boolean
+				onChange: (event: { currentTarget: { value: string; checked: boolean; valueAsNumber: number } }) => void
+			}
+	  }
+	| {
+			kind: "select"
+			errorId: string
+			props: CheckoutControlProps & { value: string; onChange: (event: { currentTarget: { value: string } }) => void }
+	  }
+	| {
+			kind: "textarea"
+			errorId: string
+			props: CheckoutControlProps & { value: string; onChange: (event: { currentTarget: { value: string } }) => void }
+	  }
+export type CheckoutFormField = ResolvedField & {
+	name: CheckoutFormFieldName
+	getProps: (binding: CheckoutFieldBinding) => CheckoutNativeControl
+}
+export type CheckoutFieldsApi = Omit<CheckoutFieldsModel, "fields" | "defaultValues"> & {
+	fields: Record<CheckoutFieldGroup, CheckoutFormField[]>
+	defaultValues: CheckoutFormValues | null
+	schema: StandardFieldSchema<CheckoutFormValues> | null
+	canUseShippingAsBilling: boolean
+	handleFieldChange: (name: CheckoutFormFieldName, value: CheckoutFieldValue | undefined) => void
+	reevaluate: () => void
+	getInput: (values: CheckoutFieldValues) => CheckoutFormValues
+	getOutput: (values: CheckoutFormValues) => CheckoutFieldValues
 	isLoading: boolean
 	isRepricing: boolean
 	error: StorefrontError | CheckoutError | CartError | null
