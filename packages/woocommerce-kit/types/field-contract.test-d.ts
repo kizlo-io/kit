@@ -6,6 +6,14 @@ declare module "kizlo" {
 		"woocommerce.additional-fields.address.read": { "consumer/reference"?: string; "consumer/address-flag"?: boolean }
 		"woocommerce.additional-fields.contact.read": { "consumer/contact-flag"?: boolean }
 		"woocommerce.additional-fields.order.read": { "consumer/note"?: string }
+		"woocommerce.additional-fields.checkout.write": {
+			"consumer/contact-flag"?: boolean
+			"consumer/note"?: string
+		} & Record<string, string | boolean | undefined>
+		"woocommerce.additional-fields.address.write": {
+			"consumer/reference"?: string
+			"consumer/address-flag"?: boolean
+		} & Record<string, string | boolean | undefined>
 		"woocommerce.additional-fields.checkout.read": { "consumer/contact-flag"?: boolean; "consumer/note"?: string }
 	}
 }
@@ -18,3 +26,11 @@ const wrongCheckbox: Checkout["additionalFields"]["consumer/contact-flag"] = "fa
 const wrongReference: Checkout["billingAddress"]["additionalFields"]["consumer/reference"] = true
 const inferredContact: Checkout["additionalFields"]["consumer/contact-flag"] = contact
 void [reference, wrongCheckbox, wrongReference, inferredContact]
+
+import type { CheckoutFieldValues } from "../src/react/checkout-fields"
+
+const checkoutFlag: NonNullable<CheckoutFieldValues["additionalFields"]>["consumer/contact-flag"] = false
+const checkoutReference: NonNullable<NonNullable<CheckoutFieldValues["billingAddress"]>["additionalFields"]>["consumer/reference"] = "Buyer"
+// @ts-expect-error Registered checkbox input remains boolean in the full controlled form.
+const wrongCheckoutFlag: NonNullable<CheckoutFieldValues["additionalFields"]>["consumer/contact-flag"] = "false"
+void [checkoutFlag, checkoutReference, wrongCheckoutFlag]

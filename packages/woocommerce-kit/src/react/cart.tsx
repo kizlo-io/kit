@@ -15,7 +15,7 @@
  * Renders nothing. Every class name, icon, label and route stays in the consumer.
  */
 
-import { isServer, skipToken, useIsMutating, useMutation, useQuery } from "@tanstack/react-query"
+import { useIsMutating, useMutation } from "@tanstack/react-query"
 import type { ActiveKizloClient } from "kizlo"
 import { useKizloContext } from "kizlo/react"
 import { type ChangeEvent, type FocusEvent, type KeyboardEvent, useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
@@ -26,7 +26,6 @@ import {
 	type CartItemLimits,
 	cartItemLimits,
 	cartQueryKey,
-	cartStaleTime,
 	defaultShouldUpdateAddress,
 	draftQuantityLimits,
 	hasSelectedShippingRates,
@@ -38,6 +37,7 @@ import { formatStoreMoney } from "../money"
 import type { AddCartItemInput, Cart, CartAddressSnapshotInput, CartError, UpdateCartInput } from "../types"
 import { useWooCommerceContext } from "./context"
 import { notify } from "./notify"
+import { addressMutationKey, addressQueueKey, cartMutationKey, noQueuedAddresses, useCartActivity, useCartQuery } from "./session-queries"
 
 /**
  * The core's cart types, re-exported so a component reads its hook and the types it returns from one specifier. Type-only, so
@@ -64,12 +64,6 @@ export type CartAddressHookOptions = CartHookOptions & {
 	/** Replaces the default pricing-field check. Returning false cancels any scheduled push. The form owns validation. */
 	shouldUpdateAddress?: (input: CartAddressSnapshotInput, cart: Cart | null) => boolean
 }
-
-/** Everything the cart mutations are keyed under, so one lookup answers "is any cart action in flight". */
-const cartMutationKey = [...cartQueryKey, "mutation"] as const
-const addressMutationKey = [...cartMutationKey, "address"] as const
-const addressQueueKey = [...cartQueryKey, "addressQueue"] as const
-const noQueuedAddresses: string[] = []
 
 /** Stable empties, so a consumer reading `items` on an unfetched cart does not see a new array every render. */
 const noItems: Cart["items"] = []
@@ -115,30 +109,9 @@ const noop = () => {}
  * mutation, so a read-only consumer subscribes to nothing it will never use.
  */
 function useCartData() {
-	const { cartEnabled, locale, queryClient } = useWooCommerceContext()
-	const { client } = useKizloContext()
-
-	const cartQuery = useQuery<Cart, CartError>({
-		// The cart is session state behind a cookie, so it is fetched in the browser and never server-rendered.
-		enabled: cartEnabled && !isServer,
-		// React Query reports a failure by rejection, which is what `.call` does.
-		queryFn: () => client.woocommerce.cart.get.call(),
-		queryKey: cartQueryKey,
-		staleTime: cartStaleTime,
-	})
-
-	// Prefix-matched, so one lookup covers every hook's scope — and a cache read rather than a subscription, which is why a hook
-	// holding no mutation of its own can still answer it.
-	const isMutating = useIsMutating({ mutationKey: cartMutationKey }) > 0
-	const isAddressPending = useIsMutating({ mutationKey: addressMutationKey }) > 0
-	// Local queue ownership lives in the app's cache so a totals/order-button reader sees an edit before a request starts.
-	const { data: queuedAddresses = noQueuedAddresses } = useQuery({
-		queryKey: addressQueueKey,
-		queryFn: skipToken,
-		initialData: noQueuedAddresses,
-		gcTime: Infinity,
-	})
-	const isRepricing = isAddressPending || queuedAddresses.length > 0
+	const { locale, queryClient } = useWooCommerceContext()
+	const cartQuery = useCartQuery()
+	const { isMutating, isRepricing } = useCartActivity()
 
 	const cart = cartQuery.data ?? null
 	const format = useCallback((amount: number) => (cart ? formatStoreMoney(amount, cart.currencyFormat, locale) : ""), [cart, locale])

@@ -145,3 +145,25 @@ export type StandardFieldSchema<T> = {
 		readonly validate: (value: unknown) => { value: T } | { issues: { message: string; path?: readonly (string | number)[] }[] }
 	}
 }
+
+/** The application's complete editable snapshot; omitted optional values are authoritative. */
+export type CheckoutFieldValues = Partial<ConfirmCheckoutInput>
+export type CheckoutFieldGroup = "billing" | "shipping" | "contact" | "order"
+export type CheckoutFieldDiagnostic = {
+	fieldId: string
+	group: CheckoutFieldGroup
+	path: readonly string[]
+	reason: "unavailable-data" | "invalid-schema" | "unsupported-widget" | "invalid-binding" | "binding-collision"
+	message: string
+}
+export type CheckoutFieldsModel = {
+	fields: Record<CheckoutFieldGroup, ResolvedField[]>
+	defaultValues: CheckoutFieldValues | null
+	unsupported: CheckoutFieldDiagnostic[]
+}
+export type CheckoutFieldsApi = CheckoutFieldsModel & {
+	schema: StandardFieldSchema<CheckoutFieldValues> | null
+	isLoading: boolean
+	isRepricing: boolean
+	error: StorefrontError | CheckoutError | CartError | null
+}

@@ -1,3 +1,4 @@
+import { fieldMetadata, readPath as read, safeFieldPath as safePath } from "./field-metadata"
 import { evaluateFieldRule, type LocalFieldDocument } from "./field-rules"
 import { compileFieldSchema } from "./field-schema"
 import { scopeFieldSchema } from "./field-schema-config"
@@ -40,16 +41,13 @@ function resolve<T extends object>(
 		(field) => field && typeof field.id === "string" && field.bindings && typeof field.bindings === "object",
 	)
 	const document = localDocument(definitions, values, location, group)
-	const selected = read(values, ["country"])
-	const country = countries.find((country) => country.code === selected)
-	const allowed = countries.filter((country) => (group === "billing" ? country.allowBilling : country.allowShipping))
 	const result: ResolvedField[] = []
 	for (const definition of definitions) {
 		if (definition.location !== location) continue
 		try {
 			const binding = definition.bindings[group]
 			if (!Array.isArray(binding) || !safePath(binding) || !safePath([...prefix, ...binding])) continue
-			const field = { ...definition, ...(location === "address" ? country?.locale[definition.id] : {}) }
+			const field = fieldMetadata(definition, group, values, countries)
 			const hidden = evaluateFieldRule(field.hidden, document)
 			if (hidden === undefined) continue
 			const required = hidden ? false : evaluateFieldRule(field.required, document)
@@ -58,15 +56,8 @@ function resolve<T extends object>(
 			const scoped = scopeFieldSchema(field.schema, `https://kizlo.invalid/fields/${encodeURIComponent(JSON.stringify(key))}`)
 			if (!scoped) continue
 			const kind = scoped.kind
-			let type = field.type ?? "text"
-			let choices = field.options ?? []
-			if (field.id === "country" && location === "address") {
-				type = "select"
-				choices = allowed.map((country) => ({ value: country.code, label: country.name }))
-			} else if (field.id === "state" && location === "address" && country) {
-				type = country.states.length ? "select" : "text"
-				choices = country.states.map((state) => ({ value: state.code, label: state.name }))
-			}
+			let type = field.type
+			const choices = field.options
 			if (!["text", "select", "checkbox", "email", "tel", "textarea", "number"].includes(type)) {
 				if (kind !== "string") continue
 				type = "text"
@@ -103,22 +94,6 @@ function resolve<T extends object>(
 	}
 	result.sort((a, b) => (a.presentation.order ?? a.index ?? Infinity) - (b.presentation.order ?? b.index ?? Infinity))
 	return { fields: result, schema: objectSchema(result) }
-}
-
-function read(object: unknown, path: readonly string[]): unknown {
-	let value = object
-	for (const key of path) {
-		if (!value || typeof value !== "object" || !Object.hasOwn(value, key)) return undefined
-		value = (value as Record<string, unknown>)[key]
-	}
-	return value
-}
-function safePath(path: readonly string[]): boolean {
-	return (
-		Array.isArray(path) &&
-		path.length > 0 &&
-		path.every((key) => typeof key === "string" && key.length > 0 && !["__proto__", "prototype", "constructor"].includes(key))
-	)
 }
 
 function localDocument(

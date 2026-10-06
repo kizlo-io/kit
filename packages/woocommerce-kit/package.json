@@ -76,6 +76,12 @@
 				"types": "./dist/react/storefront.d.ts",
 				"default": "./dist/react/storefront.js"
 			}
+		},
+		"./react/checkout-fields": {
+			"import": {
+				"types": "./dist/react/checkout-fields.d.ts",
+				"default": "./dist/react/checkout-fields.js"
+			}
 		}
 	},
 	"files": [
@@ -94,6 +100,9 @@
 	"dependencies": {
 		"@cfworker/json-schema": "^4.1.1",
 		"@kizlo/kit": "workspace:*",
+		"ajv": "^8.20.0",
+		"ajv-errors": "^3.0.0",
+		"ajv-formats": "^3.0.1",
 		"use-debounce": "catalog:"
 	},
 	"devDependencies": {
