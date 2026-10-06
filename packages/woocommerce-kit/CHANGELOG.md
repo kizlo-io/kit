@@ -1,5 +1,11 @@
 # @kizlo/woocommerce-kit
 
+## 0.8.0
+
+### Minor Changes
+
+- [#28](https://github.com/kizlo-io/kit/pull/28) [`4f886a6`](https://github.com/kizlo-io/kit/commit/4f886a6be08025407d361c46359610968be6b630) Thanks [@IDJGILL](https://github.com/IDJGILL)! - Add coordinated checkout fields with live conditions and whole-form validation.
+
 ## 0.7.0
 
 ### Minor Changes
