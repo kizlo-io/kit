@@ -15,9 +15,10 @@ const { procedures } = vi.hoisted(() => ({
 	procedures: { confirm: { call: vi.fn() }, get: { call: vi.fn() } },
 }))
 
-vi.mock("kizlo/react", () => ({
-	useKizloContext: () => ({ client: { woocommerce: { checkout: procedures } } }),
-}))
+vi.mock("kizlo/react", () => {
+	const client = { woocommerce: { checkout: procedures } }
+	return { useKizloContext: () => ({ client }) }
+})
 
 /** Only the fields the hook and `resolveCheckoutRedirect` read. */
 function storeCheckout(orderId: number | null, itemCount: number) {

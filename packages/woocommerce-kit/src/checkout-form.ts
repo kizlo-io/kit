@@ -4,9 +4,11 @@ import { checkoutFieldsSchema, resolveCheckoutFields } from "./checkout-fields"
 import { readPath } from "./field-metadata"
 import type {
 	CheckoutFieldBinding,
-	CheckoutFieldsApi,
+	CheckoutFieldDiagnostic,
+	CheckoutFieldGroup,
 	CheckoutFieldUpdate,
 	CheckoutFieldValues,
+	CheckoutFormField,
 	CheckoutFormFieldName,
 	CheckoutFormValues,
 	StandardFieldSchema,
@@ -15,7 +17,7 @@ import type {
 const escapes: Record<string, string> = { "%": "%25", "/": "%2F", ".": "%2E", "[": "%5B", "]": "%5D", "'": "%27", '"': "%22" }
 const unescapes = Object.fromEntries(Object.entries(escapes).map(([key, value]) => [value, key]))
 const nativeAddress = new Set(["firstName", "lastName", "company", "address1", "address2", "city", "state", "postcode", "country", "phone"])
-const controls = new Set(["paymentMethod", "customerNote", "createAccount", "useShippingAsBilling"])
+const controls = new Set(["paymentMethod", "customerNote", "createAccount", "customerPassword", "useShippingAsBilling"])
 
 /** Only the opaque additional-field segment is escaped. Structural dots still mean nesting. */
 export function checkoutFormPath(path: readonly string[]): string[]
@@ -150,7 +152,12 @@ export function checkoutFormSchema(getSources: () => CheckoutFieldSources): Stan
 	}
 }
 
-export type CheckoutFormState = Pick<CheckoutFieldsApi, "fields" | "unsupported" | "defaultValues" | "canUseShippingAsBilling"> & {
+export type CheckoutFormState = {
+	fields: Record<CheckoutFieldGroup, CheckoutFormField[]>
+	unsupported: CheckoutFieldDiagnostic[]
+	defaultValues: CheckoutFormValues | null
+	canUseShippingAsBilling: boolean
+	useShippingAsBilling: boolean
 	signature: string
 }
 export function resolveCheckoutFormState(
@@ -161,11 +168,12 @@ export function resolveCheckoutFormState(
 ): CheckoutFormState {
 	const model = resolveCheckoutForm(sources, values ?? defaultValues ?? undefined)
 	const canUseShippingAsBilling = canShareCheckoutAddress(sources)
-	const signature = JSON.stringify([model.fields, model.unsupported, canUseShippingAsBilling])
+	const useShippingAsBilling = (values ?? defaultValues)?.useShippingAsBilling === true
+	const signature = JSON.stringify([model.fields, model.unsupported, canUseShippingAsBilling, useShippingAsBilling])
 	if (previous?.signature === signature) return previous.defaultValues === defaultValues ? previous : { ...previous, defaultValues }
 	const fields = Object.fromEntries(
 		Object.entries(model.fields).map(([group, definitions]) => {
-			const prior = previous?.fields[group as keyof CheckoutFieldsApi["fields"]]
+			const prior = previous?.fields[group as CheckoutFieldGroup]
 			const resolved = definitions.map((field) => {
 				const name = checkoutFormName(field.key)
 				const existing = prior?.find((field) => field.name === name)
@@ -177,7 +185,7 @@ export function resolveCheckoutFormState(
 			})
 			return [group, prior?.length === resolved.length && resolved.every((field, index) => field === prior[index]) ? prior : resolved]
 		}),
-	) as CheckoutFieldsApi["fields"]
+	) as CheckoutFormState["fields"]
 	return {
 		fields,
 		unsupported:
@@ -186,6 +194,7 @@ export function resolveCheckoutFormState(
 				: model.unsupported,
 		defaultValues,
 		canUseShippingAsBilling,
+		useShippingAsBilling,
 		signature,
 	}
 }

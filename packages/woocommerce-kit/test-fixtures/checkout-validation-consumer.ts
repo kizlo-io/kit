@@ -4,7 +4,13 @@ import type { CheckoutCallbacks, CheckoutErrorEvent } from "../src/checkout"
 import type { CheckoutApi } from "../src/react/checkout"
 import type { CheckoutError } from "../src/types"
 
-type Evidence = { source: string | null; sourcePath: string[]; code: string | null; message: string }
+type Evidence = {
+	registeredFields: { id: string; bucket: "billingAddress" | "shippingAddress" | "additionalFields" | null }[]
+	source: string | null
+	sourcePath: string[]
+	code: string | null
+	message: string
+}
 type ValidationIssue = Evidence &
 	({ scope: "field"; target: string[] } | { scope: "group"; target: string[] } | { scope: "unresolved"; target: null })
 type ValidationData = { issues: ValidationIssue[] }
@@ -45,6 +51,8 @@ if (error.code === "CHECKOUT_VALIDATION_FAILED") {
 	// @ts-expect-error Raw WooCommerce payloads are not public validation data.
 	const upstream = data.upstream
 	for (const issue of data.issues) {
+		const references: Evidence["registeredFields"] = issue.registeredFields
+		void references
 		const source: string | null = issue.source
 		const sourcePath: string[] = issue.sourcePath
 		const code: string | null = issue.code
