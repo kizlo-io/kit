@@ -1,5 +1,15 @@
 # @kizlo/woocommerce-kit
 
+## 0.9.0
+
+### Minor Changes
+
+- [#33](https://github.com/kizlo-io/kit/pull/33) [`1430eeb`](https://github.com/kizlo-io/kit/commit/1430eeb7bc5b7be3dbbf5aa2158f8e7bc8b95160) Thanks [@IDJGILL](https://github.com/IDJGILL)! - Replace render-driven checkout field values with form bindings, explicit field events and safe input/output conversion.
+
+- [#34](https://github.com/kizlo-io/kit/pull/34) [`de330f3`](https://github.com/kizlo-io/kit/commit/de330f36b6f08e9984f22c098dfd47b041375c0e) Thanks [@IDJGILL](https://github.com/IDJGILL)! - Integrate checkout server errors with form callbacks and replace fields.group with group.fields and section errors.
+
+- [#30](https://github.com/kizlo-io/kit/pull/30) [`b0b558a`](https://github.com/kizlo-io/kit/commit/b0b558a03eeb333a6b4cb83f35d0b686d783e973) Thanks [@IDJGILL](https://github.com/IDJGILL)! - Add awaitable action handlers alongside existing cart and checkout handlers.
+
 ## 0.8.0
 
 ### Minor Changes
