@@ -7,8 +7,8 @@ settings:
 catalogs:
   default:
     '@kizlo/woocommerce':
-      specifier: ^0.12.0
-      version: 0.12.0
+      specifier: ^0.14.0
+      version: 0.14.0
     '@tanstack/react-query':
       specifier: ^5.102.0
       version: 5.104.0
@@ -111,6 +111,9 @@ importers:
       ajv-formats:
         specifier: ^3.0.1
         version: 3.0.1(ajv@8.20.0)
+      nanostores:
+        specifier: ^1.5.5
+        version: 1.5.5
       use-debounce:
         specifier: 'catalog:'
         version: 10.1.1(react@19.3.0)
@@ -120,7 +123,7 @@ importers:
         version: 5.4.0(react-hook-form@7.89.0(@types/react@19.3.0)(react@19.3.0))
       '@kizlo/woocommerce':
         specifier: 'catalog:'
-        version: 0.12.0(kizlo@0.26.0(@cfworker/json-schema@4.1.1)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(typescript@5.9.3)(ws@8.22.0))
+        version: 0.14.0(kizlo@0.26.0(@cfworker/json-schema@4.1.1)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(typescript@5.9.3)(ws@8.22.0))
       '@standard-schema/spec':
         specifier: ^1.1.0
         version: 1.1.0
@@ -539,8 +542,8 @@ packages:
     resolution: {integrity: sha512-Bv/mQ2CFd5bpMxIrcxm67aPWwPAcF8c8rtfGiB2DC56bALYAc9Zp8iRwJ1gFTj+5Neun97jGUCx14cx4hGrnkw==}
     engines: {node: '>=22.14.0'}
 
-  '@kizlo/woocommerce@0.12.0':
-    resolution: {integrity: sha512-3GEK2WQC5T+dPVprZcAxHKZkWAfbwwgNIfeUz4tOuQ9oi+nSMBskXc8WpKmFBD+DTwCHBW/xbf1GfuDMhs3gYQ==}
+  '@kizlo/woocommerce@0.14.0':
+    resolution: {integrity: sha512-kKC8EWOx00aWOnoa3KqUPkh6UTpMzOeY+Bg24HuzPsnhdYQ190jOjjFlrX+6O9RPxuOoTSnkKKINJoLzbffJtg==}
     engines: {node: '>=22.14.0'}
     peerDependencies:
       kizlo: '>=0.16.0'
@@ -1659,6 +1662,10 @@ packages:
     engines: {node: ^10 || ^12 || ^13.7 || ^14 || >=15.0.1}
     hasBin: true
 
+  nanostores@1.5.5:
+    resolution: {integrity: sha512-FixtE239Gl6Gz0ZGCK0WzvNwObNCIwVT+L7zQcf1QgcA6AzBxblzqe9OT88qiucNkhsjSOqiogSaF5jVbJiqSA==}
+    engines: {node: ^20.0.0 || >=22.0.0}
+
   negotiator@1.1.0:
     resolution: {integrity: sha512-NMPBRMJgiQHjbd8phG3Vebdx4kZ1H121rbl5IkMqeOsahptB9BKo/d7oJ3zTXqTgagn2bWlNSXkh0QUGM31RYg==}
     engines: {node: '>=18'}
@@ -2638,7 +2645,7 @@ snapshots:
       ua-parser-js: 2.0.10
       zod: 4.6.5
 
-  '@kizlo/woocommerce@0.12.0(kizlo@0.26.0(@cfworker/json-schema@4.1.1)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(typescript@5.9.3)(ws@8.22.0))':
+  '@kizlo/woocommerce@0.14.0(kizlo@0.26.0(@cfworker/json-schema@4.1.1)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(typescript@5.9.3)(ws@8.22.0))':
     dependencies:
       '@kizlo/shared': 0.10.0
       jose: 6.1.0
@@ -3703,6 +3710,8 @@ snapshots:
   ms@2.1.3: {}
 
   nanoid@3.3.19: {}
+
+  nanostores@1.5.5: {}
 
   negotiator@1.1.0:
     dependencies:

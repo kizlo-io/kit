@@ -476,9 +476,9 @@ const onSubmit = async (values: ConfirmCheckoutInput) => {
 }
 ```
 
-Server validation reaches `error` and `onError` through the active client's `CHECKOUT_VALIDATION_FAILED.data = { issues }` contract. The legacy `data.fields` dictionary and draft `data.upstream` payload are removed. Install the matching SDK as an app runtime dependency and import `resolveCheckoutValidationIssues` from `@kizlo/woocommerce/checkout-validation`; supply definitions loaded from the same storefront and register the updated generated client contract for Kit's inference. See [the SDK client requirements](https://github.com/kizlo-io/kizlo/blob/main/packages/woocommerce/docs/checkout-validation.md#consume-errors-through-kit) and [breaking migration guide](https://github.com/kizlo-io/kizlo/blob/main/packages/woocommerce/docs/checkout-validation-migration.md).
+Server validation reaches `error` and `onError` through the active client's `CHECKOUT_VALIDATION_FAILED.data = { issues }` contract. Register an SDK `0.14.0` or newer client contract that includes `registeredFields` references. `useCheckout` automatically publishes submission failures to a Nanostores source scoped to that client and app cache; `useCheckoutFields` resolves literal SDK identities using the loaded storefront bindings and maps them to the current editable controls. The application needs no error resolver or WooCommerce target table. The SDK's former `resolveCheckoutValidationIssues` export has been removed. Kit has no runtime SDK dependency.
 
-[KIT-28](https://linear.app/kizlo/issue/KIT-28/integrate-checkout-server-errors-into-usecheckoutfields) owns error IDs and submission-batch identities, Nanostores storage, automatic `useCheckoutFields` integration, safe form-name/address projection, grouped section messages and selective store/form clearing. This change adds no automatic runtime integration.
+Submission start, successful completion and settled `reset()` clear the active batch across consumers. Reset during a confirmation is ignored. Each batch and issue receives a stable client identity; completion checks the current cached session even after checkout hooks unmount, so older confirmations cannot replace newer errors or a revived checkout session. Non-validation failures retain their SDK code and message as summary errors.
 
 Confirmation uses the cart callback lifecycle: `onStart` → `onSuccess` | `onError` → `onSettled`, passed to `useCheckout`
 itself. A throwing listener does not suppress a later phase or fail the confirmation:
@@ -661,23 +661,32 @@ kit passes it through untouched, and `isAddressComplete` reads it as required an
 
 ### Checkout fields and validation
 
-`useCheckoutFields({ getValues?, setValues? } = {})` supplies checkout field metadata, native control bindings and a
+`useCheckoutFields({ getValues?, setValues?, setErrors?, clearErrors? } = {})` supplies checkout field metadata, native control bindings and a
 Standard Schema for your form library. Mount the existing providers once; the hook reads their QueryClient and does not
 create a provider, cache or checkout action. Your form library owns editable values, errors, dirty/touched state, validation
 timing and submission.
 
 | Return value | Meaning |
 | -- | -- |
-| `fields` | `{ contact, shipping, billing, order }`. Definitions retain metadata and raw SDK `key` segments, and add a safe form `name` and `getProps(binding)`. Skip `hidden` fields when rendering; their values remain stored. |
+| `billing`, `shipping`, `contact`, `order` | Each section contains `{ fields, errors }`. Definitions retain metadata and raw SDK `key` segments, and add a safe form `name` and `getProps(binding)`. Skip `hidden` fields when rendering; their values remain stored. |
 | `defaultValues` | An encoded `CheckoutFormValues` initial snapshot, or `null` while sources are unavailable or checkout is paid. Its identity and content stay stable for the same checkout session across refreshes. Initialize the form once. |
 | `schema` | Standard Schema v1 for the encoded form representation, or `null` while sources are unavailable. A captured validator reads current committed source rules and validates its supplied candidate. |
-| `handleFieldChange(name, value)` | Reads the committed form, applies local dependencies synchronously and resolves metadata from the resulting snapshot. Country edits clear that address's state. |
+| `handleFieldChange(name, value)` | Reads the committed form, clears exact server issues associated with that edited control, applies local dependencies synchronously and resolves metadata. Country edits clear that address's state. |
 | `reevaluate()` | Explicitly reads the form after silent prefill/reset, without edit-dependency clears. |
 | `getInput(raw)` | Pure conversion from SDK `CheckoutFieldValues` to the form representation, for initialization/prefill/reset. |
 | `getOutput(values)` | Pure synchronous conversion from the supplied form representation to SDK field values. Decodes IDs, applies address sharing, retains extensions and strips form-only controls. |
 | `canUseShippingAsBilling` | Whether native address sharing is available: shipping is needed and the store does not force separate billing. |
 | `unsupported` | Field diagnostics for unsupported widgets, invalid schemas/bindings and unavailable condition dependencies. |
 | `isLoading`, `isRepricing`, `error` | Shared source loading, acknowledged cart repricing/rate selection and the latest source failure. |
+| `errors` | General, unresolved and unplaceable submission issues. Separate from the singular source/bootstrap `error`. |
+
+Each section exposes `fields` and `errors`. Migration: replace `fields.billing` with `billing.fields` (and likewise for the other groups); render `billing.errors`, `shipping.errors`, `contact.errors`, `order.errors` near their sections and top-level `errors` in the summary. Issues retain SDK evidence plus `id`, `submissionId` and `errorCode`; use `id` as the rendering key. The grouped API does not promise independent section render subscriptions.
+
+Configure `setErrors` and `clearErrors` together on exactly one `useCheckoutFields` call per form. `setErrors` receives readonly patches `{ name, messages: readonly string[] }`; `clearErrors` receives readonly safe names. Additional read-only consumers omit both callbacks. Register the bridge after initial form reset finishes so initialization cannot erase freshly hydrated errors. These adapters run outside render, patch only Kit's server channel, and preserve values, client errors, dirty/touched metadata and validation timing. Callback identity changes and ordinary rerenders do not replay applied or cleared errors; remounting hydrates only still-active issues.
+
+Input messages come from the form library's field state, including manually rendered payment, order-note and account controls. TanStack Form's example uses `errorMap.onServer`; React Hook Form's example reserves `types.kitServer` and wraps its resolver to merge still-active server messages with the latest client validation. Blur validation keeps server messages until an edit or reset clears them, and asynchronous validation cannot restore cleared server patches. The examples call `checkout.reset()` before form submission validation so stale server flags cannot prevent resubmission, and await `confirmAsync` through settlement. Kit performs no form-library validation or submission and neither form library is a production dependency.
+
+Edits clear only exact issues associated with that control, including copied billing failures displayed on shipping controls. Section/general issues survive unrelated edits until the next submission, success or reset. Address-sharing, hidden fields and registry changes reproject still-active messages: missing editable controls fall back to a known section or summary. An unqualified registered address identity never selects billing or shipping, and an `additionalFields` group error stays in the summary because it cannot distinguish contact from order.
 
 Pass `getValues` and `setValues` from your form integration. The getter returns its current complete snapshot, not a last-edit
 patch. The setter synchronously applies only the named fields before returning. Metadata/bootstrap consumers can omit both.

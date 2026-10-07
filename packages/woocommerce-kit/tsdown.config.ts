@@ -9,6 +9,7 @@ import { defineConfig } from "tsdown"
  * happened to come from.
  */
 const clientModules = [
+	"src/react/checkout-error-store.ts",
 	"src/react/cart.tsx",
 	"src/react/checkout.tsx",
 	"src/react/checkout-fields.tsx",

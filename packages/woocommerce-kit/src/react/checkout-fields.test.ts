@@ -25,7 +25,10 @@ const { procedures } = vi.hoisted(() => {
 		},
 	}
 })
-vi.mock("kizlo/react", () => ({ useKizloContext: () => ({ client: { woocommerce: procedures } }) }))
+vi.mock("kizlo/react", () => {
+	const client = { woocommerce: procedures }
+	return { useKizloContext: () => ({ client }) }
+})
 const clients: QueryClient[] = []
 function mount<T>(hook: () => T, options: { cartEnabled?: boolean; client?: QueryClient } = {}) {
 	const client = options.client ?? new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } })
@@ -72,7 +75,7 @@ describe("useCheckoutFields shared sources", () => {
 		await act(async () => checkout.resolve(source.checkout))
 		await waitFor(() => expect(result.current.schema).not.toBeNull())
 		expect(result.current.defaultValues).toMatchObject(result.current.getInput(source.values))
-		expect(result.current.fields.order[0]?.required).toBe(true)
+		expect(result.current.order.fields[0]?.required).toBe(true)
 		expect(client.getQueryData(cartQueryKey)).toEqual(source.cart)
 		expect(procedures.cart.get.call).not.toHaveBeenCalled()
 		expect(result.current.isLoading).toBe(false)
@@ -95,7 +98,7 @@ describe("useCheckoutFields shared sources", () => {
 		const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 		client.setQueryData(cartQueryKey, source.cart)
 		const { result } = mount(() => useCheckoutFields({ getValues: () => source.values }), { client })
-		await waitFor(() => expect(result.current.fields.order[0]?.required).toBe(true))
+		await waitFor(() => expect(result.current.order.fields[0]?.required).toBe(true))
 		expect(result.current.defaultValues).toBeNull()
 		expect(result.current.schema).toBeNull()
 		expect(procedures.cart.get.call).not.toHaveBeenCalled()
@@ -111,7 +114,7 @@ describe("useCheckoutFields shared sources", () => {
 		const empty = { ...source.values, additionalFields: {} }
 		expect(captured["~standard"].validate(empty)).toHaveProperty("issues")
 		act(() => client.setQueryData(cartQueryKey, { ...source.cart, extensions: { qaConditions: { "reference.required": false } } }))
-		await waitFor(() => expect(result.current.fields.order[0]?.required).toBe(false))
+		await waitFor(() => expect(result.current.order.fields[0]?.required).toBe(false))
 		expect(captured["~standard"].validate(empty)).toHaveProperty("value", empty)
 		expect(procedures.cart.get.call).not.toHaveBeenCalled()
 	})
@@ -127,10 +130,10 @@ describe("useCheckoutFields shared sources", () => {
 		if (!captured) throw new Error("Expected checkout schema")
 		act(() => result.current.shipping.selectShippingRate("flat_rate:1", 0))
 		await waitFor(() => expect(result.current.fields.isRepricing).toBe(true))
-		expect(result.current.fields.fields.order[0]?.required).toBe(true)
+		expect(result.current.fields.order.fields[0]?.required).toBe(true)
 		const changed = { ...source.cart, shippingPackages: [] }
 		await act(async () => selected.resolve(changed))
-		await waitFor(() => expect(result.current.fields.fields.order[0]?.required).toBe(false))
+		await waitFor(() => expect(result.current.fields.order.fields[0]?.required).toBe(false))
 		expect(result.current.fields.isRepricing).toBe(false)
 		expect(captured["~standard"].validate({ ...source.values, additionalFields: {} })).toHaveProperty("value")
 	})
@@ -207,7 +210,7 @@ describe("useCheckoutFields shared sources", () => {
 		const { result, client } = mount(
 			() => {
 				const fields = useCheckoutFields({ getValues: () => empty })
-				const required = fields.fields.order[0]?.required
+				const required = fields.order.fields[0]?.required
 				useLayoutEffect(() => {
 					if (required !== undefined && fields.schema) checks.push("issues" in fields.schema["~standard"].validate(empty))
 				}, [fields.schema, required])
@@ -218,7 +221,7 @@ describe("useCheckoutFields shared sources", () => {
 		await waitFor(() => expect(result.current.schema).not.toBeNull())
 		expect(checks.at(-1)).toBe(true)
 		act(() => client.setQueryData(cartQueryKey, { ...source.cart, shippingPackages: [] }))
-		await waitFor(() => expect(result.current.fields.order[0]?.required).toBe(false))
+		await waitFor(() => expect(result.current.order.fields[0]?.required).toBe(false))
 		expect(checks.at(-1)).toBe(false)
 	})
 	it("updates a captured validator from refreshed customer identity and closes paid checkout initialization", async () => {
@@ -230,7 +233,7 @@ describe("useCheckoutFields shared sources", () => {
 		if (!captured) throw new Error("Expected checkout schema")
 		expect(captured["~standard"].validate(source.values)).toHaveProperty("issues")
 		act(() => client.setQueryData(checkoutQueryKey, { ...source.checkout, customerId: 42 }))
-		await waitFor(() => expect(result.current.fields.order[0]?.required).toBe(false))
+		await waitFor(() => expect(result.current.order.fields[0]?.required).toBe(false))
 		expect(captured["~standard"].validate(source.values)).toHaveProperty("value")
 		act(() => client.setQueryData(checkoutQueryKey, { ...source.checkout, isPaid: true }))
 		await waitFor(() => expect(result.current.schema).toBeNull())
@@ -255,19 +258,19 @@ describe("useCheckoutFields shared sources", () => {
 		await waitFor(() => expect(result.current.schema).not.toBeNull())
 		const captured = result.current.schema
 		if (!captured) throw new Error("Expected checkout schema")
-		expect(result.current.fields.shipping).toEqual([])
-		expect(result.current.fields.order[0]).toMatchObject({ hidden: true, required: false, type: "date" })
+		expect(result.current.shipping.fields).toEqual([])
+		expect(result.current.order.fields[0]).toMatchObject({ hidden: true, required: false, type: "date" })
 		expect(result.current.unsupported).toEqual([])
 		expect((captured["~standard"].validate(values) as { value: unknown }).value).toBe(values)
 		act(() => client.setQueryData(cartQueryKey, { ...source.cart, needsShipping: true }))
-		await waitFor(() => expect(result.current.fields.shipping).toHaveLength(1))
+		await waitFor(() => expect(result.current.shipping.fields).toHaveLength(1))
 		expect(result.current.unsupported[0]?.reason).toBe("unsupported-widget")
 		expect(captured["~standard"].validate(values)).toHaveProperty(
 			"issues",
 			expect.arrayContaining([expect.objectContaining({ path: ["shippingAddress", "firstName"] })]),
 		)
 		act(() => client.setQueryData(cartQueryKey, { ...source.cart, needsShipping: false }))
-		await waitFor(() => expect(result.current.fields.shipping).toEqual([]))
+		await waitFor(() => expect(result.current.shipping.fields).toEqual([]))
 		expect(result.current.unsupported).toEqual([])
 		expect((captured["~standard"].validate(values) as { value: unknown }).value).toBe(values)
 	})
@@ -323,7 +326,7 @@ describe("checkout field events", () => {
 		])
 		expect(setter).toHaveBeenCalledTimes(1)
 		expect(getter).toHaveBeenCalledTimes(2)
-		expect(result.current.fields.billing.find((field) => field.id === "state")).toMatchObject({ type: "text", label: "County" })
+		expect(result.current.billing.fields.find((field) => field.id === "state")).toMatchObject({ type: "text", label: "County" })
 		expect(procedures.cart.update.call).not.toHaveBeenCalled()
 		expect(procedures.checkout.confirm.call).not.toHaveBeenCalled()
 	})
@@ -335,24 +338,24 @@ describe("checkout field events", () => {
 		let getter = oldGetter
 		const { result, rerender } = mount(() => useCheckoutFields({ getValues: () => getter() }))
 		await waitFor(() => expect(result.current.schema).not.toBeNull())
-		const fields = result.current.fields
-		const billingCountry = fields.billing[0]
+		const fields = result.current
+		const billingCountry = fields.billing.fields[0]
 		oldGetter.mockClear()
 		getter = newGetter
 		values = { ...values, createAccount: true }
 		rerender()
 		expect(oldGetter).not.toHaveBeenCalled()
 		expect(newGetter).not.toHaveBeenCalled()
-		expect(result.current.fields).toBe(fields)
+		expect(result.current.billing.fields).toBe(fields.billing.fields)
 		act(() => result.current.handleFieldChange("createAccount", true))
 		expect(newGetter).toHaveBeenCalledTimes(2)
-		expect(result.current.fields.order[0]?.required).toBe(true)
-		expect(result.current.fields.billing).toBe(fields.billing)
-		expect(result.current.fields.billing[0]).toBe(billingCountry)
-		const updated = result.current.fields
+		expect(result.current.order.fields[0]?.required).toBe(true)
+		expect(result.current.billing.fields).toBe(fields.billing.fields)
+		expect(result.current.billing.fields[0]).toBe(billingCountry)
+		const updated = result.current.billing.fields
 		values = { ...values, customerNote: "ordinary edit" }
 		act(() => result.current.handleFieldChange("customerNote", "ordinary edit"))
-		expect(result.current.fields).toBe(updated)
+		expect(result.current.billing.fields).toBe(updated)
 	})
 	it("reevaluates silent coherent prefill without clears and ignores unrelated application events", async () => {
 		const source = addressSource()
@@ -368,12 +371,12 @@ describe("checkout field events", () => {
 		getter.mockClear()
 		rerender()
 		expect(getter).not.toHaveBeenCalled()
-		expect(result.current.fields.billing[1]?.type).toBe("select")
+		expect(result.current.billing.fields[1]?.type).toBe("select")
 		act(() => result.current.reevaluate())
 		expect(getter).toHaveBeenCalledTimes(1)
 		expect(setter).not.toHaveBeenCalled()
 		expect(values.billingAddress?.state).toBe("London")
-		expect(result.current.fields.billing[1]).toMatchObject({ type: "text", label: "County" })
+		expect(result.current.billing.fields[1]).toMatchObject({ type: "text", label: "County" })
 		getter.mockClear()
 		// @ts-expect-error An application-only control is outside Kit's registered field contract.
 		act(() => result.current.handleFieldChange("app-only", "value"))
@@ -393,17 +396,17 @@ describe("checkout field events", () => {
 		expect(result.current.defaultValues).toBe(defaults)
 		expect(values.customerNote).toBe("draft")
 		getter.mockClear()
-		const fields = result.current.fields
+		const fields = result.current.billing.fields
 		const candidate = result.current.getInput(source.values)
 		expect(schema?.["~standard"].validate(candidate)).toHaveProperty("value", candidate)
 		expect(schema?.["~standard"].validate(values)).toHaveProperty("issues")
 		result.current.getOutput(candidate)
 		expect(getter).not.toHaveBeenCalled()
 		expect(setter).not.toHaveBeenCalled()
-		expect(result.current.fields).toBe(fields)
+		expect(result.current.billing.fields).toBe(fields)
 		values = { ...values, createAccount: false }
 		act(() => client.setQueryData(cartQueryKey, { ...source.cart, itemCount: 5 }))
-		await waitFor(() => expect(result.current.fields.order[0]?.required).toBe(false))
+		await waitFor(() => expect(result.current.order.fields[0]?.required).toBe(false))
 		expect(result.current.defaultValues).toBe(defaults)
 	})
 	it("requires event accessors but permits metadata-only consumers and source reevaluation", async () => {
@@ -412,6 +415,6 @@ describe("checkout field events", () => {
 		await waitFor(() => expect(result.current.schema).not.toBeNull())
 		expect(() => result.current.handleFieldChange("createAccount", true)).toThrow("getValues")
 		act(() => result.current.reevaluate())
-		expect(result.current.fields.billing).toHaveLength(2)
+		expect(result.current.billing.fields).toHaveLength(2)
 	})
 })

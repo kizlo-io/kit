@@ -83,6 +83,11 @@ export type ConfirmCheckoutInput = InferClientInput<CheckoutProcedures["confirm"
  * targets; consumers resolve those targets using loaded definitions and their own form handler.
  */
 export type CheckoutError = InferClientError<CheckoutProcedures["get"]> | InferClientError<CheckoutProcedures["confirm"]>
+export type CheckoutValidationIssue = Extract<CheckoutError, { code: "CHECKOUT_VALIDATION_FAILED" }>["data"]["issues"][number]
+export type CheckoutRegisteredFieldReference = CheckoutValidationIssue["registeredFields"][number]
+/** SDK evidence plus stable identities assigned to this submission and each individual message. */
+export type CheckoutServerIssue = CheckoutValidationIssue & { id: string; submissionId: number; errorCode: CheckoutError["code"] }
+export type CheckoutServerFieldError = { name: CheckoutFormFieldName; messages: readonly string[] }
 
 /** A page of products with its paging metadata. */
 export type ProductList = InferClientData<ProductProcedures["list"]>
@@ -200,10 +205,15 @@ export type CheckoutFieldUpdate = {
 	value: CheckoutFieldValue | undefined
 	options: { runListeners: boolean; meta: "preserve" | "update"; validate: boolean }
 }
+export type CheckoutServerErrorCallbacks = {
+	/** Patch only the form's Kit-managed server channel, preserving client validation and interaction metadata. */
+	setErrors: (errors: readonly CheckoutServerFieldError[]) => void
+	clearErrors: (names: readonly CheckoutFormFieldName[]) => void
+}
 export type CheckoutFieldsOptions = {
 	getValues?: () => CheckoutFormValues | undefined
 	setValues?: (updates: readonly CheckoutFieldUpdate[]) => void
-}
+} & (CheckoutServerErrorCallbacks | { setErrors?: undefined; clearErrors?: undefined })
 export type CheckoutFieldBinding = {
 	value: CheckoutFieldValue | undefined
 	onValueChange: (value: CheckoutFieldValue | undefined) => void
@@ -254,8 +264,14 @@ export type CheckoutFormField = ResolvedField & {
 	name: CheckoutFormFieldName
 	getProps: (binding: CheckoutFieldBinding) => CheckoutNativeControl
 }
+export type CheckoutFieldsSection = { fields: CheckoutFormField[]; errors: readonly CheckoutServerIssue[] }
 export type CheckoutFieldsApi = Omit<CheckoutFieldsModel, "fields" | "defaultValues"> & {
-	fields: Record<CheckoutFieldGroup, CheckoutFormField[]>
+	billing: CheckoutFieldsSection
+	shipping: CheckoutFieldsSection
+	contact: CheckoutFieldsSection
+	order: CheckoutFieldsSection
+	/** General, unresolved or otherwise unplaceable submission failures. */
+	errors: readonly CheckoutServerIssue[]
 	defaultValues: CheckoutFormValues | null
 	schema: StandardFieldSchema<CheckoutFormValues> | null
 	canUseShippingAsBilling: boolean
