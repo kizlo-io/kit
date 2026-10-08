@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { cartQueryKey } from "../cart"
 import { checkoutQueryKey } from "../checkout"
 import { field, fixtures } from "../test/checkout-fields-fixture"
-import type { Cart, Checkout, CheckoutFieldValues, CheckoutFormValues } from "../types"
+import type { Cart, Checkout, CheckoutFieldUpdate, CheckoutFieldValues, CheckoutFormValues } from "../types"
 import { useCart, useCartAddress, useCartShippingRates } from "./cart"
 import { useCheckout } from "./checkout"
 import { useCheckoutFields } from "./checkout-fields"
@@ -240,18 +240,19 @@ describe("useCheckoutFields shared sources", () => {
 		expect(result.current.defaultValues).toBeNull()
 		expect(captured["~standard"].validate(source.values)).toHaveProperty("issues")
 	})
-	it("follows shipping eligibility and hidden widget requirements after cart refresh without changing values", async () => {
+	it("retains hidden required rules after cart refresh without checking field values", async () => {
 		const source = fixtures([
 			field("first_name", { location: "address", required: true, bindings: { billing: ["firstName"], shipping: ["firstName"] } }),
 			field("custom", {
-				type: "date",
+				type: "checkbox",
+				schema: { type: "boolean" },
 				required: true,
 				hidden: { properties: { cart: { properties: { needs_shipping: { const: false } } } } },
 			}),
 		])
 		source.cart.needsShipping = false
 		const { shippingAddress: _shipping, ...remaining } = source.values
-		const values = Object.freeze({ ...remaining, additionalFields: { custom: "retained" } })
+		const values = Object.freeze({ ...remaining, additionalFields: { custom: false } })
 		procedures.storefront.get.call.mockResolvedValue(source.storefront)
 		procedures.checkout.get.call.mockResolvedValue(source.checkout)
 		const { result, client } = mount(() => useCheckoutFields({ getValues: () => values }), { cartEnabled: false })
@@ -259,20 +260,23 @@ describe("useCheckoutFields shared sources", () => {
 		const captured = result.current.schema
 		if (!captured) throw new Error("Expected checkout schema")
 		expect(result.current.shipping.fields).toEqual([])
-		expect(result.current.order.fields[0]).toMatchObject({ hidden: true, required: false, type: "date" })
+		expect(result.current.order.fields[0]).toMatchObject({ hidden: true, required: true, type: "checkbox" })
 		expect(result.current.unsupported).toEqual([])
-		expect((captured["~standard"].validate(values) as { value: unknown }).value).toBe(values)
+		expect(captured["~standard"].validate(values)).toHaveProperty("issues")
+		expect(captured["~standard"].validate({ ...values, additionalFields: { custom: true } })).toHaveProperty("value")
 		act(() => client.setQueryData(cartQueryKey, { ...source.cart, needsShipping: true }))
 		await waitFor(() => expect(result.current.shipping.fields).toHaveLength(1))
-		expect(result.current.unsupported[0]?.reason).toBe("unsupported-widget")
+		expect(result.current.unsupported).toEqual([expect.objectContaining({ path: ["shippingAddress"], reason: "unavailable-data" })])
+		expect(result.current.order.fields[0]).toMatchObject({ hidden: false, required: true })
 		expect(captured["~standard"].validate(values)).toHaveProperty(
 			"issues",
-			expect.arrayContaining([expect.objectContaining({ path: ["shippingAddress", "firstName"] })]),
+			expect.arrayContaining([expect.objectContaining({ path: ["shippingAddress"] })]),
 		)
 		act(() => client.setQueryData(cartQueryKey, { ...source.cart, needsShipping: false }))
 		await waitFor(() => expect(result.current.shipping.fields).toEqual([]))
 		expect(result.current.unsupported).toEqual([])
-		expect((captured["~standard"].validate(values) as { value: unknown }).value).toBe(values)
+		expect(captured["~standard"].validate(values)).toHaveProperty("issues")
+		expect(captured["~standard"].validate({ ...values, additionalFields: { custom: true } })).toHaveProperty("value")
 	})
 	it("remounts from the shared cache without a separate cart copy or bootstrap request", async () => {
 		const first = mount(() => useCheckoutFields())
@@ -287,6 +291,132 @@ describe("useCheckoutFields shared sources", () => {
 })
 
 describe("checkout field events", () => {
+	it.each([undefined, false, true])("copies the latest draft once without changing sharing (%s) or independent fields", async (sharing) => {
+		const source = fixtures([
+			field("country", { location: "address", bindings: { billing: ["country"], shipping: ["country"] } }),
+			field("state", { location: "address", bindings: { billing: ["state"], shipping: ["state"] } }),
+		])
+		procedures.storefront.get.call.mockResolvedValue(source.storefront)
+		procedures.checkout.get.call.mockResolvedValue(source.checkout)
+		let values: CheckoutFormValues = {
+			...source.values,
+			useShippingAsBilling: sharing,
+			billingAddress: { ...source.checkout.billingAddress, additionalFields: { billing: "retain" } },
+			shippingAddress: { ...source.checkout.shippingAddress, state: "London", postcode: "NEW", additionalFields: { shipping: "retain" } },
+		}
+		const initialShipping = values.shippingAddress
+		const oldSetter = vi.fn()
+		const setter = vi.fn((updates: readonly CheckoutFieldUpdate[]) => {
+			values = {
+				...values,
+				billingAddress: {
+					...source.checkout.billingAddress,
+					...values.billingAddress,
+					...Object.fromEntries(updates.map(({ name, value }) => [name.slice("billingAddress.".length), value])),
+				},
+			}
+			// A consumer that dispatches listeners anyway cannot clear the copied state.
+			result.current.handleFieldChange("billingAddress.country", "GB")
+		})
+		let currentSetter = oldSetter
+		const { result, rerender, client } = mount(() => useCheckoutFields({ getValues: () => values, setValues: currentSetter }))
+		await waitFor(() => expect(result.current.schema).not.toBeNull())
+		const copy = result.current.copyShippingToBilling
+		const defaults = result.current.defaultValues
+		currentSetter = setter
+		rerender()
+		expect(setter).not.toHaveBeenCalled()
+		act(() => copy())
+		expect(oldSetter).not.toHaveBeenCalled()
+		expect(setter).toHaveBeenCalledTimes(1)
+		expect(values.billingAddress).toMatchObject({
+			country: "GB",
+			state: "London",
+			postcode: "NEW",
+			email: "ada@example.com",
+			taxId: "TAX",
+			additionalFields: { billing: "retain" },
+		})
+		expect(values.shippingAddress).toBe(initialShipping)
+		expect(values.useShippingAsBilling).toBe(sharing)
+		expect(result.current.billing.fields.find((field) => field.id === "state")).toMatchObject({ type: "text", label: "County" })
+		expect(result.current.defaultValues).toBe(defaults)
+		act(() => copy())
+		expect(setter).toHaveBeenCalledTimes(1)
+		values = { ...values, shippingAddress: { ...source.checkout.shippingAddress, ...values.shippingAddress, postcode: "LATER" } }
+		act(() => result.current.handleFieldChange("shippingAddress.postcode", "LATER"))
+		act(() => client.setQueryData(checkoutQueryKey, { ...source.checkout, customerNote: "refresh" }))
+		expect(values.billingAddress?.postcode).toBe("NEW")
+		expect(setter).toHaveBeenCalledTimes(1)
+		expect(procedures.cart.update.call).not.toHaveBeenCalled()
+		expect(procedures.checkout.confirm.call).not.toHaveBeenCalled()
+	})
+	it("requires both accessors and a shipping draft before any write", async () => {
+		const source = fixtures([])
+		const write = vi.fn()
+		let values: CheckoutFormValues | undefined
+		let getter: (() => CheckoutFormValues | undefined) | undefined
+		let setter: ((updates: readonly CheckoutFieldUpdate[]) => void) | undefined = write
+		const { result, rerender } = mount(() => useCheckoutFields({ getValues: getter, setValues: setter }))
+		await waitFor(() => expect(result.current.schema).not.toBeNull())
+		expect(() => result.current.copyShippingToBilling()).toThrow("requires getValues and setValues")
+		getter = () => values
+		setter = undefined
+		rerender()
+		expect(() => result.current.copyShippingToBilling()).toThrow("requires getValues and setValues")
+		setter = write
+		rerender()
+		expect(() => result.current.copyShippingToBilling()).toThrow("requires a shipping address")
+		values = { billingAddress: source.checkout.billingAddress }
+		expect(() => result.current.copyShippingToBilling()).toThrow("requires a shipping address")
+		expect(write).not.toHaveBeenCalled()
+	})
+	it("keeps presentation, captured output and schema current across sharing, forced-billing and digital changes", async () => {
+		const source = fixtures([
+			field("first_name", { location: "address", required: true, bindings: { billing: ["firstName"], shipping: ["firstName"] } }),
+			field("country", { location: "address", bindings: { billing: ["country"], shipping: ["country"] } }),
+		])
+		procedures.storefront.get.call.mockResolvedValue(source.storefront)
+		procedures.checkout.get.call.mockResolvedValue(source.checkout)
+		let values: CheckoutFormValues = { ...source.values }
+		const writes = vi.fn()
+		const { result, client } = mount(() => useCheckoutFields({ getValues: () => values, setValues: writes }))
+		await waitFor(() => expect(result.current.schema).not.toBeNull())
+		const schema = result.current.schema
+		const output = result.current.getOutput
+		expect(result.current.defaultValues?.useShippingAsBilling).toBe(true)
+		expect(result.current.billing.fields.every((field) => field.hidden)).toBe(true)
+		expect(output(values).billingAddress?.country).toBe("GB")
+		values = { ...values, useShippingAsBilling: false }
+		act(() => result.current.handleFieldChange("useShippingAsBilling", false))
+		expect(result.current.billing.fields.every((field) => !field.hidden)).toBe(true)
+		expect(output(values).billingAddress?.country).toBe("IN")
+		const before = structuredClone(values)
+		act(() =>
+			client.setQueryData(storefrontQueryKey, {
+				...source.storefront,
+				checkout: { ...source.storefront.checkout, forcedBillingAddress: true },
+			}),
+		)
+		await waitFor(() => expect(result.current.shipping.fields.every((field) => field.hidden)).toBe(true))
+		expect(result.current.canUseShippingAsBilling).toBe(false)
+		expect(output(values).shippingAddress?.country).toBe("IN")
+		expect(values).toEqual(before)
+		values = { billingAddress: { ...source.checkout.billingAddress, firstName: "" } }
+		expect(schema?.["~standard"].validate(values)).toHaveProperty(
+			"issues",
+			expect.arrayContaining([expect.objectContaining({ path: ["billingAddress", "firstName"] })]),
+		)
+		values = { billingAddress: source.checkout.billingAddress }
+		act(() => result.current.reevaluate())
+		expect(schema?.["~standard"].validate(values)).toEqual({ value: values })
+		act(() => client.setQueryData(cartQueryKey, { ...source.cart, needsShipping: false }))
+		await waitFor(() => expect(result.current.shipping.fields).toEqual([]))
+		expect(output(values)).not.toHaveProperty("shippingAddress")
+		expect(writes).not.toHaveBeenCalled()
+		expect(procedures.cart.update.call).not.toHaveBeenCalled()
+		expect(procedures.checkout.confirm.call).not.toHaveBeenCalled()
+	})
 	function addressSource() {
 		const source = fixtures([
 			field("country", { location: "address", bindings: { billing: ["country"], shipping: ["country"] } }),
@@ -301,7 +431,7 @@ describe("checkout field events", () => {
 	}
 	it("reads committed values, applies dependency options synchronously and resolves only the resulting snapshot", async () => {
 		const source = addressSource()
-		let values: CheckoutFormValues = { ...source.values }
+		let values: CheckoutFormValues = { ...source.values, useShippingAsBilling: false }
 		const steps: unknown[] = []
 		const getter = vi.fn(() => {
 			steps.push(["read", values.billingAddress?.state])
@@ -366,6 +496,7 @@ describe("checkout field events", () => {
 		await waitFor(() => expect(result.current.schema).not.toBeNull())
 		values = {
 			...result.current.getInput(source.values),
+			useShippingAsBilling: false,
 			billingAddress: { ...source.checkout.billingAddress, country: "GB", state: "London" },
 		}
 		getter.mockClear()

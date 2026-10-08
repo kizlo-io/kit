@@ -1,6 +1,7 @@
 "use client"
 
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react"
+import { checkoutAddressSource } from "../checkout-address"
 import { checkoutSession, createCheckoutErrorBridge, projectCheckoutErrors } from "../checkout-errors"
 import { type CheckoutFieldSources, checkoutDefaults } from "../checkout-field-document"
 import {
@@ -8,6 +9,7 @@ import {
 	checkoutFormInput,
 	checkoutFormOutput,
 	checkoutFormSchema,
+	checkoutShippingToBillingUpdates,
 	isCheckoutFormName,
 	resolveCheckoutFormState,
 } from "../checkout-form"
@@ -59,7 +61,11 @@ export function useCheckoutFields(options: CheckoutFieldsOptions = {}): Checkout
 		const raw = source.storefront ? checkoutDefaults(source) : null
 		if (!raw || !source.checkout) return null
 		const session = JSON.stringify([source.checkout.orderId, source.checkout.orderKey])
-		if (initial.current?.session !== session) initial.current = { session, values: checkoutFormInput(raw) }
+		if (initial.current?.session !== session)
+			initial.current = {
+				session,
+				values: { ...checkoutFormInput(raw), useShippingAsBilling: checkoutAddressSource(source) === "shippingAddress" },
+			}
 		return initial.current.values
 	}, [])
 	const bridge = useMemo(() => createCheckoutErrorBridge(), [])
@@ -151,6 +157,22 @@ export function useCheckoutFields(options: CheckoutFieldsOptions = {}): Checkout
 		},
 		[defaults, errors],
 	)
+	const copyShippingToBilling = useCallback(() => {
+		if (changing.current) return
+		const { getValues, setValues } = accessors.current
+		if (!getValues || !setValues) throw new Error("Copying shipping to billing requires getValues and setValues")
+		const updates = checkoutShippingToBillingUpdates(getValues())
+		if (!updates.length) return
+		changing.current = true
+		try {
+			setValues(updates)
+			const changed = new Set(updates.map(({ name }) => name))
+			errors.clearIssues(new Set([...associated.current].filter(([, control]) => changed.has(control)).map(([id]) => id)))
+			reevaluate()
+		} finally {
+			changing.current = false
+		}
+	}, [errors, reevaluate])
 	const validator = useMemo(() => checkoutFormSchema(() => committed.current), [])
 	const getOutput = useCallback<CheckoutFieldsApi["getOutput"]>((values) => checkoutFormOutput(committed.current, values), [])
 	return {
@@ -164,6 +186,7 @@ export function useCheckoutFields(options: CheckoutFieldsOptions = {}): Checkout
 		canUseShippingAsBilling: state.canUseShippingAsBilling,
 		schema: storefront && state.defaultValues && sources.checkout && !sources.checkout.isPaid && sources.cart ? validator : null,
 		handleFieldChange,
+		copyShippingToBilling,
 		reevaluate,
 		getInput: checkoutFormInput,
 		getOutput,

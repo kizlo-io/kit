@@ -300,6 +300,13 @@ edit can send again without a dedupe reset. Returning to the saved address clear
 request, so checkout can proceed again. The snapshot must include the addresses and fields from the failed save and match
 all supplied saved values; invalid or unsaved values keep the error. Keep `update(input)` for immediate saves, which still accept partial input.
 
+With loaded storefront settings and cart data, address actions use the same effective addresses as checkout fields. Forced
+billing accepts a billing-only snapshot and derives native shipping values. Shipping-only updates derive billing in an
+ordinary checkout. An explicitly supplied native billing patch requests separate billing unless `useShippingAsBilling: true`
+is included; pass `useShippingAsBilling: false` when editing separate billing. The control is removed before the SDK request.
+Both immediate and debounced actions resolve omitted native members against the acknowledged source address, then compare
+and save the effective addresses. Email, Tax ID and registered additional fields stay in their own groups.
+
 The default checks **country, state, city and postcode** in both shipping and billing, because tax can depend on billing.
 Names, phone, company and street alone do not trigger a request. Postcode whitespace and case are ignored; the other three
 fields are trimmed. A non-empty country is required, but postcode, state and city can be empty, since country rules differ.
@@ -651,7 +658,7 @@ export function ShippingAddress({ address }: { address: { country: string; state
 | Function | Answers |
 | --- | --- |
 | `billingCountries(address)` / `shippingCountries(address)` | The countries the store bills to or ships to, in the store's order. |
-| `addressFields(address, country)` | The country's address fields in display order: each default field overlaid with the country's locale, so `label`, `required`, `hidden` and `index` are what that country uses. Hidden fields are included; skip them when rendering. |
+| `addressFields(address, country)` | The country's address fields in display order: each default field overlaid with the country's locale, so `label`, `required`, `hidden` and `index` are what that country uses. Hidden fields are included; retain their form bindings and hide their controls visually. |
 | `resolveAddressCountry(address, country)` | Raw country fields, plus the existing country information: its `fields`, its `states` (`[]` when it has none, so the state is free text or hidden) and `stateLabel`, the country's own name for that field — "Emirate", "County" — or the default label. |
 | `isAddressComplete(address, input)` | Whether the shopper has filled in every field the store needs before it quotes shipping, by WooCommerce's own rule: a country, and each of country, state, postcode and city hidden, optional or filled for that country. |
 
@@ -668,10 +675,11 @@ timing and submission.
 
 | Return value | Meaning |
 | -- | -- |
-| `billing`, `shipping`, `contact`, `order` | Each section contains `{ fields, errors }`. Definitions retain metadata and raw SDK `key` segments, and add a safe form `name` and `getProps(binding)`. Skip `hidden` fields when rendering; their values remain stored. |
+| `billing`, `shipping`, `contact`, `order` | Each section contains `{ fields, errors }`. Definitions retain metadata and raw SDK `key` segments, and add a safe form `name` and `getProps(binding)`. Keep `hidden` fields registered in the form and hide their controls visually; their values and schema constraints remain. |
 | `defaultValues` | An encoded `CheckoutFormValues` initial snapshot, or `null` while sources are unavailable or checkout is paid. Its identity and content stay stable for the same checkout session across refreshes. Initialize the form once. |
 | `schema` | Standard Schema v1 for the encoded form representation, or `null` while sources are unavailable. A captured validator reads current committed source rules and validates its supplied candidate. |
 | `handleFieldChange(name, value)` | Reads the committed form, clears exact server issues associated with that edited control, applies local dependencies synchronously and resolves metadata. Country edits clear that address's state. |
+| `copyShippingToBilling()` | Copies the current shipping draft's common native values into billing once through `getValues`/`setValues`. Leaves the sharing selection and independent billing values unchanged. |
 | `reevaluate()` | Explicitly reads the form after silent prefill/reset, without edit-dependency clears. |
 | `getInput(raw)` | Pure conversion from SDK `CheckoutFieldValues` to the form representation, for initialization/prefill/reset. |
 | `getOutput(values)` | Pure synchronous conversion from the supplied form representation to SDK field values. Decodes IDs, applies address sharing, retains extensions and strips form-only controls. |
@@ -679,6 +687,15 @@ timing and submission.
 | `unsupported` | Field diagnostics for unsupported widgets, invalid schemas/bindings and unavailable condition dependencies. |
 | `isLoading`, `isRepricing`, `error` | Shared source loading, acknowledged cart repricing/rate selection and the latest source failure. |
 | `errors` | General, unresolved and unplaceable submission issues. Separate from the singular source/bootstrap `error`. |
+
+Hidden is a visibility state, independent of required. Keep every applicable field binding mounted and hide the rendered
+control, for example with a wrapping element's HTML `hidden` attribute. The supplied schema retains required rules and
+value constraints for hidden fields; the form library executes it and owns local errors. Avoid replacing typed controls
+with string-valued hidden inputs: a hidden checkbox still stores a boolean. Digital shipping is explicitly inapplicable,
+so its fields and schema constraints are omitted. The examples use `noValidate` so the form library handles validation.
+
+**Migration:** conditional hiding previously bypassed required rules and value constraints. Fields that should become
+optional when hidden need an explicit required rule; hiding alone no longer makes them optional.
 
 Each section exposes `fields` and `errors`. Migration: replace `fields.billing` with `billing.fields` (and likewise for the other groups); render `billing.errors`, `shipping.errors`, `contact.errors`, `order.errors` near their sections and top-level `errors` in the summary. Issues retain SDK evidence plus `id`, `submissionId` and `errorCode`; use `id` as the rendering key. The grouped API does not promise independent section render subscriptions.
 
@@ -746,11 +763,49 @@ APIs. Neither form library is a production dependency. The examples confirm thro
 perform no address update or confirmation on field edits. If the app chooses repricing, its callbacks separately compose
 `useCartAddress` and shipping hooks.
 
-`useShippingAsBilling` is an optional form-only boolean, off when omitted. When enabled and eligible, common native billing
-controls are hidden and output/validation copy their values from shipping. Billing email and Tax ID, separate additional
-fields and extension data remain independent. Copied-address issues target the editable shipping controls. Shipping-free
-carts omit shipping output; forced billing ignores the sharing control. Country eligibility, locale labels, state options
-and conditional rules are resolved consistently from the effective addresses.
+Ordinary physical checkout is shipping-first. `useShippingAsBilling` defaults to sharing when omitted; initialized form
+defaults include `true`. Common native billing controls are hidden and output/validation derive billing from shipping.
+Set the control to `false` for separate billing. Saved addresses and their equality do not determine the customer's choice,
+and the store's “Default to customer billing address” preference does not change this layout.
+
+Forced billing shows billing and visually hides shipping controls. Keep applicable shipping fields registered; output and
+the supplied schema derive physical shipping from billing’s shared native members, overriding stale hidden shipping values.
+Digital carts show billing and omit shipping output. Billing email, Tax ID, registered additional-field buckets and extension data remain independent.
+Missing authoritative addresses produce structural diagnostics; no address values are invented. Missing or invalid required
+field values are checked only when your form invokes the supplied schema, without hook metadata or output-conversion rejection.
+Native copied-address errors target the visible source control, while independent or unplaceable errors remain in their section
+or the summary. Country eligibility, locale labels, state options and conditional rules use these
+same effective addresses.
+
+**Migration:** sharing was previously off when the control was omitted. Set `useShippingAsBilling: false` explicitly in forms
+that require separate billing, and use Kit's `defaultValues` when initializing the sharing checkbox.
+
+For a one-time copy into editable, separate billing, call `copyShippingToBilling()` from a customer action:
+
+```tsx
+<button type="button" onClick={() => fields.copyShippingToBilling()}>
+  Copy shipping address to billing
+</button>
+```
+
+The method requires both form accessors and an available shipping draft; missing accessors/data throw before any writes.
+It copies name, company, street, city, state, postcode, country and phone, preserving billing email, Tax ID and independent
+registered/extension values. Missing source members clear stale native billing members. Only changed leaves are patched in
+one `setValues` batch with `{ runListeners: false, meta: "update", validate: false }`. The copy does not request validation;
+your form integration decides when to validate after the complete batch.
+Country and state are copied together without the country-edit reset. The hook clears exact server issues associated with
+changed billing controls and reevaluates metadata after the batch. It leaves `useShippingAsBilling` unchanged and does not
+resynchronize billing after later shipping edits or refreshes. It performs no cart update or confirmation; compose repricing
+separately if needed. When sharing is enabled, the effective billing output still follows shipping under the policy above.
+
+```tsx
+const { onAddressChange } = useCartAddress()
+// Forced billing derives shipping from billing without application-owned address copying.
+onAddressChange({ billingAddress: billingValues })
+// In an ordinary checkout, pass the form's explicit sharing selection for repricing.
+onAddressChange({ shippingAddress: shippingValues, billingAddress: billingValues, useShippingAsBilling: shareAddresses })
+const output = fields.getOutput(formValues) // derives the same native addresses for confirmation
+```
 
 ```tsx
 form.reset(fields.getInput(savedFields))

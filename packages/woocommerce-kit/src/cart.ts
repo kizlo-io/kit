@@ -7,7 +7,43 @@
  * quantity control.
  */
 
-import type { AddCartItemInput, Cart, CartError, CartItem, CartShippingAddress, UpdateCartInput } from "./types"
+import { checkoutAddressPath, checkoutAddressSource, projectCheckoutAddresses } from "./checkout-address"
+import type {
+	AddCartItemInput,
+	Cart,
+	CartAddressInput,
+	CartError,
+	CartItem,
+	CartShippingAddress,
+	Storefront,
+	UpdateCartInput,
+} from "./types"
+
+/** Normalize against the acknowledged cart, never against another editable address draft. */
+export function normalizeCartAddress(input: CartAddressInput, cart: Cart | null, storefront: Storefront | null): UpdateCartInput {
+	const { useShippingAsBilling, ...addresses } = input
+	if (!cart || !storefront || (!addresses.billingAddress && !addresses.shippingAddress && useShippingAsBilling === undefined))
+		return addresses
+	const sources = { cart, storefront }
+	// A supplied native billing patch is explicit separate billing; saved cart values are never intent.
+	const separateBilling = Object.keys(addresses.billingAddress ?? {}).some(
+		(key) => checkoutAddressPath(sources, undefined, ["billingAddress", key])[0] === "shippingAddress",
+	)
+	const sharing = useShippingAsBilling ?? (separateBilling ? false : undefined)
+	const source = checkoutAddressSource(sources, sharing)
+	if (!source) return projectCheckoutAddresses(sources, addresses, sharing)
+	const target = source === "billingAddress" ? "shippingAddress" : "billingAddress"
+	const projected = projectCheckoutAddresses(
+		sources,
+		{
+			...addresses,
+			[source]: { ...cart?.[source], ...addresses[source] },
+			[target]: { ...cart?.[target], ...addresses[target] },
+		},
+		sharing,
+	)
+	return { ...addresses, [target]: projected[target] }
+}
 
 /**
  * The four fields WooCommerce uses to decide whether an address needs new shipping rates or tax. Postcode spacing and case

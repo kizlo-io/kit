@@ -12,7 +12,7 @@ export function CheckoutFieldControl({
 }) {
 	const control = definition.getProps(binding)
 	return (
-		<label htmlFor={control.props.id}>
+		<label htmlFor={control.props.id} hidden={definition.hidden}>
 			{definition.label}
 			{control.kind === "select" ? (
 				<select {...control.props}>

@@ -1,5 +1,12 @@
+import {
+	checkoutAddressKeys,
+	checkoutAddressPath,
+	checkoutAddressSource,
+	checkoutAddressTarget,
+	projectCheckoutAddresses,
+} from "./checkout-address"
 import { checkoutFieldProps } from "./checkout-field-bindings"
-import { type CheckoutFieldSources, fieldPaths } from "./checkout-field-document"
+import { type CheckoutFieldSources, checkoutDefaults, fieldPaths } from "./checkout-field-document"
 import { checkoutFieldsSchema, resolveCheckoutFields } from "./checkout-fields"
 import { readPath } from "./field-metadata"
 import type {
@@ -7,6 +14,7 @@ import type {
 	CheckoutFieldDiagnostic,
 	CheckoutFieldGroup,
 	CheckoutFieldUpdate,
+	CheckoutFieldValue,
 	CheckoutFieldValues,
 	CheckoutFormField,
 	CheckoutFormFieldName,
@@ -16,7 +24,6 @@ import type {
 
 const escapes: Record<string, string> = { "%": "%25", "/": "%2F", ".": "%2E", "[": "%5B", "]": "%5D", "'": "%27", '"': "%22" }
 const unescapes = Object.fromEntries(Object.entries(escapes).map(([key, value]) => [value, key]))
-const nativeAddress = new Set(["firstName", "lastName", "company", "address1", "address2", "city", "state", "postcode", "country", "phone"])
 const controls = new Set(["paymentMethod", "customerNote", "createAccount", "customerPassword", "useShippingAsBilling"])
 
 /** Only the opaque additional-field segment is escaped. Structural dots still mean nesting. */
@@ -56,15 +63,8 @@ export function checkoutFormInput(values: CheckoutFieldValues): CheckoutFormValu
 export function canShareCheckoutAddress(sources: CheckoutFieldSources): boolean {
 	return !!sources.storefront && !!sources.cart && sources.cart.needsShipping && !sources.storefront.checkout.forcedBillingAddress
 }
-function sharesAddress(sources: CheckoutFieldSources, values: CheckoutFormValues): boolean {
-	return canShareCheckoutAddress(sources) && values.useShippingAsBilling === true
-}
-export function sharedAddressPath(path: readonly string[]): boolean {
-	return path.length === 2 && path[0] === "billingAddress" && nativeAddress.has(path[1] ?? "")
-}
-
 /** The same projection feeds rendering, validation and SDK output; it never writes the draft. */
-export function checkoutFormOutput(sources: CheckoutFieldSources, values: CheckoutFormValues): CheckoutFieldValues {
+function projectedFormOutput(sources: CheckoutFieldSources, values: CheckoutFormValues): CheckoutFieldValues {
 	const decoded = convert(values, true) as Record<string, unknown>
 	const roots = new Set([
 		"billingAddress",
@@ -86,20 +86,50 @@ export function checkoutFormOutput(sources: CheckoutFieldSources, values: Checko
 		}
 	}
 	const output = Object.fromEntries(Object.entries(decoded).filter(([key]) => roots.has(key)))
-	if (sharesAddress(sources, values)) {
-		const billing = output.billingAddress && typeof output.billingAddress === "object" ? output.billingAddress : {}
-		const shipping = output.shippingAddress
-		output.billingAddress = { ...billing, ...Object.fromEntries([...nativeAddress].map((key) => [key, readPath(shipping, [key]) ?? ""])) }
-	}
-	if (sources.cart?.needsShipping === false) delete output.shippingAddress
-	return output as CheckoutFieldValues
+	return projectCheckoutAddresses(sources, output, values.useShippingAsBilling) as CheckoutFieldValues
 }
-export function resolveCheckoutForm(sources: CheckoutFieldSources, values?: CheckoutFormValues) {
-	const model = resolveCheckoutFields(sources, values === undefined ? undefined : checkoutFormOutput(sources, values))
-	if (values && sharesAddress(sources, values)) {
-		model.fields.billing = model.fields.billing.map((field) => (sharedAddressPath(field.key) ? { ...field, hidden: true } : field))
+
+function projectedFormModel(sources: CheckoutFieldSources, values: CheckoutFormValues, output: CheckoutFieldValues) {
+	const model = { ...resolveCheckoutFields(sources, output), addressDiagnostics: [] as CheckoutFieldDiagnostic[] }
+	const diagnose = (diagnostic: CheckoutFieldDiagnostic) => {
+		model.unsupported.push(diagnostic)
+		model.addressDiagnostics.push(diagnostic)
 	}
+	const source = checkoutAddressSource(sources, values.useShippingAsBilling)
+	const target = checkoutAddressTarget(sources, values.useShippingAsBilling)
+	if (!source || !target) return model
+	const sourceGroup = source === "billingAddress" ? "billing" : "shipping"
+	const targetGroup = target === "billingAddress" ? "billing" : "shipping"
+	const authoritative = values[source]
+	if (!authoritative || typeof authoritative !== "object" || Array.isArray(authoritative))
+		diagnose({
+			fieldId: source,
+			group: sourceGroup,
+			path: [source],
+			reason: "unavailable-data",
+			message: `The authoritative ${source} is unavailable`,
+		})
+	model.fields[targetGroup] = model.fields[targetGroup].map((field) => {
+		const copied = checkoutAddressPath(sources, values.useShippingAsBilling, field.key)
+		const hidden = targetGroup === "shipping" || copied[0] !== field.key[0]
+		if (!hidden) return field
+		return { ...field, hidden: true }
+	})
 	return model
+}
+
+/** Conversion projects effective addresses and diagnoses unavailable authoritative data. */
+export function checkoutFormOutput(sources: CheckoutFieldSources, values: CheckoutFormValues): CheckoutFieldValues {
+	const output = projectedFormOutput(sources, values)
+	const model = projectedFormModel(sources, values, output)
+	const diagnostics = model.addressDiagnostics
+	if (diagnostics.length) throw new Error(diagnostics.map(({ message }) => message).join("; "))
+	return output
+}
+
+export function resolveCheckoutForm(sources: CheckoutFieldSources, values?: CheckoutFormValues) {
+	const current = values ?? checkoutFormInput(checkoutDefaults(sources) ?? {})
+	return projectedFormModel(sources, current, projectedFormOutput(sources, current))
 }
 export function isCheckoutFormName(sources: CheckoutFieldSources, name: string): boolean {
 	if (controls.has(name)) return true
@@ -125,7 +155,11 @@ export function checkoutFormSchema(getSources: () => CheckoutFieldSources): Stan
 				const shapeIssues: { message: string; path: string[] }[] = []
 				for (const group of ["billingAddress", "shippingAddress", "additionalFields"] as const) {
 					const value = values[group]
-					if (value !== undefined && (!value || typeof value !== "object" || Array.isArray(value)))
+					if (
+						value !== undefined &&
+						!(value === null && group === checkoutAddressTarget(getSources(), values.useShippingAsBilling)) &&
+						(!value || typeof value !== "object" || Array.isArray(value))
+					)
 						shapeIssues.push({ message: "Expected field values", path: [group] })
 					if (group !== "additionalFields") {
 						const additional = readPath(value, ["additionalFields"])
@@ -136,11 +170,21 @@ export function checkoutFormSchema(getSources: () => CheckoutFieldSources): Stan
 				if (shapeIssues.length) return { issues: shapeIssues }
 				const sources = getSources()
 				try {
-					const result = schema["~standard"].validate(checkoutFormOutput(sources, values))
-					if ("value" in result) return { value: values }
-					const issues = result.issues.map((issue) => {
+					const output = projectedFormOutput(sources, values)
+					const model = projectedFormModel(sources, values, output)
+					const result = schema["~standard"].validate(output)
+					if ("value" in result && !model.addressDiagnostics.length) return { value: values }
+					const failures = [
+						...("issues" in result ? result.issues : []),
+						...model.addressDiagnostics.map(({ message, path }) => ({ message, path })),
+					]
+					const issues = failures.map((issue) => {
 						const path = [...(issue.path ?? [])]
-						if (sharesAddress(sources, values) && sharedAddressPath(path.map(String))) path[0] = "shippingAddress"
+						const copied = checkoutAddressPath(sources, values.useShippingAsBilling, path.map(String))
+						const editable = Object.values(model.fields).some((fields) =>
+							fields.some((field) => !field.hidden && JSON.stringify(field.key) === JSON.stringify(copied)),
+						)
+						if (editable) path.splice(0, path.length, ...copied)
 						return { ...issue, path: checkoutFormPath(path) }
 					})
 					return { issues: [...new Map(issues.map((issue) => [JSON.stringify(issue), issue])).values()] }
@@ -168,7 +212,7 @@ export function resolveCheckoutFormState(
 ): CheckoutFormState {
 	const model = resolveCheckoutForm(sources, values ?? defaultValues ?? undefined)
 	const canUseShippingAsBilling = canShareCheckoutAddress(sources)
-	const useShippingAsBilling = (values ?? defaultValues)?.useShippingAsBilling === true
+	const useShippingAsBilling = checkoutAddressSource(sources, (values ?? defaultValues)?.useShippingAsBilling) === "shippingAddress"
 	const signature = JSON.stringify([model.fields, model.unsupported, canUseShippingAsBilling, useShippingAsBilling])
 	if (previous?.signature === signature) return previous.defaultValues === defaultValues ? previous : { ...previous, defaultValues }
 	const fields = Object.fromEntries(
@@ -197,6 +241,18 @@ export function resolveCheckoutFormState(
 		useShippingAsBilling,
 		signature,
 	}
+}
+
+/** A customer-requested copy updates native leaves while retaining independent billing data. */
+export function checkoutShippingToBillingUpdates(values: CheckoutFormValues | undefined): readonly CheckoutFieldUpdate[] {
+	const shipping = values?.shippingAddress
+	if (!shipping || typeof shipping !== "object" || Array.isArray(shipping))
+		throw new Error("Copying shipping to billing requires a shipping address in the form")
+	return checkoutAddressKeys.flatMap((key) => {
+		const value = readPath(shipping, [key]) as CheckoutFieldValue | undefined
+		if (value === readPath(values?.billingAddress, [key])) return []
+		return [{ name: checkoutFormName(["billingAddress", key]), value, options: { runListeners: false, meta: "update", validate: false } }]
+	})
 }
 
 export function checkoutFieldUpdates(name: CheckoutFormFieldName): readonly CheckoutFieldUpdate[] {

@@ -1,6 +1,7 @@
 import { atom } from "nanostores"
+import { checkoutAddressPath } from "./checkout-address"
 import { type CheckoutFieldSources, fieldPaths } from "./checkout-field-document"
-import { type CheckoutFormState, canShareCheckoutAddress, checkoutFormName, sharedAddressPath } from "./checkout-form"
+import { type CheckoutFormState, checkoutFormName } from "./checkout-form"
 import type {
 	Checkout,
 	CheckoutError,
@@ -187,9 +188,7 @@ export function projectCheckoutErrors(
 		const target = targetFor(issue, sources)
 		let group = target?.group ?? null
 		if (target) {
-			let path = target.path
-			if (values?.useShippingAsBilling && canShareCheckoutAddress(sources) && sharedAddressPath(path))
-				path = ["shippingAddress", ...path.slice(1)]
+			const path = checkoutAddressPath(sources, values?.useShippingAsBilling, target.path)
 			const name = checkoutFormName(path)
 			const editable =
 				groups.some((key) => fields[key].some((field) => field.name === name && !field.hidden)) ||

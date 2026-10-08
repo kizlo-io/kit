@@ -36,6 +36,9 @@ export type AddCartItemInput = InferClientInput<CartProcedures["items"]["add"]>[
 /** What `cart.update` accepts: the customer's addresses. */
 export type UpdateCartInput = InferClientInput<CartProcedures["update"]>["body"]
 
+/** Reuse the checkout sharing control for address actions; it is stripped before the SDK request. */
+export type CartAddressInput = UpdateCartInput & { useShippingAsBilling?: boolean }
+
 /** A complete set of pricing fields, with the rest of the procedure's address input available alongside them. */
 type AddressSnapshot<T extends { country?: string; state?: string; city?: string; postcode?: string }> = T &
 	Required<Pick<T, "country" | "state" | "city" | "postcode">>
@@ -44,7 +47,7 @@ type AddressSnapshot<T extends { country?: string; state?: string; city?: string
  * The current form values for automatic repricing, rather than a patch for one field. Supply every pricing field for each
  * included address, using empty strings for unused fields. A form editing both addresses includes both on every change.
  */
-export type CartAddressSnapshotInput = Omit<UpdateCartInput, "shippingAddress" | "billingAddress"> & {
+export type CartAddressSnapshotInput = Omit<CartAddressInput, "shippingAddress" | "billingAddress"> & {
 	shippingAddress?: AddressSnapshot<NonNullable<UpdateCartInput["shippingAddress"]>>
 	billingAddress?: AddressSnapshot<NonNullable<UpdateCartInput["billingAddress"]>>
 }
@@ -276,6 +279,8 @@ export type CheckoutFieldsApi = Omit<CheckoutFieldsModel, "fields" | "defaultVal
 	schema: StandardFieldSchema<CheckoutFormValues> | null
 	canUseShippingAsBilling: boolean
 	handleFieldChange: (name: CheckoutFormFieldName, value: CheckoutFieldValue | undefined) => void
+	/** Copy native shipping draft values into billing once; requires getValues/setValues and leaves sharing unchanged. */
+	copyShippingToBilling: () => void
 	reevaluate: () => void
 	getInput: (values: CheckoutFieldValues) => CheckoutFormValues
 	getOutput: (values: CheckoutFormValues) => CheckoutFieldValues

@@ -6,6 +6,7 @@ import {
 	checkoutFormName,
 	checkoutFormOutput,
 	checkoutFormSchema,
+	checkoutShippingToBillingUpdates,
 	resolveCheckoutForm,
 } from "./checkout-form"
 import { field, fixtures } from "./test/checkout-fields-fixture"
@@ -36,7 +37,7 @@ describe("checkout form representation", () => {
 		const input = checkoutFormInput(Object.freeze(raw))
 		expect(input.additionalFields).toHaveProperty("plugin%2Fa%2Eb%5B0%5D%27%25", "0")
 		expect(Object.keys(input.additionalFields ?? {})).toHaveLength(ids.length)
-		expect(checkoutFormOutput(source, input)).toEqual(raw)
+		expect(checkoutFormOutput(source, { ...input, useShippingAsBilling: false })).toEqual(raw)
 		expect(checkoutFormName(["billingAddress", "country"])).toBe("billingAddress.country")
 		expect(checkoutFormName(["shippingAddress", "additionalFields", ids[0] ?? ""])).toBe(
 			"shippingAddress.additionalFields.plugin%2Fa%2Eb%5B0%5D%27%25",
@@ -85,7 +86,10 @@ describe("checkout form representation", () => {
 		expect(() => checkoutFormOutput(source, values)).toThrow("Colliding")
 		expect(schema(source).validate({ useShippingAsBilling: "yes" })).toHaveProperty("issues.0.path", ["useShippingAsBilling"])
 		expect(schema(source).validate(null)).toHaveProperty("issues")
-		expect(schema(source).validate({ billingAddress: [], useShippingAsBilling: true })).toHaveProperty("issues.0.path", ["billingAddress"])
+		expect(schema(source).validate({ billingAddress: [], useShippingAsBilling: true })).toHaveProperty(
+			"issues",
+			expect.arrayContaining([expect.objectContaining({ path: ["billingAddress"] })]),
+		)
 		expect(schema(source).validate({ billingAddress: { additionalFields: [] } })).toHaveProperty("issues.0.path", [
 			"billingAddress",
 			"additionalFields",
@@ -93,7 +97,189 @@ describe("checkout form representation", () => {
 	})
 })
 
+describe("shipping-to-billing form copy", () => {
+	it("copies all native leaves without changing the draft, sharing or independent billing data", () => {
+		const values: CheckoutFormValues = {
+			shippingAddress: {
+				firstName: "Grace",
+				lastName: "Hopper",
+				company: "Navy",
+				address1: "1 Road",
+				address2: "Suite 2",
+				city: "London",
+				state: "County",
+				postcode: "SW1A 1AA",
+				country: "GB",
+				phone: "123",
+				additionalFields: { shipping: "private" },
+			},
+			billingAddress: {
+				...fixtures([]).checkout.billingAddress,
+				email: "billing@example.com",
+				taxId: "TAX",
+				additionalFields: { billing: "retain" },
+			},
+			useShippingAsBilling: false,
+		}
+		const before = structuredClone(values)
+		const updates = checkoutShippingToBillingUpdates(values)
+		expect(Object.fromEntries(updates.map(({ name, value }) => [name, value]))).toEqual({
+			"billingAddress.firstName": "Grace",
+			"billingAddress.lastName": "Hopper",
+			"billingAddress.company": "Navy",
+			"billingAddress.address1": "1 Road",
+			"billingAddress.address2": "Suite 2",
+			"billingAddress.city": "London",
+			"billingAddress.state": "County",
+			"billingAddress.postcode": "SW1A 1AA",
+			"billingAddress.country": "GB",
+			"billingAddress.phone": "123",
+		})
+		expect(updates.every(({ options }) => !options.runListeners && options.meta === "update" && !options.validate)).toBe(true)
+		expect(values).toEqual(before)
+	})
+	it("clears stale target members missing from shipping and skips unchanged values", () => {
+		expect(
+			checkoutShippingToBillingUpdates({
+				shippingAddress: { country: "IN", state: "KA" },
+				billingAddress: { country: "GB", state: "KA", postcode: "STALE" },
+			} as CheckoutFormValues).map(({ name, value }) => ({ name, value })),
+		).toEqual([
+			{ name: "billingAddress.postcode", value: undefined },
+			{ name: "billingAddress.country", value: "IN" },
+		])
+		expect(
+			checkoutShippingToBillingUpdates({ shippingAddress: { country: "IN" }, billingAddress: { country: "IN" } } as CheckoutFormValues),
+		).toEqual([])
+	})
+	it.each([undefined, {}, { shippingAddress: null }])("requires source data instead of manufacturing an address: %j", (values) => {
+		expect(() => checkoutShippingToBillingUpdates(values as CheckoutFormValues | undefined)).toThrow("requires a shipping address")
+	})
+})
+
 describe("address presentation and projection", () => {
+	it("derives physical shipping from a billing-only forced form without copying contact or registered values", () => {
+		const source = fixtures([native("first_name", "firstName", { required: true }), native("country", "country")])
+		source.storefront.checkout.forcedBillingAddress = true
+		const values = Object.freeze({ billingAddress: { ...source.checkout.billingAddress, additionalFields: { billing: "private" } } })
+		const before = structuredClone(values)
+		const output = checkoutFormOutput(source, values)
+		expect(output.billingAddress).toEqual(values.billingAddress)
+		expect(output.shippingAddress).toMatchObject({ firstName: "Ada", country: "IN", postcode: "560001" })
+		for (const key of ["email", "taxId", "additionalFields"]) expect(output.shippingAddress).not.toHaveProperty(key)
+		expect(resolveCheckoutForm(source, values).fields.shipping.every((field) => field.hidden)).toBe(true)
+		expect(resolveCheckoutForm(source, values).fields.billing.every((field) => !field.hidden)).toBe(true)
+		expect(schema(source).validate(values)).toEqual({ value: values })
+		expect(values).toEqual(before)
+	})
+	it("overrides stale hidden native values but keeps both additional-field buckets independent", () => {
+		const source = fixtures([native("first_name", "firstName"), native("country", "country")])
+		source.storefront.checkout.forcedBillingAddress = true
+		const values = {
+			billingAddress: { ...source.checkout.billingAddress, additionalFields: { billing: "one" } },
+			shippingAddress: { ...source.checkout.shippingAddress, firstName: "Stale", additionalFields: { shipping: "two" } },
+			useShippingAsBilling: false,
+		}
+		const before = structuredClone(values)
+		expect(checkoutFormOutput(source, values)).toMatchObject({
+			billingAddress: { country: "IN", email: "ada@example.com", taxId: "TAX", additionalFields: { billing: "one" } },
+			shippingAddress: { firstName: "Ada", country: "IN", additionalFields: { shipping: "two" } },
+		})
+		expect(values).toEqual(before)
+	})
+	it.each([undefined, null])("diagnoses an unavailable authoritative address (%s) rather than using stale shipping", (missing) => {
+		const source = fixtures([native("first_name", "firstName", { required: true })])
+		source.storefront.checkout.forcedBillingAddress = true
+		const values = { billingAddress: missing, shippingAddress: source.checkout.shippingAddress } as unknown as CheckoutFormValues
+		expect(schema(source).validate(values)).toHaveProperty(
+			"issues",
+			expect.arrayContaining([expect.objectContaining({ path: ["billingAddress"] })]),
+		)
+		expect(() => checkoutFormOutput(source, values)).toThrow("authoritative billingAddress")
+		expect(resolveCheckoutForm(source, values).unsupported).toContainEqual(expect.objectContaining({ path: ["billingAddress"] }))
+	})
+	it("retains missing native values and maps derived shipping validation to the visible billing field", () => {
+		const source = fixtures([native("first_name", "firstName", { required: true })])
+		source.storefront.checkout.forcedBillingAddress = true
+		const { firstName: _firstName, ...billingAddress } = source.checkout.billingAddress
+		const values = { billingAddress, shippingAddress: source.checkout.shippingAddress } as CheckoutFormValues
+		expect(checkoutFormOutput(source, values).shippingAddress).not.toHaveProperty("firstName")
+		expect(schema(source).validate(values)).toHaveProperty(
+			"issues",
+			expect.arrayContaining([expect.objectContaining({ path: ["billingAddress", "firstName"] })]),
+		)
+		const withNullTarget = { billingAddress: source.checkout.billingAddress, shippingAddress: null } as unknown as CheckoutFormValues
+		expect(schema(source).validate(withNullTarget)).toEqual({ value: withNullTarget })
+	})
+	it("leaves required hidden extensions to schema validation without metadata or output rejection", () => {
+		const source = fixtures([
+			native("first_name", "firstName"),
+			field("custom/id", { location: "address", required: true, bindings: { shipping: ["additionalFields", "custom/id"] } }),
+		])
+		source.storefront.checkout.forcedBillingAddress = true
+		const values = { billingAddress: { ...source.checkout.billingAddress, additionalFields: { "custom%2Fid": "billing" } } }
+		expect(resolveCheckoutForm(source, values).fields.shipping.every((field) => field.hidden)).toBe(true)
+		expect(schema(source).validate(values)).toHaveProperty(
+			"issues",
+			expect.arrayContaining([expect.objectContaining({ path: ["shippingAddress", "additionalFields", "custom%2Fid"] })]),
+		)
+		expect(resolveCheckoutForm(source, values).unsupported).toEqual([])
+		expect(checkoutFormOutput(source, values).shippingAddress?.additionalFields).toBeUndefined()
+		const complete = {
+			...values,
+			shippingAddress: { ...source.checkout.shippingAddress, additionalFields: { "custom%2Fid": "shipping" } },
+		}
+		expect(checkoutFormOutput(source, complete).shippingAddress?.additionalFields).toEqual({ "custom/id": "shipping" })
+		expect(schema(source).validate(complete)).toEqual({ value: complete })
+	})
+	it.each([
+		{ type: "text" as const, schema: { type: "string", pattern: "^OK$" }, value: "bad" },
+		{ type: "checkbox" as const, schema: { type: "boolean" }, value: false },
+	])("keeps invalid hidden $type values for the form's schema to reject", ({ type, schema: constraints, value }) => {
+		const source = fixtures([
+			field("custom/id", {
+				location: "address",
+				required: true,
+				type,
+				schema: constraints,
+				bindings: { shipping: ["additionalFields", "custom/id"] },
+			}),
+		])
+		source.storefront.checkout.forcedBillingAddress = true
+		const values = {
+			billingAddress: source.checkout.billingAddress,
+			shippingAddress: { ...source.checkout.shippingAddress, additionalFields: { "custom%2Fid": value } },
+		}
+		const model = resolveCheckoutForm(source, values)
+		expect(model.fields.shipping[0]).toMatchObject({ hidden: true, required: true })
+		expect(model.unsupported).toEqual([])
+		expect(checkoutFormOutput(source, values).shippingAddress?.additionalFields).toEqual({ "custom/id": value })
+		expect(schema(source).validate(values)).toHaveProperty(
+			"issues",
+			expect.arrayContaining([expect.objectContaining({ path: ["shippingAddress", "additionalFields", "custom%2Fid"] })]),
+		)
+	})
+	it("defaults to shipping-first despite distinct saved billing values, and honors explicit separate billing", () => {
+		const source = fixtures([native("country", "country"), native("first_name", "firstName")])
+		source.storefront.checkout.forcedBillingAddress = false
+		const values = checkoutFormInput(source.values)
+		expect(resolveCheckoutForm(source, values).fields.billing.every((field) => field.hidden)).toBe(true)
+		expect(checkoutFormOutput(source, values).billingAddress?.country).toBe("GB")
+		const separate = { ...values, useShippingAsBilling: false }
+		expect(resolveCheckoutForm(source, separate).fields.billing.every((field) => !field.hidden)).toBe(true)
+		expect(checkoutFormOutput(source, separate).billingAddress?.country).toBe("IN")
+		expect(checkoutFormOutput(source, separate).shippingAddress?.country).toBe("GB")
+	})
+	it("shows billing and omits digital shipping even with forced billing and a sharing control", () => {
+		const source = fixtures([native("country", "country")])
+		source.storefront.checkout.forcedBillingAddress = true
+		source.cart.needsShipping = false
+		const values = { ...checkoutFormInput(source.values), useShippingAsBilling: true }
+		expect(resolveCheckoutForm(source, values).fields.shipping).toEqual([])
+		expect(resolveCheckoutForm(source, values).fields.billing[0]?.hidden).toBe(false)
+		expect(checkoutFormOutput(source, values)).not.toHaveProperty("shippingAddress")
+		expect(checkoutFormOutput(source, values).billingAddress).toEqual(source.values.billingAddress)
+	})
 	it("copies only common native members and preserves independent fields, billing email and Tax ID", () => {
 		const source = fixtures([
 			native("first_name", "firstName", { required: true }),

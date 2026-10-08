@@ -294,11 +294,38 @@ describe("live resolution and validation", () => {
 		])
 		expect(validate(source)).toHaveProperty("issues")
 	})
-	it("excludes hidden required fields without erasing submission values", () => {
-		const source = fixtures([field("hidden", { hidden: true, required: true, schema: { const: "different" } })])
+	it.each([false, true])("retains required rules and value constraints regardless of hidden: %s", (hidden) => {
+		const source = fixtures([field("hidden", { hidden, required: true, schema: { const: "different" } })])
 		const candidate = { ...source.values, additionalFields: { hidden: "retained" } }
-		expect(validate(source, candidate)).toHaveProperty("value", candidate)
-		expect(resolveCheckoutFields(source, candidate).fields.order[0]).toMatchObject({ hidden: true, required: false })
+		expect(resolveCheckoutFields(source, candidate).fields.order[0]).toMatchObject({ hidden, required: true })
+		expect(resolveCheckoutFields(source, candidate).unsupported).toEqual([])
+		expect(validate(source, candidate)).toHaveProperty("issues")
+		expect(validate(source, { ...candidate, additionalFields: {} })).toHaveProperty("issues")
+		const valid = { ...candidate, additionalFields: { hidden: "different" } }
+		expect(validate(source, valid)).toEqual({ value: valid })
+	})
+	it.each([
+		[false, "bacs", false],
+		[false, "card", true],
+		[true, "bacs", false],
+		[true, "card", true],
+	] as const)("resolves visibility (%s) independently of required (%s)", (createAccount, paymentMethod, required) => {
+		const source = fixtures([
+			field("independent", {
+				hidden: condition({ checkout: { properties: { create_account: { const: true } } } }),
+				required: condition({ checkout: { properties: { payment_method: { const: "card" } } } }),
+			}),
+		])
+		const candidate = { ...source.values, createAccount, paymentMethod, additionalFields: {} }
+		expect(resolveCheckoutFields(source, candidate).fields.order[0]).toMatchObject({ hidden: createAccount, required })
+		expect(resolveCheckoutFields(source, candidate).unsupported).toEqual([])
+		if (required) expect(validate(source, candidate)).toHaveProperty("issues")
+		else expect(validate(source, candidate)).toEqual({ value: candidate })
+	})
+	it("allows omitted optional hidden values while enforcing supplied constraints", () => {
+		const source = fixtures([field("optional", { hidden: true, schema: { type: "string", minLength: 3 } })])
+		expect(validate(source, { ...source.values, additionalFields: {} })).toHaveProperty("value")
+		expect(validate(source, { ...source.values, additionalFields: { optional: "x" } })).toHaveProperty("issues")
 	})
 	it.each(["omitted", "retained"] as const)("skips non-shipping checkout fields with %s shipping values", (mode) => {
 		const source = fixtures([
@@ -336,7 +363,7 @@ describe("live resolution and validation", () => {
 		{ schema: { type: "string", format: "plugin-custom" } },
 		{ schema: { $ref: "https://missing.test/schema" } },
 		{ schema: { type: "bogus" } },
-	] as Partial<StorefrontField>[])("excludes hidden widget/schema requirements until visible: %j", (overrides) => {
+	] as Partial<StorefrontField>[])("reports hidden schema/widget integration diagnostics regardless of visibility: %j", (overrides) => {
 		const source = fixtures([
 			field("hidden", {
 				...overrides,
@@ -346,9 +373,8 @@ describe("live resolution and validation", () => {
 		])
 		const candidate = { ...source.values, additionalFields: { hidden: "retained" } }
 		const model = resolveCheckoutFields(source, candidate)
-		expect(model.unsupported).toEqual([])
-		expect(model.fields.order[0]).toMatchObject({ hidden: true, required: false, key: ["additionalFields", "hidden"], ...overrides })
-		expect((validate(source, candidate) as { value: unknown }).value).toBe(candidate)
+		expect(model.unsupported).toHaveLength(1)
+		expect(validate(source, candidate)).toHaveProperty("issues")
 		const visible = { ...candidate, billingAddress: { ...source.checkout.billingAddress, country: "GB" } }
 		expect(resolveCheckoutFields(source, visible).unsupported).toHaveLength(1)
 		expect(validate(source, visible)).toHaveProperty("issues")
