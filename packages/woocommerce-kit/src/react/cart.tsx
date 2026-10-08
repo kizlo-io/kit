@@ -29,15 +29,17 @@ import {
 	defaultShouldUpdateAddress,
 	draftQuantityLimits,
 	hasSelectedShippingRates,
+	normalizeCartAddress,
 	resolveQuantity,
 	shippingQuoteSignature,
 	stepQuantity,
 } from "../cart"
 import { formatStoreMoney } from "../money"
-import type { AddCartItemInput, Cart, CartAddressSnapshotInput, CartError, UpdateCartInput } from "../types"
+import type { AddCartItemInput, Cart, CartAddressInput, CartAddressSnapshotInput, CartError, Storefront, UpdateCartInput } from "../types"
 import { useWooCommerceContext } from "./context"
 import { notify } from "./notify"
 import { addressMutationKey, addressQueueKey, cartMutationKey, noQueuedAddresses, useCartActivity, useCartQuery } from "./session-queries"
+import { storefrontQueryKey, useStorefront } from "./storefront"
 
 /**
  * The core's cart types, re-exported so a component reads its hook and the types it returns from one specifier. Type-only, so
@@ -52,7 +54,7 @@ export type {
 	CartStartEvent,
 	CartSuccessEvent,
 } from "../cart"
-export type { CartAddressSnapshotInput, CartError } from "../types"
+export type { CartAddressInput, CartAddressSnapshotInput, CartError } from "../types"
 
 type CartProcedures = ActiveKizloClient["woocommerce"]["cart"]
 
@@ -269,9 +271,9 @@ export type CartAddressApi = {
 	/** Clears the last failure once it has settled. */
 	reset: () => void
 	/** Saves the customer's addresses. The email is a field inside `billingAddress` rather than a sibling of it. */
-	update: (input: UpdateCartInput) => void
+	update: (input: CartAddressInput) => void
 	/** Saves the same address patch and returns the acknowledged cart; rejects on failure. */
-	updateAsync: (input: UpdateCartInput) => Promise<Cart>
+	updateAsync: (input: CartAddressInput) => Promise<Cart>
 }
 
 function matchesSavedAddresses(input: CartAddressSnapshotInput, cart: Cart | null, failedInput: UpdateCartInput): boolean {
@@ -336,6 +338,7 @@ function matchesSavedAddresses(input: CartAddressSnapshotInput, cart: Cart | nul
  * ```
  */
 export function useCartAddress(options?: CartAddressHookOptions): CartAddressApi {
+	useStorefront()
 	const scope = useMemo(() => addressMutationKey, [])
 	const { error, failedAddressInput, isPending, mutate, mutateAsync, reset } = useCartAction(scope, options)
 	const { queryClient } = useWooCommerceContext()
@@ -363,8 +366,20 @@ export function useCartAddress(options?: CartAddressHookOptions): CartAddressApi
 		[markQueued],
 	)
 
-	const update = useCallback((input: UpdateCartInput) => mutate({ input, type: "update_customer" }), [mutate])
-	const updateAsync = useCallback((input: UpdateCartInput) => mutateAsync({ input, type: "update_customer" }), [mutateAsync])
+	const normalize = useCallback(
+		(input: CartAddressInput) =>
+			normalizeCartAddress(
+				input,
+				queryClient.getQueryData<Cart>(cartQueryKey) ?? null,
+				queryClient.getQueryData<Storefront>(storefrontQueryKey) ?? null,
+			),
+		[queryClient],
+	)
+	const update = useCallback((input: CartAddressInput) => mutate({ input: normalize(input), type: "update_customer" }), [mutate, normalize])
+	const updateAsync = useCallback(
+		(input: CartAddressInput) => mutateAsync({ input: normalize(input), type: "update_customer" }),
+		[mutateAsync, normalize],
+	)
 
 	const clearSavedFailure = useCallback(
 		(input: CartAddressSnapshotInput, cart: Cart | null) => {
@@ -374,8 +389,8 @@ export function useCartAddress(options?: CartAddressHookOptions): CartAddressApi
 	)
 
 	const push = useDebouncedCallback(() => {
-		const input = latest.current
-		if (!input) return
+		const snapshot = latest.current
+		if (!snapshot) return
 		// Compare only after the store has answered: a revert can match the old cache while the in-flight save will change it.
 		if (queryClient.isMutating({ mutationKey: scope }) > 0) {
 			push()
@@ -383,12 +398,13 @@ export function useCartAddress(options?: CartAddressHookOptions): CartAddressApi
 		}
 		latest.current = null
 		const cart = queryClient.getQueryData<Cart>(cartQueryKey) ?? null
+		const input = normalize(snapshot) as CartAddressSnapshotInput
 		// Detach this batch before dispatch so edits during the request belong to the next batch.
 		const batch = waiters.current.splice(0)
 		if (shouldUpdateAddress(input, cart)) {
-			if (batch.length === 0) update(input)
+			if (batch.length === 0) update(snapshot)
 			else
-				void updateAsync(input).then(
+				void updateAsync(snapshot).then(
 					(saved) => {
 						for (const waiter of batch) waiter.resolve(saved)
 					},
@@ -412,8 +428,9 @@ export function useCartAddress(options?: CartAddressHookOptions): CartAddressApi
 				...(input.billingAddress && { billingAddress: { ...input.billingAddress } }),
 			}
 			const cart = queryClient.getQueryData<Cart>(cartQueryKey) ?? null
-			if (queryClient.isMutating({ mutationKey: scope }) === 0 && !shouldUpdateAddress(latest.current, cart)) {
-				clearSavedFailure(latest.current, cart)
+			const projected = normalize(latest.current) as CartAddressSnapshotInput
+			if (queryClient.isMutating({ mutationKey: scope }) === 0 && !shouldUpdateAddress(projected, cart)) {
+				clearSavedFailure(projected, cart)
 				latest.current = null
 				push.cancel()
 				for (const waiter of waiters.current.splice(0)) waiter.resolve(undefined)
@@ -423,7 +440,7 @@ export function useCartAddress(options?: CartAddressHookOptions): CartAddressApi
 			markQueued(true)
 			push()
 		},
-		[clearSavedFailure, markQueued, push, queryClient, scope, shouldUpdateAddress],
+		[clearSavedFailure, markQueued, normalize, push, queryClient, scope, shouldUpdateAddress],
 	)
 
 	const onAddressChangeAsync = useCallback(

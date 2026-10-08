@@ -86,6 +86,46 @@ describe("checkout server-error lifecycle", () => {
 })
 
 describe("SDK identity and editable-control projection", () => {
+	it("projects forced shipping errors onto billing while retaining independent and section failures", () => {
+		const sources = fixtures([
+			...addressFields(),
+			field("shipping/id", { location: "address", bindings: { shipping: ["additionalFields", "shipping/id"] } }),
+		])
+		sources.storefront.checkout.forcedBillingAddress = true
+		const values = { billingAddress: sources.checkout.billingAddress }
+		const fields = resolveCheckoutFormState(sources, values, values).fields
+		const store = createCheckoutErrorStore()
+		store.fail(
+			store.start("session"),
+			validationFailure([
+				validationIssue({ scope: "field", target: ["shippingAddress", "postcode"], message: "copied shipping" }),
+				validationIssue({ scope: "field", target: ["billingAddress", "email"], message: "email" }),
+				validationIssue({ registeredFields: [{ id: "kizlo/tax-id", bucket: "billingAddress" }], message: "tax" }),
+				validationIssue({ registeredFields: [{ id: "shipping/id", bucket: "shippingAddress" }], message: "shipping extension" }),
+				validationIssue({ scope: "group", target: ["shippingAddress"], message: "shipping section" }),
+			]),
+		)
+		const projected = projectCheckoutErrors(store.state.get().issues, sources, fields, values)
+		expect(projected.fields).toEqual([
+			{ name: "billingAddress.postcode", messages: ["copied shipping"] },
+			{ name: "billingAddress.email", messages: ["email"] },
+			{ name: "billingAddress.taxId", messages: ["tax"] },
+		])
+		expect(projected.sections.shipping.map(({ message }) => message)).toEqual(["shipping extension", "shipping section"])
+		store.clearIssues(new Set([...projected.associations].filter(([, name]) => name === "billingAddress.postcode").map(([id]) => id)))
+		expect(store.state.get().issues.map(({ message }) => message)).toEqual(["email", "tax", "shipping extension", "shipping section"])
+	})
+	it("retains copied-native errors as section failures when the visible source has no matching control", () => {
+		const sources = fixtures([field("postcode", { location: "address", bindings: { shipping: ["postcode"] } })])
+		sources.storefront.checkout.forcedBillingAddress = true
+		const values = { billingAddress: sources.checkout.billingAddress }
+		const fields = resolveCheckoutFormState(sources, values, values).fields
+		const store = createCheckoutErrorStore()
+		store.fail(store.start("session"), validationFailure([validationIssue({ scope: "field", target: ["shippingAddress", "postcode"] })]))
+		const result = projectCheckoutErrors(store.state.get().issues, sources, fields, values)
+		expect(result.fields).toEqual([])
+		expect(result.sections.shipping).toEqual(store.state.get().issues)
+	})
 	it("maps native targets, copied addresses and separate email/tax ID while retaining group/summary errors", () => {
 		const { projection } = project(
 			[

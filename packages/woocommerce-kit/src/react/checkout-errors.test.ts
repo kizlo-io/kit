@@ -11,7 +11,7 @@ import { checkoutErrorStore } from "../checkout-errors"
 import { checkoutFormInput } from "../checkout-form"
 import { validationFailure, validationIssue } from "../test/checkout-errors-fixture"
 import { field, fixtures } from "../test/checkout-fields-fixture"
-import type { Checkout, CheckoutFieldsOptions, CheckoutFormValues } from "../types"
+import type { Checkout, CheckoutFieldsOptions, CheckoutFieldUpdate, CheckoutFormValues } from "../types"
 import { useCheckout } from "./checkout"
 import { useCheckoutFields } from "./checkout-fields"
 import { useWooCommerceContext } from "./context"
@@ -76,6 +76,64 @@ afterEach(() => {
 })
 
 describe("automatic checkout error integration", () => {
+	it("a one-time copy clears only server issues on changed billing controls", async () => {
+		const env = setup(),
+			set = vi.fn(),
+			clear = vi.fn()
+		let values: CheckoutFormValues = {
+			...checkoutFormInput(env.sources.values),
+			useShippingAsBilling: false,
+			shippingAddress: { ...env.sources.checkout.shippingAddress, postcode: "NEW" },
+		}
+		procedures.checkout.confirm.call.mockRejectedValue(batch())
+		const { result } = renderHook(
+			() => ({
+				fields: useCheckoutFields({
+					getValues: () => values,
+					setErrors: set,
+					clearErrors: clear,
+					setValues: (updates: readonly CheckoutFieldUpdate[]) => {
+						values = {
+							...values,
+							billingAddress: {
+								...env.sources.checkout.billingAddress,
+								...values.billingAddress,
+								...Object.fromEntries(updates.map(({ name, value }) => [name.slice("billingAddress.".length), value])),
+							},
+						}
+					},
+				}),
+				checkout: useCheckout(),
+			}),
+			{ wrapper: env.wrapper },
+		)
+		await waitFor(() => expect(result.current.fields.schema).not.toBeNull())
+		await act(async () => {
+			await result.current.checkout
+				.confirmAsync({ billingAddress: env.sources.checkout.billingAddress, paymentMethod: "bacs" })
+				.catch(() => {})
+		})
+		expect(set).toHaveBeenCalledWith(
+			expect.arrayContaining([{ name: "billingAddress.postcode", messages: ["postcode one", "postcode two"] }]),
+		)
+		clear.mockClear()
+		act(() => result.current.fields.copyShippingToBilling())
+		expect(clear).toHaveBeenCalledWith(["billingAddress.postcode"])
+		expect(result.current.fields.billing.errors[0]?.message).toBe("billing section")
+		expect(result.current.fields.shipping.errors[0]?.message).toBe("shipping section")
+		expect(result.current.fields.errors[0]?.message).toBe("summary")
+		// Removing one control does not replay the still-active custom-field patch.
+		expect(set).toHaveBeenCalledTimes(1)
+		expect(
+			checkoutErrorStore(useKizloContext().client, env.client)
+				.state.get()
+				.issues.map(({ message }) => message),
+		).toEqual(["custom", "billing section", "shipping section", "summary"])
+		clear.mockClear()
+		act(() => result.current.fields.copyShippingToBilling())
+		expect(clear).not.toHaveBeenCalled()
+		expect(procedures.checkout.confirm.call).toHaveBeenCalledTimes(1)
+	})
 	it("shares batches, writes once outside render, preserves source errors and context, and clears exact copied controls only", async () => {
 		const env = setup(),
 			set = vi.fn(),
@@ -150,7 +208,7 @@ describe("automatic checkout error integration", () => {
 		const env = setup(),
 			set = vi.fn(),
 			clear = vi.fn()
-		let values = checkoutFormInput(env.sources.values)
+		let values = { ...checkoutFormInput(env.sources.values), useShippingAsBilling: false }
 		procedures.checkout.confirm.call.mockRejectedValue(batch())
 		const { result } = renderHook(
 			() => ({ fields: useCheckoutFields({ getValues: () => values, setErrors: set, clearErrors: clear }), checkout: useCheckout() }),

@@ -102,11 +102,6 @@ export function resolveCheckoutFields(
 				const hidden = evaluate(field.hidden)
 				if (hidden === undefined) continue
 				const { bindings: _bindings, ...metadata } = field
-				// A resolved hidden field needs neither a widget nor value-schema integration.
-				if (hidden) {
-					model.fields[group].push({ ...metadata, required: false, hidden, key: paths.input, presentation: {} })
-					continue
-				}
 				const required = evaluate(field.required)
 				if (required === undefined) continue
 				if (!widgets.has(field.type)) {

@@ -77,6 +77,193 @@ afterEach(() => {
 })
 
 describe("real form libraries", () => {
+	it.each(["TanStack", "React Hook Form"] as const)(
+		"%s copies without requesting validation and allows the consumer to validate the complete batch",
+		async (library) => {
+			const { sources, wrapper } = setup()
+			const defaultValues: CheckoutFormValues = {
+				...checkoutFormInput(sources.values),
+				useShippingAsBilling: false,
+				shippingAddress: { ...sources.checkout.shippingAddress, country: "GB", state: "London" },
+			}
+			const validate = vi.fn()
+			const listen = vi.fn()
+			if (library === "TanStack") {
+				const { result } = renderHook(
+					() => {
+						const fields: CheckoutFieldsApi = useCheckoutFields({
+							getValues: () => form.state.values,
+							setValues: (updates) => {
+								for (const { name, value, options } of updates)
+									form.setFieldValue(name, value, {
+										dontRunListeners: !options.runListeners,
+										dontUpdateMeta: options.meta === "preserve",
+										dontValidate: true,
+									})
+								for (const { name, options } of updates) if (options.validate) void form.validateField(name, "change")
+							},
+						})
+						const form = useTanStackForm({
+							defaultValues,
+							listeners: {
+								onChange: ({ fieldApi }) => {
+									listen(fieldApi.name)
+									fields.handleFieldChange(fieldApi.name, fieldApi.state.value)
+								},
+							},
+						})
+						const country = useField({
+							form,
+							name: "billingAddress.country",
+							validators: {
+								onChange: ({ value }) => {
+									validate(value, form.state.values.billingAddress?.state)
+								},
+							},
+						})
+						const state = useField({ form, name: "billingAddress.state" })
+						return { form, fields, country, state }
+					},
+					{ wrapper },
+				)
+				await waitFor(() => expect(result.current.fields.schema).not.toBeNull())
+				act(() => result.current.fields.copyShippingToBilling())
+				expect(result.current.form.state.values.billingAddress).toMatchObject({
+					country: "GB",
+					state: "London",
+					email: "ada@example.com",
+					taxId: "TAX",
+				})
+				expect(validate).not.toHaveBeenCalled()
+				await act(async () => {
+					await result.current.form.validateField("billingAddress.country", "change")
+				})
+				expect(validate.mock.calls).toEqual([["GB", "London"]])
+				expect(result.current.country.state.meta).toMatchObject({ isDirty: true, isTouched: true })
+				expect(result.current.state.state.meta).toMatchObject({ isDirty: true, isTouched: true })
+				expect(listen).not.toHaveBeenCalled()
+				expect(result.current.form.state.values.useShippingAsBilling).toBe(false)
+				expect(result.current.fields.billing.fields.find((field) => field.id === "state")?.label).toBe("County")
+			} else {
+				const { result } = renderHook(
+					() => {
+						const fields: CheckoutFieldsApi = useCheckoutFields({
+							getValues: () => form.getValues(),
+							setValues: (updates) => {
+								for (const { name, value, options } of updates) {
+									form.setValue(name, value, {
+										shouldDirty: options.meta === "update",
+										shouldTouch: options.meta === "update",
+										shouldValidate: false,
+									})
+									if (options.runListeners) {
+										listen(name)
+										fields.handleFieldChange(name, value)
+									}
+								}
+								const names = updates.filter(({ options }) => options.validate).map(({ name }) => name)
+								if (names.length) void form.trigger(names)
+							},
+						})
+						const form = useRHF<CheckoutFormValues>({
+							defaultValues,
+							resolver: (values) => {
+								validate(values.billingAddress?.country, values.billingAddress?.state)
+								return { values, errors: {} }
+							},
+						})
+						const country = useController({ control: form.control, name: "billingAddress.country" })
+						const state = useController({ control: form.control, name: "billingAddress.state" })
+						return { form, fields, country, state }
+					},
+					{ wrapper },
+				)
+				await waitFor(() => expect(result.current.fields.schema).not.toBeNull())
+				await act(async () => result.current.fields.copyShippingToBilling())
+				expect(result.current.form.getValues("billingAddress")).toMatchObject({
+					country: "GB",
+					state: "London",
+					email: "ada@example.com",
+					taxId: "TAX",
+				})
+				expect(validate).not.toHaveBeenCalled()
+				await act(async () => {
+					await result.current.form.trigger()
+				})
+				expect(validate.mock.calls).toEqual([["GB", "London"]])
+				expect(result.current.country.fieldState).toMatchObject({ isDirty: true, isTouched: true })
+				expect(result.current.state.fieldState).toMatchObject({ isDirty: true, isTouched: true })
+				expect(listen).not.toHaveBeenCalled()
+				expect(result.current.form.getValues("useShippingAsBilling")).toBe(false)
+				expect(result.current.fields.billing.fields.find((field) => field.id === "state")?.label).toBe("County")
+			}
+			expect(procedures.cart.update.call).not.toHaveBeenCalled()
+			expect(procedures.checkout.confirm.call).not.toHaveBeenCalled()
+		},
+	)
+	it.each([
+		["TanStack", TanStackCheckoutForm],
+		["React Hook Form", ReactHookFormCheckout],
+	] as const)("%s example copies on demand and preserves separate billing after later shipping edits", async (_name, Component) => {
+		const { sources, wrapper } = setup()
+		sources.checkout.shippingAddress.country = "GB"
+		sources.checkout.shippingAddress.state = "London"
+		render(createElement(Component), { wrapper })
+		const sharing = await screen.findByLabelText<HTMLInputElement>("Use shipping address for billing")
+		fireEvent.click(sharing)
+		const copy = await screen.findByRole("button", { name: "Copy shipping address to billing" })
+		fireEvent.click(copy)
+		await waitFor(() => expect(document.querySelector<HTMLInputElement>('input[name="billingAddress.state"]')?.value).toBe("London"))
+		expect(document.querySelector<HTMLSelectElement>('select[name="billingAddress.country"]')?.value).toBe("GB")
+		expect(sharing.checked).toBe(false)
+		const shippingState = document.querySelector<HTMLInputElement>('input[name="shippingAddress.state"]')
+		if (!shippingState) throw new Error("Missing shipping state")
+		fireEvent.change(shippingState, { target: { value: "Later" } })
+		expect(document.querySelector<HTMLInputElement>('input[name="billingAddress.state"]')?.value).toBe("London")
+		expect(procedures.cart.update.call).not.toHaveBeenCalled()
+		expect(procedures.checkout.confirm.call).not.toHaveBeenCalled()
+	})
+	it.each([
+		["TanStack", TanStackCheckoutForm],
+		["React Hook Form", ReactHookFormCheckout],
+	] as const)("%s example keeps hidden bindings registered, validates them and preserves boolean values", async (_name, Component) => {
+		const { sources, wrapper } = setup()
+		sources.storefront.address.fields.push(
+			field("plugin/consent", {
+				label: "Consent",
+				type: "checkbox",
+				required: true,
+				schema: { type: "boolean" },
+				hidden: { properties: { checkout: { properties: { create_account: { const: true } } } } },
+			}),
+		)
+		sources.checkout.additionalFields = { ...sources.checkout.additionalFields, "plugin/consent": false }
+		render(createElement(Component), { wrapper })
+		const consent = await screen.findByRole<HTMLInputElement>("checkbox", { name: "Consent" })
+		const account = screen.getByLabelText("Create account")
+		fireEvent.change(screen.getByLabelText("Quantity"), { target: { value: "2" } })
+		fireEvent.click(account)
+		await waitFor(() => expect(consent.closest("label")?.hidden).toBe(true))
+		expect(screen.queryByRole("checkbox", { name: "Consent" })).toBeNull()
+		expect(document.querySelector('input[name="additionalFields.plugin%2Fconsent"]')).toBe(consent)
+		expect(consent.checked).toBe(false)
+		const form = consent.closest("form")
+		if (!form) throw new Error("Missing form")
+		fireEvent.submit(form)
+		await waitFor(() => expect(consent.getAttribute("aria-invalid")).toBe("true"))
+		expect(procedures.checkout.confirm.call).not.toHaveBeenCalled()
+		fireEvent.click(account)
+		await waitFor(() => expect(consent.closest("label")?.hidden).toBe(false))
+		expect(screen.getByRole("checkbox", { name: /^Consent\b/ })).toBe(consent)
+		expect(consent.checked).toBe(false)
+		fireEvent.click(consent)
+		fireEvent.click(account)
+		await waitFor(() => expect(consent.closest("label")?.hidden).toBe(true))
+		expect(consent.checked).toBe(true)
+		fireEvent.submit(form)
+		await waitFor(() => expect(procedures.checkout.confirm.call).toHaveBeenCalledTimes(1))
+		expect(procedures.checkout.confirm.call.mock.calls[0]?.[0].body.additionalFields["plugin/consent"]).toBe(true)
+	})
 	it.each([false, true])(
 		"TanStack preserves state metadata (already dirty: %s) and suppresses dependency listeners/validation",
 		async (dirty) => {
@@ -99,7 +286,7 @@ describe("real form libraries", () => {
 						},
 					})
 					const form = useTanStackForm({
-						defaultValues: checkoutFormInput(sources.values),
+						defaultValues: { ...checkoutFormInput(sources.values), useShippingAsBilling: false },
 						listeners: {
 							onChange: ({ fieldApi }) => {
 								listen(fieldApi.name)
@@ -164,7 +351,7 @@ describe("real form libraries", () => {
 						},
 					})
 					const form = useRHF<CheckoutFormValues>({
-						defaultValues: checkoutFormInput(sources.values),
+						defaultValues: { ...checkoutFormInput(sources.values), useShippingAsBilling: false },
 						resolver: fields.schema
 							? (values, context, options) => {
 									validate(values.billingAddress?.state)
@@ -195,6 +382,7 @@ describe("real form libraries", () => {
 			act(() => {
 				result.current.form.reset({
 					...checkoutFormInput(sources.values),
+					useShippingAsBilling: false,
 					billingAddress: { ...sources.checkout.billingAddress, country: "GB", state: "London" },
 				})
 				result.current.fields.reevaluate()
@@ -214,6 +402,10 @@ describe("real form libraries", () => {
 		fireEvent.change(reference, { target: { value: "NEW" } })
 		const quantity = screen.getByLabelText("Quantity")
 		fireEvent.change(quantity, { target: { value: "12" } })
+		const sharing = screen.getByLabelText<HTMLInputElement>("Use shipping address for billing")
+		expect(sharing.checked).toBe(true)
+		fireEvent.click(sharing)
+		await waitFor(() => expect(document.querySelector('select[name="billingAddress.country"]')).not.toBeNull())
 		const billingCountry = document.querySelector<HTMLSelectElement>('select[name="billingAddress.country"]')
 		if (!billingCountry) throw new Error("Missing billing country")
 		fireEvent.change(billingCountry, { target: { value: "GB" } })
@@ -257,7 +449,7 @@ describe("real form server channels", () => {
 					},
 				})
 				const form = useTanStackForm({
-					defaultValues: checkoutFormInput(sources.values),
+					defaultValues: { ...checkoutFormInput(sources.values), useShippingAsBilling: false },
 					listeners: { onChange: ({ fieldApi }) => fields.handleFieldChange(fieldApi.name, fieldApi.state.value) },
 				})
 				const state = useField({ form, name: "billingAddress.state", validators: { onChange: validate } })
@@ -301,7 +493,7 @@ describe("real form server channels", () => {
 				const checkout = useCheckout()
 				const [server] = useState(() => reactHookFormServerErrors(() => form))
 				const fields = useCheckoutFields({ getValues: () => form.getValues(), ...server })
-				const form = useRHF<CheckoutFormValues>({ defaultValues: checkoutFormInput(sources.values) })
+				const form = useRHF<CheckoutFormValues>({ defaultValues: { ...checkoutFormInput(sources.values), useShippingAsBilling: false } })
 				const state = useController({ control: form.control, name: "billingAddress.state" })
 				return { fields, form, checkout, state }
 			},
@@ -407,7 +599,7 @@ describe("real form server channels", () => {
 		render(createElement(Component), { wrapper })
 		await screen.findByLabelText("Reference")
 		fireEvent.change(screen.getByLabelText("Quantity"), { target: { value: "2" } })
-		fireEvent.click(screen.getByLabelText("Use shipping address for billing"))
+		expect(screen.getByLabelText<HTMLInputElement>("Use shipping address for billing").checked).toBe(true)
 		fireEvent.click(screen.getByRole("button", { name: "Place order" }))
 		await screen.findByText("copied refusal")
 		const control = document.querySelector<HTMLSelectElement>('select[name="shippingAddress.state"]')
@@ -488,7 +680,7 @@ it("React Hook Form retains the latest resolver client error when the server cha
 			const [server] = useState<ReturnType<typeof reactHookFormServerErrors>>(() => reactHookFormServerErrors(() => form))
 			const fields = useCheckoutFields({ getValues: () => form.getValues(), ...server })
 			const form: UseFormReturn<CheckoutFormValues> = useRHF<CheckoutFormValues>({
-				defaultValues: checkoutFormInput(sources.values),
+				defaultValues: { ...checkoutFormInput(sources.values), useShippingAsBilling: false },
 				resolver: fields.schema ? server.withResolver(standardSchemaResolver(fields.schema)) : undefined,
 			})
 			const control = useController({ control: form.control, name: safeName })
@@ -531,7 +723,7 @@ it("React Hook Form cannot resurrect server messages when reset occurs during re
 			const [server] = useState<ReturnType<typeof reactHookFormServerErrors>>(() => reactHookFormServerErrors(() => form))
 			const fields = useCheckoutFields({ getValues: () => form.getValues(), ...server })
 			const form: UseFormReturn<CheckoutFormValues> = useRHF<CheckoutFormValues>({
-				defaultValues: checkoutFormInput(sources.values),
+				defaultValues: { ...checkoutFormInput(sources.values), useShippingAsBilling: false },
 				resolver: server.withResolver(async (values) => {
 					validating()
 					await validation

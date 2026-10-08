@@ -4,8 +4,9 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { act, renderHook, waitFor } from "@testing-library/react"
 import { createElement, type ReactNode } from "react"
 import { afterEach, describe, expect, expectTypeOf, it, vi } from "vitest"
-import { cartQueryKey } from "../cart"
-import type { Cart, CartAddressSnapshotInput, CartError, UpdateCartInput } from "../types"
+import { cartQueryKey, defaultShouldUpdateAddress } from "../cart"
+import { fixtures } from "../test/checkout-fields-fixture"
+import type { Cart, CartAddressSnapshotInput, CartError, Storefront, UpdateCartInput } from "../types"
 import {
 	type CartAddressApi,
 	type CartHookOptions,
@@ -16,15 +17,17 @@ import {
 	useCartShippingRates,
 } from "./cart"
 import { WooCommerceProvider } from "./provider"
+import { storefrontQueryKey } from "./storefront"
 
 /**
  * React Query is deliberately real here: it owns the mutation lifecycle these tests are about. Only the Kizlo client is a stub,
  * and only its `.call` — the one thing the kit asks of a procedure.
  */
-const { procedures } = vi.hoisted(() => {
+const { procedures, storefront } = vi.hoisted(() => {
 	const procedure = () => ({ call: vi.fn() })
 
 	return {
+		storefront: { get: { call: vi.fn(() => new Promise(() => {})) } },
 		procedures: {
 			coupons: { apply: procedure(), remove: procedure() },
 			get: procedure(),
@@ -36,7 +39,7 @@ const { procedures } = vi.hoisted(() => {
 })
 
 vi.mock("kizlo/react", () => ({
-	useKizloContext: () => ({ client: { woocommerce: { cart: procedures } } }),
+	useKizloContext: () => ({ client: { woocommerce: { cart: procedures, storefront } } }),
 }))
 
 /** Only the fields the hooks read. The rest of a cart says nothing about an action's lifecycle. */
@@ -64,10 +67,11 @@ function storeError(code: string) {
 	return Object.assign(new Error("Already in your cart."), { code }) as unknown as CartError
 }
 
-function mount<T>(hook: () => T, cart?: Cart, options?: { cartEnabled?: boolean; mutations?: { retry: number } }) {
+function mount<T>(hook: () => T, cart?: Cart, options?: { cartEnabled?: boolean; mutations?: { retry: number }; storefront?: Storefront }) {
 	const { cartEnabled = false, mutations } = options ?? {}
 	const queryClient = new QueryClient({ defaultOptions: { mutations, queries: { retry: false } } })
 	if (cart) queryClient.setQueryData(cartQueryKey, cart)
+	if (options?.storefront) queryClient.setQueryData(storefrontQueryKey, options.storefront)
 
 	// `cartEnabled: false` by default so the cart query makes no request: every cart these tests read is either seeded or
 	// answered by an action. The one case that needs the fetch itself to fail opts in. JSX is avoided because the suite only
@@ -898,6 +902,150 @@ describe("useCartAddress snapshots", () => {
 		if (input.shippingAddress) input.shippingAddress.city = "Cambridge"
 		await settleAddress()
 		expect(procedures.update.call).toHaveBeenCalledWith({ body: addressSnapshot({ shippingAddress: { city: "Oxford" } }) })
+		unmount()
+	})
+})
+
+describe("useCartAddress checkout policy", () => {
+	function forcedSource() {
+		const source = fixtures([])
+		source.storefront.checkout.forcedBillingAddress = true
+		return source
+	}
+	it("saves a billing-only snapshot as both physical addresses and compares the derived shipping destination", async () => {
+		vi.useFakeTimers()
+		const source = forcedSource()
+		const billingAddress = source.cart.billingAddress
+		const { email: _email, taxId: _taxId, ...shippingAddress } = billingAddress
+		const saved = { ...source.cart, billingAddress, shippingAddress }
+		procedures.update.call.mockResolvedValue(saved)
+		const guard = vi.fn((input: CartAddressSnapshotInput, cart: Cart | null) => defaultShouldUpdateAddress(input, cart))
+		const { result, queryClient, unmount } = mount(() => useCartAddress({ shouldUpdateAddress: guard }), source.cart, {
+			storefront: source.storefront,
+		})
+		const input = Object.freeze({ billingAddress })
+		act(() => result.current.onAddressChange(input))
+		expect(guard.mock.calls[0]?.[0]).toMatchObject({ shippingAddress: { country: "IN", postcode: "560001" } })
+		await settleAddress()
+		expect(procedures.update.call).toHaveBeenCalledWith({ body: { billingAddress, shippingAddress } })
+		expect(queryClient.getQueryData(cartQueryKey)).toEqual(saved)
+		act(() => result.current.onAddressChange(input))
+		await settleAddress()
+		expect(procedures.update.call).toHaveBeenCalledTimes(1)
+		expect(input).toEqual({ billingAddress })
+		unmount()
+	})
+	it("resolves partial billing edits against the acknowledged billing address and overrides stale shipping", async () => {
+		const source = forcedSource()
+		const saved = { ...source.cart, shippingAddress: { ...source.cart.shippingAddress, country: "IN", postcode: "570001" } }
+		procedures.update.call.mockResolvedValue(saved)
+		const { result, queryClient } = mount(() => useCartAddress(), source.cart, { storefront: source.storefront })
+		let acknowledged!: Cart
+		await act(async () => {
+			acknowledged = await result.current.updateAsync({ billingAddress: { postcode: "570001" } })
+		})
+		const body = procedures.update.call.mock.calls[0]?.[0].body
+		expect(body.billingAddress).toEqual({ postcode: "570001" })
+		expect(body.shippingAddress).toMatchObject({ firstName: "Ada", country: "IN", state: "KA", postcode: "570001" })
+		expect(body.shippingAddress).not.toHaveProperty("email")
+		expect(body.shippingAddress).not.toHaveProperty("taxId")
+		expect(acknowledged).toBe(saved)
+		expect(queryClient.getQueryData(cartQueryKey)).toEqual(saved)
+	})
+	it("derives billing for shipping-first patches while honoring explicit separate billing and stripping the control", async () => {
+		const source = fixtures([])
+		source.storefront.checkout.forcedBillingAddress = false
+		procedures.update.call.mockResolvedValue(source.cart)
+		const { result } = mount(() => useCartAddress(), source.cart, { storefront: source.storefront })
+		await act(async () => {
+			await result.current.updateAsync({ shippingAddress: { postcode: "NEW" } })
+		})
+		expect(procedures.update.call.mock.calls[0]?.[0].body).toMatchObject({
+			shippingAddress: { postcode: "NEW" },
+			billingAddress: { country: "GB", state: "", postcode: "NEW", email: "ada@example.com", taxId: "TAX" },
+		})
+		await act(async () => {
+			await result.current.updateAsync({
+				shippingAddress: { postcode: "SHIP" },
+				billingAddress: { postcode: "BILL" },
+				useShippingAsBilling: false,
+			})
+		})
+		expect(procedures.update.call.mock.calls[1]?.[0].body).toEqual({
+			shippingAddress: { postcode: "SHIP" },
+			billingAddress: { postcode: "BILL" },
+		})
+		await act(async () => {
+			await result.current.updateAsync({
+				shippingAddress: { postcode: "SHARED" },
+				billingAddress: { postcode: "STALE" },
+				useShippingAsBilling: true,
+			})
+		})
+		expect(procedures.update.call.mock.calls[2]?.[0].body.billingAddress.postcode).toBe("SHARED")
+		expect(procedures.update.call.mock.calls[2]?.[0].body).not.toHaveProperty("useShippingAsBilling")
+	})
+	it("reprojects a queued snapshot using refreshed settings and acknowledges the normalized request", async () => {
+		vi.useFakeTimers()
+		const source = fixtures([])
+		source.storefront.checkout.forcedBillingAddress = false
+		const saved = { ...source.cart, shippingAddress: { ...source.cart.shippingAddress, country: "IN", postcode: "NEW" } }
+		procedures.update.call.mockResolvedValue(saved)
+		const { result, queryClient, unmount } = mount(() => useCartAddress(), source.cart, { storefront: source.storefront })
+		const input = { billingAddress: { ...source.cart.billingAddress, postcode: "NEW" }, useShippingAsBilling: false }
+		let promise!: Promise<Cart | undefined>
+		act(() => {
+			promise = result.current.onAddressChangeAsync(input)
+		})
+		act(() =>
+			queryClient.setQueryData(storefrontQueryKey, {
+				...source.storefront,
+				checkout: { ...source.storefront.checkout, forcedBillingAddress: true },
+			}),
+		)
+		await settleAddress()
+		expect(await promise).toBe(saved)
+		expect(procedures.update.call.mock.calls[0]?.[0].body.shippingAddress).toMatchObject({ country: "IN", postcode: "NEW" })
+		unmount()
+	})
+	it("derives a queued address from the latest acknowledgement after an in-flight save", async () => {
+		vi.useFakeTimers()
+		const source = forcedSource()
+		let acknowledge!: (cart: Cart) => void
+		const request = new Promise<Cart>((resolve) => {
+			acknowledge = resolve
+		})
+		const first = {
+			...source.cart,
+			billingAddress: { ...source.cart.billingAddress, firstName: "Acknowledged", postcode: "570001" },
+			shippingAddress: { ...source.cart.shippingAddress, country: "IN", postcode: "570001" },
+		}
+		const second = { ...first, shippingAddress: { ...first.shippingAddress, firstName: "Acknowledged", postcode: "580001" } }
+		procedures.update.call.mockReturnValueOnce(request).mockResolvedValueOnce(second)
+		const { result, unmount } = mount(() => useCartAddress(), source.cart, { storefront: source.storefront })
+		let pending!: Promise<Cart>, queued!: Promise<Cart | undefined>
+		act(() => {
+			pending = result.current.updateAsync({ billingAddress: { postcode: "570001" } })
+		})
+		await act(async () => {})
+		act(() => {
+			queued = result.current.onAddressChangeAsync({
+				billingAddress: { country: "IN", state: "KA", city: "Bengaluru", postcode: "580001" },
+			})
+		})
+		await settleAddress()
+		expect(procedures.update.call).toHaveBeenCalledTimes(1)
+		await act(async () => {
+			acknowledge(first)
+			await pending
+		})
+		await settleAddress()
+		expect(await queued).toBe(second)
+		expect(procedures.update.call.mock.calls[1]?.[0].body.shippingAddress).toMatchObject({
+			firstName: "Acknowledged",
+			country: "IN",
+			postcode: "580001",
+		})
 		unmount()
 	})
 })

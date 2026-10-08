@@ -49,6 +49,7 @@ export function ReactHookFormCheckout() {
 	if (!fields.schema) return <p>{fields.error?.message ?? "Loading checkout…"}</p>
 	return (
 		<form
+			noValidate
 			onSubmit={(event) => {
 				event.preventDefault()
 				if (fields.isRepricing || checkout.isPending || fields.unsupported.length) return
@@ -70,30 +71,28 @@ export function ReactHookFormCheckout() {
 							{issue.message}
 						</p>
 					))}
-					{fields[group].fields
-						.filter((definition) => !definition.hidden)
-						.map((definition) => (
-							<Controller
-								key={definition.name}
-								name={definition.name}
-								control={form.control}
-								render={({ field, fieldState }) => (
-									<CheckoutFieldControl
-										definition={definition}
-										binding={{
-											value: field.value,
-											onValueChange: (value) => {
-												field.onChange(value)
-												fields.handleFieldChange(definition.name, value)
-											},
-											onBlur: field.onBlur,
-											invalid: fieldState.invalid,
-										}}
-										error={reactHookFormErrorMessages(fieldState.error)}
-									/>
-								)}
-							/>
-						))}
+					{fields[group].fields.map((definition) => (
+						<Controller
+							key={definition.name}
+							name={definition.name}
+							control={form.control}
+							render={({ field, fieldState }) => (
+								<CheckoutFieldControl
+									definition={definition}
+									binding={{
+										value: field.value,
+										onValueChange: (value) => {
+											field.onChange(value)
+											fields.handleFieldChange(definition.name, value)
+										},
+										onBlur: field.onBlur,
+										invalid: fieldState.invalid,
+									}}
+									error={reactHookFormErrorMessages(fieldState.error)}
+								/>
+							)}
+						/>
+					))}
 				</fieldset>
 			))}
 			<label>
@@ -153,6 +152,11 @@ export function ReactHookFormCheckout() {
 						/>
 						Use shipping address for billing
 					</label>
+					{form.watch("useShippingAsBilling") === false ? (
+						<button type="button" onClick={() => fields.copyShippingToBilling()}>
+							Copy shipping address to billing
+						</button>
+					) : null}
 					{form.formState.errors.useShippingAsBilling ? (
 						<p id="useShippingAsBilling-error" role="alert">
 							{reactHookFormErrorMessages(form.formState.errors.useShippingAsBilling)}

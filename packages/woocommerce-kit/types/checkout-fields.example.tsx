@@ -85,6 +85,7 @@ export function TanStackCheckoutForm() {
 	if (!fields.schema) return <p>{fields.error?.message ?? "Loading checkout…"}</p>
 	return (
 		<form
+			noValidate
 			onSubmit={(event) => {
 				event.preventDefault()
 				if (!fields.isRepricing && !checkout.isPending && !fields.unsupported.length) {
@@ -101,24 +102,22 @@ export function TanStackCheckoutForm() {
 							{issue.message}
 						</p>
 					))}
-					{fields[group].fields
-						.filter((definition) => !definition.hidden)
-						.map((definition) => (
-							<form.Field key={definition.name} name={definition.name}>
-								{(field) => (
-									<CheckoutFieldControl
-										definition={definition}
-										binding={{
-											value: field.state.value,
-											onValueChange: field.handleChange,
-											onBlur: field.handleBlur,
-											invalid: field.state.meta.errors.length > 0,
-										}}
-										error={field.state.meta.errors.map((error) => (typeof error === "string" ? error : error?.message)).join(", ")}
-									/>
-								)}
-							</form.Field>
-						))}
+					{fields[group].fields.map((definition) => (
+						<form.Field key={definition.name} name={definition.name}>
+							{(field) => (
+								<CheckoutFieldControl
+									definition={definition}
+									binding={{
+										value: field.state.value,
+										onValueChange: field.handleChange,
+										onBlur: field.handleBlur,
+										invalid: field.state.meta.errors.length > 0,
+									}}
+									error={field.state.meta.errors.map((error) => (typeof error === "string" ? error : error?.message)).join(", ")}
+								/>
+							)}
+						</form.Field>
+					))}
 				</fieldset>
 			))}
 			<form.Field name="paymentMethod">
@@ -196,12 +195,17 @@ export function TanStackCheckoutForm() {
 									type="checkbox"
 									aria-invalid={field.state.meta.errors.length > 0}
 									aria-describedby={field.state.meta.errors.length ? "useShippingAsBilling-error" : undefined}
-									checked={field.state.value ?? false}
+									checked={field.state.value ?? true}
 									onChange={(event) => field.handleChange(event.currentTarget.checked)}
 									onBlur={field.handleBlur}
 								/>
 								Use shipping address for billing
 							</label>
+							{field.state.value === false ? (
+								<button type="button" onClick={() => fields.copyShippingToBilling()}>
+									Copy shipping address to billing
+								</button>
+							) : null}
 							{field.state.meta.errors.length ? (
 								<p id="useShippingAsBilling-error" role="alert">
 									{field.state.meta.errors.map((error) => (typeof error === "string" ? error : error?.message)).join(", ")}
