@@ -15,35 +15,24 @@
  * Renders nothing. Every class name, icon, label and route stays in the consumer.
  */
 
-import { useMutation } from "@tanstack/react-query"
-import type { ActiveKizloClient } from "kizlo"
-import { useKizloContext } from "kizlo/react"
 import { type ChangeEvent, type FocusEvent, type KeyboardEvent, useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 import { useDebouncedCallback } from "use-debounce"
 import {
-	type CartActionPayload,
 	type CartCallbacks,
 	type CartItemLimits,
 	cartItemLimits,
-	cartQueryKey,
-	defaultShouldUpdateAddress,
 	draftQuantityLimits,
 	hasSelectedShippingRates,
-	normalizeCartAddress,
 	resolveQuantity,
-	shippingQuoteSignature,
 	stepQuantity,
 } from "../cart"
 import { CheckoutLockedError } from "../checkout-locks"
-import { formatStoreMoney } from "../money"
 import { quantityQueueKey } from "../session-keys"
-import type { AddCartItemInput, Cart, CartAddressInput, CartAddressSnapshotInput, CartError, Storefront } from "../types"
-import type { CheckoutRequest } from "./checkout-lock-cache"
-import { useCheckoutLockStore, useCheckoutReadiness } from "./checkout-lock-store"
-import { useWooCommerceContext } from "./context"
-import { notify } from "./notify"
-import { addressMutationKey, addressQueueKey, cartMutationKey, useCartActivity, useCartQuery } from "./session-queries"
-import { storefrontQueryKey, useStorefront } from "./storefront"
+import type { AddCartItemInput, Cart, CartAddressInput, CartAddressSnapshotInput, CartError } from "../types"
+import { useCartAction, useCartData } from "./cart-action"
+import { useCartAddressTransport } from "./cart-address"
+import { useCheckoutLockStore } from "./checkout-lock-store"
+import { cartMutationKey } from "./session-queries"
 
 /**
  * The core's cart types, re-exported so a component reads its hook and the types it returns from one specifier. Type-only, so
@@ -59,8 +48,6 @@ export type {
 	CartSuccessEvent,
 } from "../cart"
 export type { CartAddressInput, CartAddressSnapshotInput, CartError } from "../types"
-
-type CartProcedures = ActiveKizloClient["woocommerce"]["cart"]
 
 export type CartHookOptions = CartCallbacks
 
@@ -84,179 +71,8 @@ function useLatest<T>(value: T) {
 	return ref
 }
 
-/**
- * The one request each action is. The payload the callbacks already report is the mutation's own variables, so an action is a
- * `type` and its fields rather than a request paired with a payload.
- */
-function cartRequest(procedures: CartProcedures, variables: CartActionPayload): Promise<Cart> {
-	switch (variables.type) {
-		case "add_to_cart":
-			return procedures.items.add.call({ body: variables.input })
-		case "update_cart_item":
-			return procedures.items.update.call({ body: { quantity: variables.quantity }, params: { key: variables.key } })
-		case "remove_from_cart":
-			return procedures.items.remove.call({ params: { key: variables.key } })
-		case "apply_coupon":
-			return procedures.coupons.apply.call({ body: { code: variables.code } })
-		case "remove_coupon":
-			return procedures.coupons.remove.call({ params: { code: variables.code } })
-		case "update_customer":
-			return procedures.update.call({ body: variables.input })
-		case "select_shipping_rate":
-			return procedures.selectShippingRate.call({ body: { packageId: variables.packageId, rateId: variables.rateId } })
-	}
-}
-
 /** Legacy quantity saves report failures on the hook instead of rejecting. */
 const noop = () => {}
-
-/**
- * The cart itself: the shared query every hook reads, this cart's money format, and the cart-wide pending flag. It registers no
- * mutation, so a read-only consumer subscribes to nothing it will never use.
- */
-function useCartData() {
-	const { locale, queryClient } = useWooCommerceContext()
-	const cartQuery = useCartQuery()
-	const { isMutating, isRepricing } = useCartActivity()
-
-	const cart = cartQuery.data ?? null
-	const format = useCallback((amount: number) => (cart ? formatStoreMoney(amount, cart.currencyFormat, locale) : ""), [cart, locale])
-
-	const refresh = useCallback(async () => {
-		await queryClient.refetchQueries({ queryKey: cartQueryKey })
-	}, [queryClient])
-
-	return { cart, format, isLoading: cartQuery.isPending, isMutating, isRepricing, queryError: cartQuery.error, refresh }
-}
-
-/**
- * One keyed action observer. Item/coupon errors stay local; address/shipping failures are shared per feature.
- * The cache controller owns checkout readiness across observers, while React Query runs the callback phases.
- *
- * Composes {@link useCartData} rather than sitting beside it, so a hook that only acts is still subscribed to the shared cart
- * query: an address form on a page of its own is what fetches the cart for it.
- */
-function useCartAction(scope: readonly string[], options: CartHookOptions | undefined, sharedError = false) {
-	const { client } = useKizloContext()
-	const data = useCartData()
-	const binding = useCheckoutLockStore()
-	useCheckoutReadiness(binding)
-	const feature = binding.feature(scope)
-	const [dismissed, setDismissed] = useState<number | null>(null)
-	const [admissionError, setAdmissionError] = useState<CheckoutLockedError | null>(null)
-
-	// Each hook owns one mutation, keyed to its scope: the caller already memoised `scope`, so the key is stable. The options
-	// below are read from the last committed render, which is what a callback ref used to buy.
-	const mutation = useMutation<Cart, CartError, CheckoutRequest<CartActionPayload>>({
-		mutationFn: (operation) => {
-			binding.sync()
-			binding.assertCurrent(operation.token)
-			return cartRequest(client.woocommerce.cart, operation.payload)
-		},
-		mutationKey: scope,
-		// Pinned rather than inherited: query-core's own default is `this.options.retry ?? 0`, and `this.options` carries the app's
-		// `defaultOptions.mutations`. A cart write is not idempotent, so a retry is a second line rather than a second attempt.
-		retry: 0,
-		onMutate: ({ payload: variables }) => {
-			notify(() => options?.onStart?.({ ...variables, status: "start" }))
-		},
-		onSuccess: (cart, operation) => {
-			binding.sync()
-			const variables = operation.payload
-			binding.publishCart(operation.token, cart)
-			notify(() => options?.onSuccess?.({ ...variables, cart, status: "success" }))
-		},
-		onError: (error, operation) => {
-			const variables = operation.payload
-			notify(() => options?.onError?.({ ...variables, error, status: "error" }))
-		},
-		// A narrowing rather than a branch: query-core passes `(cart, null, …)` on success and `(undefined, error, …)` on
-		// failure, never neither, so this avoids asserting `cart` is there.
-		onSettled: (cart, error, operation) => {
-			const variables = operation.payload
-			if (error) notify(() => options?.onSettled?.({ ...variables, error, status: "error" }))
-			else if (cart) notify(() => options?.onSettled?.({ ...variables, cart, status: "success" }))
-		},
-	})
-
-	// Read from the mutation cache rather than from local state: two components showing the same line both see it saving.
-	const isPending = binding.pending(scope)
-
-	const { reset } = mutation
-	const rejectAdmission = useCallback(
-		(error: CheckoutLockedError, variables: CartActionPayload) => {
-			setAdmissionError(error)
-			notify(() => options?.onError?.({ ...variables, error, status: "error" }))
-			notify(() => options?.onSettled?.({ ...variables, error, status: "error" }))
-		},
-		[options],
-	)
-	const begin = useCallback(
-		(variables: CartActionPayload) => {
-			binding.sync()
-			setAdmissionError(null)
-			return binding.admit(variables)
-		},
-		[binding],
-	)
-	const mutate = useCallback(
-		(variables: CartActionPayload) => {
-			try {
-				binding.dispatch(scope, () => mutation.mutate(begin(variables)))
-			} catch (error) {
-				if (!(error instanceof CheckoutLockedError)) throw error
-				rejectAdmission(error, variables)
-			}
-		},
-		[begin, binding, scope, mutation.mutate, rejectAdmission],
-	)
-	const mutateAsync = useCallback(
-		async (variables: CartActionPayload) => {
-			let request: Promise<Cart>
-			try {
-				request = binding.dispatch(scope, () => mutation.mutateAsync(begin(variables)))
-			} catch (error) {
-				if (error instanceof CheckoutLockedError) rejectAdmission(error, variables)
-				throw error
-			}
-			return request
-		},
-		[begin, binding, scope, mutation.mutateAsync, rejectAdmission],
-	)
-
-	// `reset` detaches the observer from the mutation it is watching, so resetting an action that is still in flight would leave
-	// the refusal it is about to report with nowhere to land. A settled failure is the only one cleared.
-	const clearSettled = useCallback(() => {
-		if (!isPending) {
-			setAdmissionError(null)
-			const failure = binding.readiness.failure(feature)
-			if (sharedError) setDismissed(failure?.sequence ?? null)
-			else if (failure && binding.failureMatches(feature, mutation.variables)) binding.readiness.dismiss(feature, failure.identity)
-			binding.sync()
-			reset()
-		}
-	}, [binding, feature, isPending, mutation.variables, sharedError, reset])
-
-	return {
-		...data,
-		error:
-			admissionError ??
-			(sharedError
-				? binding.readiness.failure(feature)?.sequence === dismissed
-					? null
-					: ((binding.readiness.failure(feature)?.error as CartError) ?? null)
-				: mutation.error),
-		isPending,
-		mutate,
-		mutateAsync,
-		reset: clearSettled,
-		cancelFailures: useCallback(() => {
-			binding.readiness.dismiss(feature)
-			binding.sync()
-		}, [binding, feature]),
-		rejectAdmission,
-	}
-}
 
 export type CartApi = {
 	/** The store's payload, so totals, addresses and shipping are read from it directly rather than mirrored here. */
@@ -343,25 +159,14 @@ export type CartAddressApi = {
 	onAddressChange: (input: CartAddressSnapshotInput) => void
 	/** Awaits the latest coalesced snapshot; skipped or cancelled queued edits resolve undefined. */
 	onAddressChangeAsync: (input: CartAddressSnapshotInput) => Promise<Cart | undefined>
+	/** Flush queued edits immediately; an in-flight save retains the queue. */
+	flush: () => void
 	/** Dismisses the displayed settled error. Use cancel() to abandon the failed draft. */
 	reset: () => void
 	/** Saves the customer's addresses. The email is a field inside `billingAddress` rather than a sibling of it. */
 	update: (input: CartAddressInput) => void
 	/** Saves the same address patch and returns the acknowledged cart; rejects on failure. */
 	updateAsync: (input: CartAddressInput) => Promise<Cart>
-}
-
-function matchesSavedAddresses(input: CartAddressSnapshotInput, cart: Cart | null): boolean {
-	if (!cart || (!input.shippingAddress && !input.billingAddress)) return false
-	return (["shippingAddress", "billingAddress"] as const).every((key) => {
-		const address = input[key]
-		if (!address) return true
-		const saved = cart[key]
-		if (!address.country.trim() || !saved || shippingQuoteSignature(address) !== shippingQuoteSignature(saved)) return false
-		return Object.entries(address).every(
-			([field, value]) => ["country", "state", "city", "postcode"].includes(field) || value === saved[field as keyof typeof saved],
-		)
-	})
 }
 
 /**
@@ -412,150 +217,7 @@ function matchesSavedAddresses(input: CartAddressSnapshotInput, cart: Cart | nul
  * ```
  */
 export function useCartAddress(options?: CartAddressHookOptions): CartAddressApi {
-	useStorefront()
-	const scope = useMemo(() => addressMutationKey, [])
-	const { error, isPending, mutate, mutateAsync, reset, cancelFailures, rejectAdmission } = useCartAction(scope, options, true)
-	const { queryClient } = useWooCommerceContext()
-	const binding = useCheckoutLockStore()
-	const { store } = binding
-	const queuedGeneration = useRef<number | null>(null)
-	const owner = useId()
-	const latest = useRef<CartAddressSnapshotInput | null>(null)
-	const waiters = useRef<{ resolve: (cart: Cart | undefined) => void; reject: (error: unknown) => void }[]>([])
-	const { addressDebounceMs = 1500, shouldUpdateAddress = defaultShouldUpdateAddress } = options ?? {}
-
-	const markQueued = useCallback(
-		(queued: boolean) => {
-			if (!queued) queuedGeneration.current = null
-			binding.queue(addressQueueKey, owner, queued)
-			if (queued) queuedGeneration.current = store.generation
-		},
-		[binding, owner, store],
-	)
-
-	useEffect(
-		() => () => {
-			latest.current = null
-			for (const waiter of waiters.current.splice(0)) waiter.resolve(undefined)
-			markQueued(false)
-		},
-		[markQueued],
-	)
-
-	const normalize = useCallback(
-		(input: CartAddressInput) =>
-			normalizeCartAddress(
-				input,
-				queryClient.getQueryData<Cart>(cartQueryKey) ?? null,
-				queryClient.getQueryData<Storefront>(storefrontQueryKey) ?? null,
-			),
-		[queryClient],
-	)
-	const update = useCallback((input: CartAddressInput) => mutate({ input: normalize(input), type: "update_customer" }), [mutate, normalize])
-	const updateAsync = useCallback(
-		(input: CartAddressInput) => mutateAsync({ input: normalize(input), type: "update_customer" }),
-		[mutateAsync, normalize],
-	)
-
-	const clearSavedFailure = useCallback(
-		(input: CartAddressSnapshotInput, cart: Cart | null) => {
-			if (matchesSavedAddresses(input, cart)) {
-				cancelFailures()
-				reset()
-			}
-		},
-		[cancelFailures, reset],
-	)
-
-	const push = useDebouncedCallback(() => {
-		const snapshot = latest.current
-		if (!snapshot) return
-		// Compare only after the store has answered: a revert can match the old cache while the in-flight save will change it.
-		if (binding.pending(scope)) {
-			push()
-			return
-		}
-		latest.current = null
-		const cart = queryClient.getQueryData<Cart>(cartQueryKey) ?? null
-		const input = normalize(snapshot) as CartAddressSnapshotInput
-		// Detach this batch before dispatch so edits during the request belong to the next batch.
-		const batch = waiters.current.splice(0)
-		if (shouldUpdateAddress(input, cart)) {
-			if (batch.length === 0) update(snapshot)
-			else
-				void updateAsync(snapshot).then(
-					(saved) => {
-						for (const waiter of batch) waiter.resolve(saved)
-					},
-					(error) => {
-						for (const waiter of batch) waiter.reject(error)
-					},
-				)
-		} else {
-			clearSavedFailure(input, cart)
-			for (const waiter of batch) waiter.resolve(undefined)
-		}
-		markQueued(false)
-	}, addressDebounceMs)
-
-	const onAddressChange = useCallback(
-		(input: CartAddressSnapshotInput) => {
-			// The form may mutate its values in place; the queued snapshot must describe this particular edit.
-			latest.current = {
-				...input,
-				...(input.shippingAddress && { shippingAddress: { ...input.shippingAddress } }),
-				...(input.billingAddress && { billingAddress: { ...input.billingAddress } }),
-			}
-			const cart = queryClient.getQueryData<Cart>(cartQueryKey) ?? null
-			const projected = normalize(latest.current) as CartAddressSnapshotInput
-			if (!binding.pending(scope) && !shouldUpdateAddress(projected, cart)) {
-				clearSavedFailure(projected, cart)
-				latest.current = null
-				push.cancel()
-				for (const waiter of waiters.current.splice(0)) waiter.resolve(undefined)
-				markQueued(false)
-				return
-			}
-			try {
-				markQueued(true)
-			} catch (error) {
-				if (!(error instanceof CheckoutLockedError)) throw error
-				rejectAdmission(error, { input: projected, type: "update_customer" })
-				latest.current = null
-				for (const waiter of waiters.current.splice(0)) waiter.reject(error)
-				return
-			}
-			push()
-		},
-		[clearSavedFailure, markQueued, normalize, push, queryClient, scope, shouldUpdateAddress, rejectAdmission, binding],
-	)
-
-	const onAddressChangeAsync = useCallback(
-		(input: CartAddressSnapshotInput): Promise<Cart | undefined> =>
-			new Promise((resolve, reject) => {
-				waiters.current.push({ resolve, reject })
-				onAddressChange(input)
-			}),
-		[onAddressChange],
-	)
-
-	const cancel = useCallback(() => {
-		latest.current = null
-		push.cancel()
-		for (const waiter of waiters.current.splice(0)) waiter.resolve(undefined)
-		markQueued(false)
-		cancelFailures()
-		reset()
-	}, [cancelFailures, markQueued, push, reset])
-	useEffect(
-		() =>
-			store.state.listen(() => {
-				if (queuedGeneration.current !== null && queuedGeneration.current !== store.generation) cancel()
-			}),
-		[cancel, store],
-	)
-
-	return { cancel, error, isPending, onAddressChange, onAddressChangeAsync, reset, update, updateAsync }
+	return useCartAddressTransport(options)
 }
 
 export type CartShippingRatesApi = {

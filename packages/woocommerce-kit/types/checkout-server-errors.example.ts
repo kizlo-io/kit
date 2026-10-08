@@ -1,5 +1,14 @@
 import type { CheckoutFormFieldName, CheckoutFormValues, CheckoutServerErrorCallbacks } from "@kizlo/woocommerce-kit/react/checkout-fields"
+import type { AnyFormApi } from "@tanstack/react-form"
 import { type FieldError, get, type Resolver, set, type UseFormReturn } from "react-hook-form"
+
+export function tanStackValidateField(form: AnyFormApi, name: CheckoutFormFieldName): Promise<boolean> {
+	const touched = form.getFieldMeta(name)?.isTouched ?? false
+	const result = form.validateField(name, "change")
+	// validateField touches synchronously. Restore now so async completion cannot erase a later blur.
+	if (!touched) form.setFieldMeta(name, (meta) => ({ ...meta, isTouched: false }))
+	return Promise.resolve(result).then((errors) => errors.length === 0)
+}
 
 function withServerMessages(client: FieldError | undefined, messages: readonly string[]): FieldError {
 	return {

@@ -11,6 +11,7 @@ import {
 import { useForm } from "@tanstack/react-form"
 import { useEffect, useLayoutEffect, useRef, useState } from "react"
 import { CheckoutFieldControl } from "./checkout-field-control.example"
+import { tanStackValidateField } from "./checkout-server-errors.example"
 
 const emptyValues: CheckoutFormValues = {}
 
@@ -30,6 +31,7 @@ export function TanStackCheckoutForm({ onSubmit }: { onSubmit: (values: Checkout
 
 	const fields: CheckoutFieldsApi = useCheckoutFields({
 		getValues: (): CheckoutFormValues => form.state.values,
+		validateField: (name) => tanStackValidateField(form, name),
 		...(initialized ? serverErrors : { setErrors: undefined, clearErrors: undefined }),
 		setValues: (updates) => {
 			const metadata = updates.map(({ name }) => form.getFieldMeta(name))
@@ -59,7 +61,7 @@ export function TanStackCheckoutForm({ onSubmit }: { onSubmit: (values: Checkout
 	const form = useForm({
 		// Keep the form library's reset defaults when hook metadata causes a render.
 		defaultValues: formRef.current?.options.defaultValues ?? fields.defaultValues ?? emptyValues,
-		validators: { onSubmit: fields.schema ?? undefined },
+		validators: { onChange: fields.schema ?? undefined, onSubmit: fields.schema ?? undefined },
 		listeners: { onChange: ({ fieldApi }) => fields.handleFieldChange(fieldApi.name, fieldApi.state.value) },
 		onSubmit: async ({ value }) => {
 			await onSubmit(fields.decode(value))
@@ -103,10 +105,17 @@ export function TanStackCheckoutForm({ onSubmit }: { onSubmit: (values: Checkout
 									binding={{
 										value: field.state.value,
 										onValueChange: field.handleChange,
-										onBlur: field.handleBlur,
+										onBlur: () => {
+											field.handleBlur()
+											fields.handleFieldBlur(definition.name)
+										},
 										invalid: field.state.meta.errors.length > 0,
 									}}
-									error={field.state.meta.errors.map((error) => (typeof error === "string" ? error : error?.message)).join(", ")}
+									error={
+										field.state.meta.isBlurred || form.state.submissionAttempts > 0 || field.state.meta.errorMap.onServer
+											? field.state.meta.errors.map((error) => (typeof error === "string" ? error : error?.message)).join(", ")
+											: undefined
+									}
 								/>
 							)}
 						</form.Field>

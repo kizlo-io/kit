@@ -211,7 +211,7 @@ that caps its own quantity is `useCartItem({ limits: { maximum: 5 } })` with no 
 | Hook | Returns |
 | --- | --- |
 | `useCart()` | `{ cart, items, itemCount, format, isLoading, isMutating, isRepricing, error, refresh }`. The cart as a whole and read-only: `cart` is the store's payload, so totals, coupons and addresses are read from it directly. It performs no action, so it takes no callbacks, and `error` is the fetch failing. |
-| `useCartAddress(options?)` | `{ update, updateAsync, onAddressChange, onAddressChangeAsync, cancel, isPending, error, reset }`. The customer's addresses. `update` takes whatever changed — a postcode alone is a valid save, and what makes the store re-quote shipping. The email is a field inside `billingAddress`. |
+| `useCartAddress(options?)` | `{ update, updateAsync, onAddressChange, onAddressChangeAsync, flush, cancel, isPending, error, reset }`. The customer's addresses. `update` takes whatever changed — a postcode alone is a valid save, and what makes the store re-quote shipping. The email is a field inside `billingAddress`. |
 | `useCartShippingRates(options?)` | `{ shippingPackages, selectShippingRate, selectShippingRateAsync, hasSelectedShippingRates, cancel, isPending, error, reset }`. The packages the store quoted and the choice of rate. `hasSelectedShippingRates` is the question `cart.hasCalculatedShipping` does not answer: whether a rate is in effect for every package, not whether one was costed. The store's own default rate counts, so it is not proof the shopper chose anything. |
 | `useCartItem(key?, options?)` | `{ addItem, item, quantity, isPending, error, format, remove, reset }`. Everything item-shaped, `quantity` included as a whole control. The key is optional: without one the control is a draft and `addItem` sends it; with one it edits that line, and `item` is `null` once the key leaves the cart. |
 | `useCartCoupon(code?, options?)` | `{ coupons, isPending, error, apply, remove, reset }`. The code is optional, the same way a line's key is: without one the hook is the apply field, with one it is that chip alone, and `remove()` takes no argument because the hook already knows its code. `coupons` is the whole list either way. |
@@ -252,7 +252,7 @@ delivery, and a request failure rejects with the original SDK error. Callback si
 Item removal without a current line and coupon removal without a bound code resolve `undefined` and emit no action callbacks.
 Both add handlers fill an omitted quantity from the keyless draft; an explicit quantity wins.
 
-`onAddressChangeAsync` takes the same complete snapshot and uses the same validation, debounce and latest-snapshot queue as
+`onAddressChangeAsync` takes the same complete snapshot and uses the same eligibility callback, debounce and latest-snapshot queue as
 `onAddressChange`. Calls coalesced before dispatch all await the final snapshot's result, which may differ from their own
 input. A skipped snapshot, a revert that cancels a queued edit, or unmount before dispatch resolves `undefined` without action
 callbacks. After dispatch the request settles normally even after unmount; edits during that request form a separate batch.
@@ -335,8 +335,11 @@ const { onAddressChange } = useCartAddress({
 ```
 
 A false predicate cancels queued work once any current address request has settled. Unmounting cancels that hook's queued
-snapshot; an already dispatched request can still finish. The core exports `shippingQuoteSignature` and
-`defaultShouldUpdateAddress` for comparisons outside React.
+snapshot; an already dispatched request can still finish. The core exports `shippingQuoteSignature` for comparisons outside React.
+
+**Migration:** `defaultShouldUpdateAddress` is no longer exported. Remove its import and omit `shouldUpdateAddress` (or leave
+it `undefined`) to use the built-in policy. A custom callback owns the entire replacement policy, including pricing relevance
+and any form validation it needs; the hook does not combine it with the default check.
 
 `useCart().isRepricing` is shared across components and covers queued snapshots and actual address requests. Use it to
 show “Updating…” beside totals while leaving fields editable. `isMutating` and the address hook's `isPending` describe
@@ -755,7 +758,7 @@ fetches `storefront.get` once and shares it; the derivations are plain functions
 
 ```tsx
 "use client"
-import { isAddressComplete, resolveAddressCountry, shippingCountries } from "@kizlo/woocommerce-kit"
+import { resolveAddressCountry, shippingCountries } from "@kizlo/woocommerce-kit"
 import { useStorefront } from "@kizlo/woocommerce-kit/react/storefront"
 
 export function ShippingAddress({ address }: { address: { country: string; state: string; postcode: string; city: string } }) {
@@ -764,9 +767,8 @@ export function ShippingAddress({ address }: { address: { country: string; state
 
 	const countries = shippingCountries(storefront.address)
 	const { fields, states, stateLabel } = resolveAddressCountry(storefront.address, address.country)
-	const isComplete = isAddressComplete(storefront.address, address)
 
-	return <AddressFields isComplete={isComplete} countries={countries} fields={fields} stateLabel={stateLabel} states={states} />
+	return <AddressFields countries={countries} fields={fields} stateLabel={stateLabel} states={states} />
 }
 ```
 
@@ -775,17 +777,16 @@ export function ShippingAddress({ address }: { address: { country: string; state
 | `billingCountries(address)` / `shippingCountries(address)` | The countries the store bills to or ships to, in the store's order. |
 | `addressFields(address, country)` | The country's address fields in display order: each default field overlaid with the country's locale, so `label`, `required`, `hidden` and `index` are what that country uses. Hidden fields are included; retain their form bindings and hide their controls visually. |
 | `resolveAddressCountry(address, country)` | Raw country fields, plus the existing country information: its `fields`, its `states` (`[]` when it has none, so the state is free text or hidden) and `stateLabel`, the country's own name for that field — "Emirate", "County" — or the default label. |
-| `isAddressComplete(address, input)` | Whether the shopper has filled in every field the store needs before it quotes shipping, by WooCommerce's own rule: a country, and each of country, state, postcode and city hidden, optional or filled for that country. |
 
 An unknown or empty country code answers the default fields rather than throwing, so a form keeps rendering while the shopper
 corrects it. A plugin-registered field may carry a JSON Schema rule object in `required` or `hidden` instead of a boolean; the
-kit passes it through untouched, and `isAddressComplete` reads it as required and visible.
+raw metadata preserves it; the coordinated checkout schema evaluates it against current form and cart data.
 
 ### Checkout fields and validation
 
-`useCheckoutFields({ getValues?, setValues?, setErrors?, clearErrors? } = {})` supplies checkout field metadata, native control bindings and a
+`useCheckoutFields({ getValues?, setValues?, validateField?, setErrors?, clearErrors? } = {})` supplies checkout field metadata, native control bindings and a
 Standard Schema for your form library. Mount the existing providers once; the hook reads their QueryClient and does not
-create a provider, cache or checkout action. Your form library owns editable values, errors, dirty/touched state, validation
+create a provider or editable-form cache. Your form library owns editable values, errors, dirty/touched state, validation
 timing and submission.
 
 | Return value | Meaning |
@@ -793,15 +794,16 @@ timing and submission.
 | `billing`, `shipping`, `contact`, `order` | Each section contains `{ fields, errors }`. Definitions retain metadata and raw SDK `key` segments, and add a safe form `name` and `getProps(binding)`. Keep `hidden` fields registered in the form and hide their controls visually; their values and schema constraints remain. |
 | `defaultValues` | An encoded `CheckoutFormValues` initial snapshot, or `null` while sources are unavailable or checkout is paid. Its identity and content stay stable for the same checkout session across refreshes. Initialize the form once. |
 | `schema` | Standard Schema v1 for the encoded form representation, or `null` while sources are unavailable. A captured validator reads current committed source rules and validates its supplied candidate. |
-| `handleFieldChange(name, value)` | Reads the committed form, clears exact server issues associated with that edited control, applies local dependencies synchronously and resolves metadata. Country edits clear that address's state. |
+| `handleFieldChange(name, value)` | Reads the committed form, clears exact server issues associated with that edited control, applies local dependencies synchronously and resolves metadata. Country edits clear stale state/postcode; an active validation binding coordinates eligible saves. |
+| `handleFieldBlur(name)` | Validates pending address edits and flushes eligible work after the form records blur. |
 | `copyShippingToBilling()` | Copies the current shipping draft's common native values into billing once through `getValues`/`setValues`. Leaves the sharing selection and independent billing values unchanged. |
 | `reevaluate()` | Explicitly reads the form after silent prefill/reset, without edit-dependency clears. |
 | `encode(raw)` | Pure key conversion from decoded `CheckoutFieldValues` to the encoded `CheckoutFormValues` representation. Preserves every supplied member and value. |
 | `decode(values)` | Pure key conversion from encoded `CheckoutFormValues` to decoded `CheckoutFieldValues`. Preserves drafts, independent addresses, provider data and form controls. |
 | `canUseShippingAsBilling` | Whether native address sharing is available: shipping is needed and the store does not force separate billing. |
 | `unsupported` | Field diagnostics for unsupported widgets, invalid schemas/bindings and unavailable condition dependencies. |
-| `isLoading`, `isRepricing`, `error` | Shared source loading, acknowledged cart repricing/rate selection and the latest source failure. |
-| `errors` | General, unresolved and unplaceable submission issues. Separate from the singular source/bootstrap `error`. |
+| `isLoading`, `isRepricing`, `error` | Shared source loading, address validation/queued/request or rate-selection activity, and the latest source or address-save failure. |
+| `errors` | General, unresolved and unplaceable submission issues. Separate from the singular source or address-save `error`. |
 
 `CheckoutFieldValues` is the decoded schema-value shape; `CheckoutFormValues` is the same shape with opaque
 additional-field IDs encoded for the form library. Both derive their additional-field types from the active client's
@@ -830,8 +832,8 @@ applies the store's address policy, removes form-only controls and supplies paym
 form library through `fields.schema`; required answers, checkbox consent, text patterns and conditional rules remain there.
 
 Field metadata and schema evaluation still use the effective-address policy without changing the supplied candidate.
-For address persistence/repricing, pass native address snapshots and the sharing selection directly to `useCartAddress`;
-cart actions apply the same policy to editable drafts. Conversion can also be used while editing because it does not validate.
+For automatic address persistence/repricing, bind `validateField` and input blur as described below. Standalone address forms
+can still pass native snapshots and the sharing selection to `useCartAddress`. Conversion can also be used while editing because it does not validate.
 
 Hidden is a visibility state, independent of required. Keep every applicable field binding mounted and hide the rendered
 control, for example with a wrapping element's HTML `hidden` attribute. The supplied schema retains required rules and
@@ -904,9 +906,8 @@ A single form containing all four groups and the relevant checkout controls is t
 typechecked [TanStack Form example](./types/checkout-fields.example.tsx) and
 [React Hook Form example](./types/checkout-fields-rhf.example.tsx) use the
 [application-owned native markup](./types/checkout-field-control.example.tsx). Both are mounted in tests against their real
-APIs. Neither form library is a production dependency. The examples confirm through the separate `useCheckout` hook; they
-perform no address update or confirmation on field edits. If the app chooses repricing, its callbacks separately compose
-`useCartAddress` and shipping hooks.
+APIs. Neither form library is a production dependency. The examples bind named validation and blur to automatic address
+syncing, and confirm through the separate `useCheckout` hook. Shipping-rate selection remains in its own hook.
 
 Ordinary physical checkout is shipping-first. `useShippingAsBilling` defaults to sharing when omitted; initialized form
 defaults include `true`. Common native billing controls are hidden and output/validation derive billing from shipping.
@@ -990,6 +991,56 @@ matching SDK/plugin contract when deploying the hook. The SDK's extracted reserv
 Unlike PHP, arrays remain dense/distinct and quantity ceiling follows JavaScript; unlike Woo's browser UI helper, collection
 uses PHP's any-selected-method predicate. There is no byte-for-byte PHP serialization claim.
 
+### Validated automatic address syncing
+
+Supply `getValues`, `setValues` and `validateField` on one `useCheckoutFields` call per form to enable automatic address
+syncing. Metadata-only consumers omit `validateField`. A partial active binding throws. The form remains the editable state
+owner; Kit coordinates its validated address updates through the cart transport.
+
+```tsx
+const fields = useCheckoutFields({
+  getValues: () => form.getValues(),
+  setValues: applyFormPatches,
+  validateField: (name) => form.trigger(name), // React Hook Form with fields.schema in its resolver.
+})
+// After the form commits a field edit:
+fields.handleFieldChange(definition.name, value)
+// On input blur, after the form records its interaction:
+fields.handleFieldBlur(definition.name)
+```
+
+`validateField(name)` returns `boolean | Promise<boolean>` from fresh validation of the named current value. Run Kit's schema
+and application validators in the configured form pipeline; reading existing error objects alone is insufficient. Postcode
+checks use the selected country, WooCommerce's shared rules and its postcode-validator fallback. Unknown country formats
+accept ASCII letters, digits, whitespace and hyphens; requiredness and allowed countries remain storefront rules.
+
+Kit compares all address-bound native and registered values with the acknowledged cart, including street/name edits and
+billing email. Only pending changed fields must pass; an unrelated unchanged error does not block a save. One invalid pending
+field holds both addresses in the batch. Full changed-address snapshots are isolated from later edits. Contact/order
+additional fields remain outside this customer-address request.
+
+Typing waits 1500 ms. Country changes and `handleFieldBlur` flush eligible work; an in-flight save retains the latest draft.
+A country change clears stale state and postcode, retaining replacements supplied together. Only empty state/postcode resets
+are exempt while that country is pending. Nonempty invalid replacements still block. There is no initial hydration save.
+Async results and queued work are discarded when their values, rule sources or session are stale. Responses refresh cart
+results without resetting the form; a failed save keeps the draft and can be retried by another edit or blur.
+
+`isRepricing` includes validation, queued saves and address requests. This work also participates in `useCheckout().isLocked`,
+which guards confirmation until the reviewed totals are current. A failed save retains that guard through newer invalid edits;
+returning to the acknowledged address or successfully retrying releases it. Full checkout submission still runs the whole schema.
+Hidden fields retain Kit's existing values/constraints, including independent
+registered values; projection-hidden target fields are not erased. This deliberately differs from Blocks' hidden-value clearing.
+
+RHF's named `trigger` works even when validation mode is on submit. TanStack must register Kit's schema for the cause used by
+its named validation (the example uses `onChange`), await that result, and preserve interaction metadata. Validation need not
+show an error message immediately. Preserve the existing Kit server-error channel in both integrations.
+
+Remove a separate `onAddressChange` listener when migrating to this active binding. `useCartAddress` remains available for
+standalone forms: its omitted callback still uses the internal four-location-field policy, and custom callbacks fully replace
+it. `update/updateAsync` remain explicit patch mutations. `flush()` sends queued work promptly and `cancel()` abandons scheduled
+work and settled failed drafts without interrupting an in-flight request; restore an abandoned form from the cart. `reset()`
+dismisses the displayed failure while retaining its checkout guard. Neither policy helper is a public export.
+
 ### Existing independent resolvers
 
 `resolveBillingAddressFields`, `resolveShippingAddressFields`, `resolveContactFields`, `resolveOrderFields` and
@@ -999,9 +1050,8 @@ and `$data` without diagnostics; invalid external adapter schemas retain their e
 `useCheckoutFields` for checkout's coordinated conditions and whole-form validation. Customer profiles and multiple-address
 management remain independent application features.
 
-`isAddressComplete` checks completeness, not validity, exactly as WooCommerce's own check does. It does not check that the
-store ships to the country or that the state belongs to it, so offer only `shippingCountries` in the country picker and clear
-the state when the country changes.
+`isAddressComplete` is removed. Automatic checkout syncing uses current changed-field validation through `useCheckoutFields`,
+with country-specific postcode rules; it does not wait for every address field to be complete.
 
 The settings stay fresh for an hour (`storefrontStaleTime`): they change when a merchant edits WooCommerce, not while a shopper
 browses. `refresh` refetches sooner. A failed request leaves `storefront` null and sets `error`, so fall back to free-text

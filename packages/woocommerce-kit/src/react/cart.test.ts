@@ -4,7 +4,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { act, renderHook, waitFor } from "@testing-library/react"
 import { createElement, type ReactNode } from "react"
 import { afterEach, describe, expect, expectTypeOf, it, vi } from "vitest"
-import { cartQueryKey, defaultShouldUpdateAddress } from "../cart"
+import { cartQueryKey } from "../cart"
+import { defaultShouldUpdateAddress } from "../cart-address-policy"
 import { fixtures } from "../test/checkout-fields-fixture"
 import type { Cart, CartAddressSnapshotInput, CartError, Storefront, UpdateCartInput } from "../types"
 import {
@@ -516,6 +517,21 @@ describe("useCartAddress snapshots", () => {
 		unmount()
 	})
 
+	it.each([undefined, {}, { shouldUpdateAddress: undefined }])("uses the default policy with options %j", async (options) => {
+		vi.useFakeTimers()
+		const input = addressSnapshot({ shippingAddress: { city: "Oxford" } })
+		procedures.update.call.mockResolvedValue(quoteCart(input))
+		const { result, unmount } = mount(() => useCartAddress(options), quoteCart())
+		act(() => result.current.onAddressChange(addressSnapshot({ shippingAddress: { postcode: "sw1a\t1aa", firstName: "Ada" } })))
+		await settleAddress()
+		expect(procedures.update.call).not.toHaveBeenCalled()
+		act(() => result.current.onAddressChange(input))
+		await settleAddress()
+		expect(procedures.update.call).toHaveBeenCalledTimes(1)
+		expect(procedures.update.call).toHaveBeenCalledWith({ body: input })
+		unmount()
+	})
+
 	it("does not lose pricing changes when a later snapshot edits the name", async () => {
 		vi.useFakeTimers()
 		const input = addressSnapshot({ shippingAddress: { city: "Oxford", postcode: "OX1 1AA", firstName: "Ada" } })
@@ -585,6 +601,8 @@ describe("useCartAddress snapshots", () => {
 		expect(procedures.update.call).toHaveBeenCalledTimes(1)
 		expect(procedures.update.call).toHaveBeenCalledWith({ body: input })
 		act(() => result.current.address.onAddressChange(input))
+		await settleAddress(1)
+		expect(result.current.cart.isRepricing).toBe(true)
 		act(() => result.current.address.onAddressChange(addressSnapshot({ shippingAddress: { city: "Oxford" } })))
 		await settleAddress(100)
 		expect(procedures.update.call).toHaveBeenCalledTimes(1)
@@ -894,13 +912,38 @@ describe("useCartAddress snapshots", () => {
 
 	it("clones the supplied snapshot so later in-place form changes cannot alter the queued request", async () => {
 		vi.useFakeTimers()
-		const input = addressSnapshot({ shippingAddress: { city: "Oxford" } })
+		const input = addressSnapshot({ shippingAddress: { city: "Oxford", additionalFields: { "consumer/reference": "Original" } } })
 		procedures.update.call.mockResolvedValue(quoteCart(input))
 		const { result, unmount } = mount(() => useCartAddress(), quoteCart())
 		act(() => result.current.onAddressChange(input))
-		if (input.shippingAddress) input.shippingAddress.city = "Cambridge"
+		if (input.shippingAddress) {
+			input.shippingAddress.city = "Cambridge"
+			if (input.shippingAddress.additionalFields) input.shippingAddress.additionalFields["consumer/reference"] = "Later"
+		}
 		await settleAddress()
-		expect(procedures.update.call).toHaveBeenCalledWith({ body: addressSnapshot({ shippingAddress: { city: "Oxford" } }) })
+		expect(procedures.update.call).toHaveBeenCalledWith({
+			body: addressSnapshot({ shippingAddress: { city: "Oxford", additionalFields: { "consumer/reference": "Original" } } }),
+		})
+		unmount()
+	})
+	it("flushes promptly and cancellation resolves queued async waiters without a request", async () => {
+		vi.useFakeTimers()
+		procedures.update.call.mockResolvedValue(quoteCart())
+		const { result, unmount } = mount(() => useCartAddress(), quoteCart())
+		let cancelled: Promise<Cart | undefined> | undefined
+		act(() => {
+			cancelled = result.current.onAddressChangeAsync(addressSnapshot({ shippingAddress: { city: "Cancelled" } }))
+			result.current.cancel()
+		})
+		await expect(cancelled).resolves.toBeUndefined()
+		await settleAddress()
+		expect(procedures.update.call).not.toHaveBeenCalled()
+		act(() => {
+			result.current.onAddressChange(addressSnapshot({ shippingAddress: { city: "Flush" } }))
+			result.current.flush()
+		})
+		await settleAddress(1)
+		expect(procedures.update.call).toHaveBeenCalledTimes(1)
 		unmount()
 	})
 })

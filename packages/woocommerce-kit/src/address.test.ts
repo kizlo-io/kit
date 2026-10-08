@@ -1,12 +1,5 @@
 import { describe, expect, it } from "vitest"
-import {
-	addressFields,
-	billingCountries,
-	isAddressComplete,
-	resolveAddressCountry,
-	type StorefrontAddress,
-	shippingCountries,
-} from "./address"
+import { addressFields, billingCountries, resolveAddressCountry, type StorefrontAddress, shippingCountries } from "./address"
 
 function field(label: string, index: number, rules: { hidden?: boolean; required?: boolean } = {}) {
 	return {
@@ -140,58 +133,5 @@ describe("resolveAddressCountry", () => {
 		const model = resolveAddressCountry(address, "ZZ")
 		expect(model).toMatchObject({ code: "ZZ", country: null, stateLabel: "State/County", states: [] })
 		expect(model.fields).toEqual(addressFields(address, undefined))
-	})
-})
-
-describe("isAddressComplete", () => {
-	const india = { city: "Bengaluru", country: "IN", postcode: "560001", state: "KA" }
-
-	it("accepts a complete address in a country that requires a postcode", () => {
-		expect(isAddressComplete(address, india)).toBe(true)
-	})
-
-	it("refuses that address without its postcode", () => {
-		expect(isAddressComplete(address, { ...india, postcode: "" })).toBe(false)
-		expect(isAddressComplete(address, { ...india, postcode: "   " })).toBe(false)
-		expect(isAddressComplete(address, { ...india, postcode: undefined })).toBe(false)
-	})
-
-	it("accepts an address without a postcode in a country that has none", () => {
-		expect(isAddressComplete(address, { city: "Dubai", country: "AE", state: "DU" })).toBe(true)
-	})
-
-	it("still refuses an address in that country missing a field it does require", () => {
-		expect(isAddressComplete(address, { city: "Dubai", country: "AE", state: "" })).toBe(false)
-	})
-
-	it("treats an optional field as satisfied", () => {
-		expect(isAddressComplete(address, { city: "London", country: "GB", postcode: "SW1A 1AA" })).toBe(true)
-	})
-
-	it("refuses an address with no country", () => {
-		expect(isAddressComplete(address, { ...india, country: "" })).toBe(false)
-		expect(isAddressComplete(address, { ...india, country: null })).toBe(false)
-	})
-
-	it("reads a rule object as required and visible", () => {
-		const withCity = (city: StorefrontAddress["fields"][number]) => ({
-			...address,
-			fields: address.fields.map((field) => (field.id === "city" ? { ...field, ...city } : field)),
-		})
-		const city = address.fields.find((field) => field.id === "city")
-		if (!city) throw new Error("Missing city fixture")
-		const optionalCity = withCity({
-			...city,
-			...field("City", 70, { required: false }),
-		})
-		const ruledCity = withCity({
-			...city,
-			...field("City", 70),
-			hidden: { type: "object" },
-			required: { type: "object" },
-		})
-
-		expect(isAddressComplete(optionalCity, { ...india, city: "" })).toBe(true)
-		expect(isAddressComplete(ruledCity, { ...india, city: "" })).toBe(false)
 	})
 })

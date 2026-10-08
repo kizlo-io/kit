@@ -19,6 +19,7 @@ export function ReactHookFormCheckout({ onSubmit }: { onSubmit: (values: Checkou
 	const checkout = useCheckout()
 	const fields: CheckoutFieldsApi = useCheckoutFields({
 		getValues: (): CheckoutFormValues => form.getValues(),
+		validateField: (name) => form.trigger(name),
 		...(initialized ? serverErrors : { setErrors: undefined, clearErrors: undefined }),
 		setValues: (updates) => {
 			for (const { name, value, options } of updates) {
@@ -82,10 +83,17 @@ export function ReactHookFormCheckout({ onSubmit }: { onSubmit: (values: Checkou
 											field.onChange(value)
 											fields.handleFieldChange(definition.name, value)
 										},
-										onBlur: field.onBlur,
+										onBlur: () => {
+											field.onBlur()
+											fields.handleFieldBlur(definition.name)
+										},
 										invalid: fieldState.invalid,
 									}}
-									error={reactHookFormErrorMessages(fieldState.error)}
+									error={
+										fieldState.isTouched || form.formState.isSubmitted || fieldState.error?.types?.kitServer
+											? reactHookFormErrorMessages(fieldState.error)
+											: undefined
+									}
 								/>
 							)}
 						/>
