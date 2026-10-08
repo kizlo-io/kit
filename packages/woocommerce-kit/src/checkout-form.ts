@@ -57,15 +57,18 @@ function convert(values: object, decode: boolean): object {
 		}),
 	)
 }
-export function checkoutFormInput(values: CheckoutFieldValues): CheckoutFormValues {
+export function checkoutFormEncode(values: CheckoutFieldValues): CheckoutFormValues {
 	return convert(values, false) as CheckoutFormValues
+}
+export function checkoutFormDecode(values: CheckoutFormValues): CheckoutFieldValues {
+	return convert(values, true) as CheckoutFieldValues
 }
 export function canShareCheckoutAddress(sources: CheckoutFieldSources): boolean {
 	return !!sources.storefront && !!sources.cart && sources.cart.needsShipping && !sources.storefront.checkout.forcedBillingAddress
 }
-/** The same projection feeds rendering, validation and SDK output; it never writes the draft. */
-function projectedFormOutput(sources: CheckoutFieldSources, values: CheckoutFormValues): CheckoutFieldValues {
-	const decoded = convert(values, true) as Record<string, unknown>
+/** Effective addresses feed metadata and schema evaluation without changing the form values. */
+function projectedFormValues(sources: CheckoutFieldSources, values: CheckoutFormValues): CheckoutFieldValues {
+	const decoded = checkoutFormDecode(values) as Record<string, unknown>
 	const roots = new Set([
 		"billingAddress",
 		"shippingAddress",
@@ -118,18 +121,9 @@ function projectedFormModel(sources: CheckoutFieldSources, values: CheckoutFormV
 	return model
 }
 
-/** Conversion projects effective addresses and diagnoses unavailable authoritative data. */
-export function checkoutFormOutput(sources: CheckoutFieldSources, values: CheckoutFormValues): CheckoutFieldValues {
-	const output = projectedFormOutput(sources, values)
-	const model = projectedFormModel(sources, values, output)
-	const diagnostics = model.addressDiagnostics
-	if (diagnostics.length) throw new Error(diagnostics.map(({ message }) => message).join("; "))
-	return output
-}
-
 export function resolveCheckoutForm(sources: CheckoutFieldSources, values?: CheckoutFormValues) {
-	const current = values ?? checkoutFormInput(checkoutDefaults(sources) ?? {})
-	return projectedFormModel(sources, current, projectedFormOutput(sources, current))
+	const current = values ?? checkoutFormEncode(checkoutDefaults(sources) ?? {})
+	return projectedFormModel(sources, current, projectedFormValues(sources, current))
 }
 export function isCheckoutFormName(sources: CheckoutFieldSources, name: string): boolean {
 	if (controls.has(name)) return true
@@ -170,7 +164,7 @@ export function checkoutFormSchema(getSources: () => CheckoutFieldSources): Stan
 				if (shapeIssues.length) return { issues: shapeIssues }
 				const sources = getSources()
 				try {
-					const output = projectedFormOutput(sources, values)
+					const output = projectedFormValues(sources, values)
 					const model = projectedFormModel(sources, values, output)
 					const result = schema["~standard"].validate(output)
 					if ("value" in result && !model.addressDiagnostics.length) return { value: values }

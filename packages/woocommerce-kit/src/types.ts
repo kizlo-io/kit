@@ -154,8 +154,19 @@ export type StandardFieldSchema<T> = {
 	}
 }
 
-/** Raw SDK-shaped field values, also used by the independent core resolvers. */
-export type CheckoutFieldValues = Partial<ConfirmCheckoutInput>
+type DraftValue<T> = T extends string ? T | "" : T
+type DraftAdditionalFields<T> = T extends object ? { [K in keyof T]?: DraftValue<T[K]> } : T
+type DraftAddress<T> = T extends object
+	? { [K in keyof T]?: K extends "additionalFields" ? DraftAdditionalFields<T[K]> : DraftValue<T[K]> }
+	: T
+/** Decoded schema values; registered string selects may have an empty draft selection. */
+export type CheckoutFieldValues = {
+	[K in keyof ConfirmCheckoutInput]?: K extends "billingAddress" | "shippingAddress"
+		? DraftAddress<ConfirmCheckoutInput[K]>
+		: K extends "additionalFields"
+			? DraftAdditionalFields<ConfirmCheckoutInput[K]>
+			: DraftValue<ConfirmCheckoutInput[K]>
+} & { useShippingAsBilling?: boolean }
 export type CheckoutFieldGroup = "billing" | "shipping" | "contact" | "order"
 export type CheckoutFieldDiagnostic = {
 	fieldId: string
@@ -185,8 +196,8 @@ type FormRepresentation<T> = {
 			? FormRepresentation<T[K]>
 			: T[K]
 }
-/** The form library's encoded representation; form-only controls never reach SDK output. */
-export type CheckoutFormValues = FormRepresentation<CheckoutFieldValues> & { useShippingAsBilling?: boolean }
+/** The same schema-value shape with opaque additional-field keys encoded for the form library. */
+export type CheckoutFormValues = FormRepresentation<CheckoutFieldValues>
 type ScalarName<T> = { [K in keyof T & string]: NonNullable<T[K]> extends string | boolean | number ? K : never }[keyof T & string]
 type AddressFormNames<T> =
 	| ScalarName<T>
@@ -282,8 +293,10 @@ export type CheckoutFieldsApi = Omit<CheckoutFieldsModel, "fields" | "defaultVal
 	/** Copy native shipping draft values into billing once; requires getValues/setValues and leaves sharing unchanged. */
 	copyShippingToBilling: () => void
 	reevaluate: () => void
-	getInput: (values: CheckoutFieldValues) => CheckoutFormValues
-	getOutput: (values: CheckoutFormValues) => CheckoutFieldValues
+	/** Encode additional-field keys while preserving the supplied schema-value shape and values. */
+	encode: (values: CheckoutFieldValues) => CheckoutFormValues
+	/** Decode additional-field keys without validation, address projection or submission preparation. */
+	decode: (values: CheckoutFormValues) => CheckoutFieldValues
 	isLoading: boolean
 	isRepricing: boolean
 	error: StorefrontError | CheckoutError | CartError | null

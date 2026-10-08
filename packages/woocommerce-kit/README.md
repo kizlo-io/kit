@@ -681,12 +681,42 @@ timing and submission.
 | `handleFieldChange(name, value)` | Reads the committed form, clears exact server issues associated with that edited control, applies local dependencies synchronously and resolves metadata. Country edits clear that address's state. |
 | `copyShippingToBilling()` | Copies the current shipping draft's common native values into billing once through `getValues`/`setValues`. Leaves the sharing selection and independent billing values unchanged. |
 | `reevaluate()` | Explicitly reads the form after silent prefill/reset, without edit-dependency clears. |
-| `getInput(raw)` | Pure conversion from SDK `CheckoutFieldValues` to the form representation, for initialization/prefill/reset. |
-| `getOutput(values)` | Pure synchronous conversion from the supplied form representation to SDK field values. Decodes IDs, applies address sharing, retains extensions and strips form-only controls. |
+| `encode(raw)` | Pure key conversion from decoded `CheckoutFieldValues` to the encoded `CheckoutFormValues` representation. Preserves every supplied member and value. |
+| `decode(values)` | Pure key conversion from encoded `CheckoutFormValues` to decoded `CheckoutFieldValues`. Preserves drafts, independent addresses, provider data and form controls. |
 | `canUseShippingAsBilling` | Whether native address sharing is available: shipping is needed and the store does not force separate billing. |
 | `unsupported` | Field diagnostics for unsupported widgets, invalid schemas/bindings and unavailable condition dependencies. |
 | `isLoading`, `isRepricing`, `error` | Shared source loading, acknowledged cart repricing/rate selection and the latest source failure. |
 | `errors` | General, unresolved and unplaceable submission issues. Separate from the singular source/bootstrap `error`. |
+
+`CheckoutFieldValues` is the decoded schema-value shape; `CheckoutFormValues` is the same shape with opaque
+additional-field IDs encoded for the form library. Both derive their additional-field types from the active client's
+introspection-registered contract. Native address members and registered answers may be unfinished; registered string selects
+accept an empty draft placeholder. The schema's input and output are both `CheckoutFormValues`, and successful validation
+returns the supplied encoded candidate rather than transforming it into a confirmation request.
+
+`encode` and `decode` only change additional-field keys. They preserve values, optional members, independent billing/shipping
+addresses, the sharing selection, provider data and extensions. They do not insert defaults, validate answers, project hidden
+addresses, remove digital shipping or strip form controls. Decoding ambiguous keys throws a collision error rather than
+silently overwriting an answer. Neither method mutates its input or reads the current checkout sources.
+
+**Migration:** replace `fields.getInput(raw)` with `fields.encode(raw)` and `fields.getOutput(values)` with
+`fields.decode(values)`. The old getters are removed. Initialize new forms from `fields.defaultValues`; encoding a saved
+partial draft preserves its omissions. The examples accept an application-owned submit callback:
+
+```tsx
+onSubmit: async ({ value }) => {
+  await onSubmit(fields.decode(value))
+}
+```
+
+The callback receives decoded schema values, not `ConfirmCheckoutInput`. The application assembles the complete request,
+applies the store's address policy, removes form-only controls and supplies payment/provider data before calling
+`checkout.confirmAsync`. Decoding does not establish submission completeness or checkout readiness. Keep validation in the
+form library through `fields.schema`; required answers, checkbox consent, text patterns and conditional rules remain there.
+
+Field metadata and schema evaluation still use the effective-address policy without changing the supplied candidate.
+For address persistence/repricing, pass native address snapshots and the sharing selection directly to `useCartAddress`;
+cart actions apply the same policy to editable drafts. Conversion can also be used while editing because it does not validate.
 
 Hidden is a visibility state, independent of required. Keep every applicable field binding mounted and hide the rendered
 control, for example with a wrapping element's HTML `hidden` attribute. The supplied schema retains required rules and
@@ -804,21 +834,23 @@ const { onAddressChange } = useCartAddress()
 onAddressChange({ billingAddress: billingValues })
 // In an ordinary checkout, pass the form's explicit sharing selection for repricing.
 onAddressChange({ shippingAddress: shippingValues, billingAddress: billingValues, useShippingAsBilling: shareAddresses })
-const output = fields.getOutput(formValues) // derives the same native addresses for confirmation
+// In the form's validated submit callback, before application request assembly:
+await onSubmit(fields.decode(formValues))
 ```
 
 ```tsx
-form.reset(fields.getInput(savedFields))
+form.reset(fields.encode(savedFields))
 fields.reevaluate() // preserves the prefilled country/state pair
-const output = fields.getOutput(formValues) // SDK representation, independent of validation or submission
+// Decode the validated form candidate for the application submit callback.
+await onSubmit(fields.decode(formValues))
 ```
 
 Only literal additional-field IDs are escaped; structural paths retain their meaning. For example, raw
 `["additionalFields", "plugin/a.b[0]'%"]` becomes `additionalFields.plugin%2Fa%2Eb%5B0%5D%27%25`.
-Defaults, names, input conversion and issue paths use the same collision-free encoding. `getOutput` restores the original ID,
-including encoded-looking IDs. Always submit `getOutput(values)`: validation preserves encoded values on success and TanStack
-submits its stored values. Conversion and validation never read/write the form, invoke callbacks, mutate cache data or start
-checkout/cart actions. You may validate a candidate and retain it for a review step before confirming separately.
+Defaults, names, `encode` and issue paths use the same collision-free encoding. `decode` restores the original ID,
+including encoded-looking IDs. Decode values before passing them to the application submit callback: validation preserves
+encoded values on success and TanStack submits its stored values. Conversion and validation never read/write the form, invoke
+callbacks, mutate cache data or start checkout/cart actions. You may validate a candidate and retain it for a review step before confirming separately.
 
 Checkout bootstrap seeds the existing cart cache. A fields-only consumer waits for this seed before enabling its own cart
 fetch; `cartEnabled: false` still permits cache subscriptions and forbids that fetch. Existing cart consumers keep their own

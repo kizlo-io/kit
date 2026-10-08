@@ -74,7 +74,7 @@ describe("useCheckoutFields shared sources", () => {
 		expect(procedures.cart.get.call).not.toHaveBeenCalled()
 		await act(async () => checkout.resolve(source.checkout))
 		await waitFor(() => expect(result.current.schema).not.toBeNull())
-		expect(result.current.defaultValues).toMatchObject(result.current.getInput(source.values))
+		expect(result.current.defaultValues).toMatchObject(result.current.encode(source.values))
 		expect(result.current.order.fields[0]?.required).toBe(true)
 		expect(client.getQueryData(cartQueryKey)).toEqual(source.cart)
 		expect(procedures.cart.get.call).not.toHaveBeenCalled()
@@ -88,7 +88,7 @@ describe("useCheckoutFields shared sources", () => {
 		expect(procedures.checkout.get.call).toHaveBeenCalledTimes(1)
 		expect(procedures.cart.get.call).toHaveBeenCalledTimes(1)
 		expect(result.current.cart.cart).toEqual(source.cart)
-		act(() => result.current.checkout.confirm({ ...source.values, billingAddress: source.checkout.billingAddress, paymentMethod: "bacs" }))
+		act(() => result.current.checkout.confirm({ billingAddress: source.checkout.billingAddress, paymentMethod: "" }))
 		await waitFor(() => expect(procedures.checkout.confirm.call).toHaveBeenCalledTimes(1))
 	})
 	it("reads an existing cart while checkout bootstrap remains pending", async () => {
@@ -367,11 +367,11 @@ describe("checkout field events", () => {
 		setter = write
 		rerender()
 		expect(() => result.current.copyShippingToBilling()).toThrow("requires a shipping address")
-		values = { billingAddress: source.checkout.billingAddress }
+		values = { billingAddress: source.checkout.billingAddress, paymentMethod: "" }
 		expect(() => result.current.copyShippingToBilling()).toThrow("requires a shipping address")
 		expect(write).not.toHaveBeenCalled()
 	})
-	it("keeps presentation, captured output and schema current across sharing, forced-billing and digital changes", async () => {
+	it("updates presentation and schema while a captured decoder preserves values across address policy changes", async () => {
 		const source = fixtures([
 			field("first_name", { location: "address", required: true, bindings: { billing: ["firstName"], shipping: ["firstName"] } }),
 			field("country", { location: "address", bindings: { billing: ["country"], shipping: ["country"] } }),
@@ -383,10 +383,11 @@ describe("checkout field events", () => {
 		const { result, client } = mount(() => useCheckoutFields({ getValues: () => values, setValues: writes }))
 		await waitFor(() => expect(result.current.schema).not.toBeNull())
 		const schema = result.current.schema
-		const output = result.current.getOutput
+		const output = result.current.decode
 		expect(result.current.defaultValues?.useShippingAsBilling).toBe(true)
 		expect(result.current.billing.fields.every((field) => field.hidden)).toBe(true)
-		expect(output(values).billingAddress?.country).toBe("GB")
+		expect(output(values).billingAddress?.country).toBe("IN")
+		expect(output(values).shippingAddress?.country).toBe("GB")
 		values = { ...values, useShippingAsBilling: false }
 		act(() => result.current.handleFieldChange("useShippingAsBilling", false))
 		expect(result.current.billing.fields.every((field) => !field.hidden)).toBe(true)
@@ -400,19 +401,20 @@ describe("checkout field events", () => {
 		)
 		await waitFor(() => expect(result.current.shipping.fields.every((field) => field.hidden)).toBe(true))
 		expect(result.current.canUseShippingAsBilling).toBe(false)
-		expect(output(values).shippingAddress?.country).toBe("IN")
+		expect(output(values).shippingAddress?.country).toBe("GB")
 		expect(values).toEqual(before)
 		values = { billingAddress: { ...source.checkout.billingAddress, firstName: "" } }
 		expect(schema?.["~standard"].validate(values)).toHaveProperty(
 			"issues",
 			expect.arrayContaining([expect.objectContaining({ path: ["billingAddress", "firstName"] })]),
 		)
-		values = { billingAddress: source.checkout.billingAddress }
+		values = { billingAddress: source.checkout.billingAddress, paymentMethod: "" }
 		act(() => result.current.reevaluate())
 		expect(schema?.["~standard"].validate(values)).toEqual({ value: values })
+		values = { ...values, shippingAddress: source.checkout.shippingAddress }
 		act(() => client.setQueryData(cartQueryKey, { ...source.cart, needsShipping: false }))
 		await waitFor(() => expect(result.current.shipping.fields).toEqual([]))
-		expect(output(values)).not.toHaveProperty("shippingAddress")
+		expect(output(values).shippingAddress).toEqual(source.checkout.shippingAddress)
 		expect(writes).not.toHaveBeenCalled()
 		expect(procedures.cart.update.call).not.toHaveBeenCalled()
 		expect(procedures.checkout.confirm.call).not.toHaveBeenCalled()
@@ -495,7 +497,7 @@ describe("checkout field events", () => {
 		const { result, rerender } = mount(() => useCheckoutFields({ getValues: getter, setValues: setter }))
 		await waitFor(() => expect(result.current.schema).not.toBeNull())
 		values = {
-			...result.current.getInput(source.values),
+			...result.current.encode(source.values),
 			useShippingAsBilling: false,
 			billingAddress: { ...source.checkout.billingAddress, country: "GB", state: "London" },
 		}
@@ -528,10 +530,10 @@ describe("checkout field events", () => {
 		expect(values.customerNote).toBe("draft")
 		getter.mockClear()
 		const fields = result.current.billing.fields
-		const candidate = result.current.getInput(source.values)
+		const candidate = result.current.encode(source.values)
 		expect(schema?.["~standard"].validate(candidate)).toHaveProperty("value", candidate)
 		expect(schema?.["~standard"].validate(values)).toHaveProperty("issues")
-		result.current.getOutput(candidate)
+		result.current.decode(candidate)
 		expect(getter).not.toHaveBeenCalled()
 		expect(setter).not.toHaveBeenCalled()
 		expect(result.current.billing.fields).toBe(fields)

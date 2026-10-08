@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
 import { checkoutErrorStore, createCheckoutErrorBridge, createCheckoutErrorStore, projectCheckoutErrors } from "./checkout-errors"
-import { checkoutFormInput, resolveCheckoutFormState } from "./checkout-form"
+import { checkoutFormEncode, resolveCheckoutFormState } from "./checkout-form"
 import { validationFailure, validationIssue } from "./test/checkout-errors-fixture"
 import { field, fixtures } from "./test/checkout-fields-fixture"
 import type { CheckoutError, CheckoutFormFieldName, CheckoutValidationIssue } from "./types"
@@ -14,7 +14,7 @@ function addressFields() {
 }
 function project(issues: CheckoutValidationIssue[], definitions = addressFields(), sharing = false) {
 	const sources = fixtures(definitions)
-	const values = { ...checkoutFormInput(sources.values), useShippingAsBilling: sharing }
+	const values = { ...checkoutFormEncode(sources.values), useShippingAsBilling: sharing }
 	const fields = resolveCheckoutFormState(sources, values, values).fields
 	const store = createCheckoutErrorStore()
 	store.fail(store.start("session"), validationFailure(issues))

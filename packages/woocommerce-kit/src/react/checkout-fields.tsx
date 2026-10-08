@@ -6,8 +6,8 @@ import { checkoutSession, createCheckoutErrorBridge, projectCheckoutErrors } fro
 import { type CheckoutFieldSources, checkoutDefaults } from "../checkout-field-document"
 import {
 	checkoutFieldUpdates,
-	checkoutFormInput,
-	checkoutFormOutput,
+	checkoutFormDecode,
+	checkoutFormEncode,
 	checkoutFormSchema,
 	checkoutShippingToBillingUpdates,
 	isCheckoutFormName,
@@ -64,7 +64,7 @@ export function useCheckoutFields(options: CheckoutFieldsOptions = {}): Checkout
 		if (initial.current?.session !== session)
 			initial.current = {
 				session,
-				values: { ...checkoutFormInput(raw), useShippingAsBilling: checkoutAddressSource(source) === "shippingAddress" },
+				values: { ...checkoutFormEncode(raw), useShippingAsBilling: checkoutAddressSource(source) === "shippingAddress" },
 			}
 		return initial.current.values
 	}, [])
@@ -174,7 +174,6 @@ export function useCheckoutFields(options: CheckoutFieldsOptions = {}): Checkout
 		}
 	}, [errors, reevaluate])
 	const validator = useMemo(() => checkoutFormSchema(() => committed.current), [])
-	const getOutput = useCallback<CheckoutFieldsApi["getOutput"]>((values) => checkoutFormOutput(committed.current, values), [])
 	return {
 		billing: { fields: state.fields.billing, errors: projection.sections.billing },
 		shipping: { fields: state.fields.shipping, errors: projection.sections.shipping },
@@ -188,8 +187,8 @@ export function useCheckoutFields(options: CheckoutFieldsOptions = {}): Checkout
 		handleFieldChange,
 		copyShippingToBilling,
 		reevaluate,
-		getInput: checkoutFormInput,
-		getOutput,
+		encode: checkoutFormEncode,
+		decode: checkoutFormDecode,
 		isLoading: storefrontLoading || checkoutQuery.isPending || (!sources.cart && cartQuery.isFetching),
 		isRepricing: activity.isRepricing || activity.isSelectingRate,
 		error: storefrontError ?? checkoutQuery.error ?? cartQuery.error,
