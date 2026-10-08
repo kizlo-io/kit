@@ -8,6 +8,7 @@ import {
 	valueSchema,
 } from "./checkout-field-schema"
 import { fieldMetadata, readPath, safeFieldPath } from "./field-metadata"
+import { validPostcode } from "./postcode"
 import type {
 	CheckoutFieldDiagnostic,
 	CheckoutFieldsModel,
@@ -128,6 +129,12 @@ export function resolveCheckoutFields(
 				if (validate) {
 					try {
 						if (!parser(scopedDocument.value)) model.issues.push(...fieldSchemaIssues(parser.errors, paths.document, paths.input))
+						if (paths.input.length === 2 && paths.input[1] === "postcode") {
+							const postcode = readPath(current, paths.input)
+							const country = readPath(current, [paths.input[0] ?? "", "country"])
+							if (typeof postcode === "string" && postcode !== "" && typeof country === "string" && !validPostcode(postcode, country))
+								model.issues.push({ message: "Invalid postcode", path: paths.input })
+						}
 					} finally {
 						parser.errors = null
 					}

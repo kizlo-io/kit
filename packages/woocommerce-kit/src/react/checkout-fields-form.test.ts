@@ -9,14 +9,14 @@ import { type UseFormReturn, useController, useForm as useRHF } from "react-hook
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { TanStackCheckoutForm as TanStackFieldsForm } from "../../types/checkout-fields.example"
 import { ReactHookFormCheckout as ReactHookFieldsForm } from "../../types/checkout-fields-rhf.example"
-import { reactHookFormErrorMessages, reactHookFormServerErrors } from "../../types/checkout-server-errors.example"
+import { reactHookFormErrorMessages, reactHookFormServerErrors, tanStackValidateField } from "../../types/checkout-server-errors.example"
 import { cartQueryKey } from "../cart"
 import { checkoutQueryKey } from "../checkout"
 import { projectCheckoutAddresses } from "../checkout-address"
 import { checkoutFormEncode } from "../checkout-form"
 import { validationFailure, validationIssue } from "../test/checkout-errors-fixture"
 import { field, fixtures } from "../test/checkout-fields-fixture"
-import type { CheckoutFieldsApi, CheckoutFieldUpdate, CheckoutFieldValues, CheckoutFormValues, ConfirmCheckoutInput } from "../types"
+import type { Cart, CheckoutFieldsApi, CheckoutFieldUpdate, CheckoutFieldValues, CheckoutFormValues, ConfirmCheckoutInput } from "../types"
 import { useCartAddress } from "./cart"
 import { useCheckout } from "./checkout"
 import { useCheckoutFields } from "./checkout-fields"
@@ -80,6 +80,10 @@ function setup() {
 	client.setQueryData(cartQueryKey, sources.cart)
 	client.setQueryData(checkoutQueryKey, sources.checkout)
 	client.setQueryData(storefrontQueryKey, sources.storefront)
+	procedures.cart.update.call.mockImplementation(async ({ body }) => {
+		const cart = client.getQueryData<Cart>(cartQueryKey) ?? sources.cart
+		return { ...cart, ...body }
+	})
 	const wrapper = ({ children }: { children: ReactNode }) =>
 		createElement(QueryClientProvider, { client }, createElement(WooCommerceProvider, { children }))
 	return { sources, wrapper, client }
@@ -93,12 +97,195 @@ beforeEach(() => {
 })
 afterEach(() => {
 	cleanup()
+	vi.useRealTimers()
 	for (const client of clients) client.clear()
 	clients.length = 0
 	vi.resetAllMocks()
 })
 
 describe("real form libraries", () => {
+	it.each(["TanStack", "React Hook Form"] as const)(
+		"%s applies application validators and preserves unrelated server errors during automatic saves",
+		async (library) => {
+			const { sources, wrapper } = setup()
+			sources.storefront.address.fields.push(field("phone", { location: "address", bindings: { billing: ["phone"], shipping: ["phone"] } }))
+			if (library === "TanStack") {
+				const env = renderHook(
+					() => {
+						const fields: CheckoutFieldsApi = useCheckoutFields({
+							getValues: () => form.state.values,
+							setValues: (updates) => {
+								for (const { name, value } of updates)
+									form.setFieldValue(name, value, { dontValidate: true, dontUpdateMeta: true, dontRunListeners: true })
+							},
+							validateField: (name) => tanStackValidateField(form, name),
+						})
+						const form = useTanStackForm({
+							defaultValues: { ...checkoutFormEncode(sources.values), useShippingAsBilling: false } as CheckoutFormValues,
+							validators: { onChange: fields.schema ?? undefined },
+							listeners: { onChange: ({ fieldApi }) => fields.handleFieldChange(fieldApi.name, fieldApi.state.value) },
+						})
+						const phone = useField({
+							form,
+							name: "billingAddress.phone",
+							validators: { onChange: ({ value }) => (value === "blocked" ? "Application rejection" : undefined) },
+						})
+						const reference = useField({ form, name: safeName })
+						return { fields, form, phone, reference }
+					},
+					{ wrapper },
+				)
+				await waitFor(() => expect(env.result.current.fields.schema).not.toBeNull())
+				vi.useFakeTimers()
+				act(() =>
+					env.result.current.reference.setMeta((meta) => ({ ...meta, errorMap: { ...meta.errorMap, onServer: "Unrelated server error" } })),
+				)
+				act(() => env.result.current.phone.handleChange("blocked"))
+				await act(async () => {
+					await vi.advanceTimersByTimeAsync(1600)
+				})
+				expect(procedures.cart.update.call).not.toHaveBeenCalled()
+				expect(env.result.current.phone.state.meta.errors).toContain("Application rejection")
+				const meta = env.result.current.phone.state.meta
+				act(() => env.result.current.phone.handleChange("allowed"))
+				await act(async () => {
+					await vi.advanceTimersByTimeAsync(1600)
+				})
+				expect(procedures.cart.update.call).toHaveBeenCalledTimes(1)
+				expect(env.result.current.reference.state.meta.errorMap.onServer).toBe("Unrelated server error")
+				expect(env.result.current.phone.state.meta).toMatchObject({ isDirty: meta.isDirty, isTouched: meta.isTouched })
+			} else {
+				const env = renderHook(
+					() => {
+						const [server] = useState<ReturnType<typeof reactHookFormServerErrors>>(() => reactHookFormServerErrors(() => form))
+						const fields: CheckoutFieldsApi = useCheckoutFields({
+							getValues: () => form.getValues(),
+							setValues: (updates) => {
+								for (const { name, value } of updates) form.setValue(name, value)
+							},
+							validateField: (name) => form.trigger(name),
+							...server,
+						})
+						const form: UseFormReturn<CheckoutFormValues> = useRHF<CheckoutFormValues>({
+							defaultValues: { ...checkoutFormEncode(sources.values), useShippingAsBilling: false } as CheckoutFormValues,
+							resolver: fields.schema
+								? server.withResolver(async (values, context, options) => {
+										const result = await standardSchemaResolver(fields.schema as NonNullable<CheckoutFieldsApi["schema"]>)(
+											values,
+											context,
+											options,
+										)
+										if (values.billingAddress?.phone === "blocked")
+											return {
+												values: {},
+												errors: {
+													...result.errors,
+													billingAddress: {
+														...result.errors.billingAddress,
+														phone: { type: "application", message: "Application rejection" },
+													},
+												},
+											}
+										return result
+									})
+								: undefined,
+						})
+						const phone = useController({ control: form.control, name: "billingAddress.phone" })
+						const reference = useController({ control: form.control, name: safeName })
+						return { fields, form, phone, reference, server }
+					},
+					{ wrapper },
+				)
+				await waitFor(() => expect(env.result.current.fields.schema).not.toBeNull())
+				vi.useFakeTimers()
+				act(() => env.result.current.server.setErrors([{ name: safeName, messages: ["Unrelated server error"] }]))
+				act(() => {
+					env.result.current.phone.field.onChange("blocked")
+					env.result.current.fields.handleFieldChange("billingAddress.phone", "blocked")
+				})
+				await act(async () => {
+					await vi.advanceTimersByTimeAsync(1600)
+				})
+				expect(procedures.cart.update.call).not.toHaveBeenCalled()
+				expect(env.result.current.phone.fieldState.error?.message).toBe("Application rejection")
+				const meta = env.result.current.phone.fieldState
+				act(() => {
+					env.result.current.phone.field.onChange("allowed")
+					env.result.current.fields.handleFieldChange("billingAddress.phone", "allowed")
+				})
+				await act(async () => {
+					await vi.advanceTimersByTimeAsync(1600)
+				})
+				expect(procedures.cart.update.call).toHaveBeenCalledTimes(1)
+				expect(env.result.current.reference.fieldState.error?.types?.kitServer).toEqual(["Unrelated server error"])
+				expect(env.result.current.phone.fieldState).toMatchObject({ isDirty: meta.isDirty, isTouched: meta.isTouched })
+			}
+		},
+	)
+	it("TanStack background validation preserves interaction flags and does not undo a later real blur", async () => {
+		let complete!: () => void
+		const pending = new Promise<undefined>((resolve) => {
+			complete = () => resolve(undefined)
+		})
+		const env = renderHook(() => {
+			const form = useTanStackForm({ defaultValues: { billingAddress: { phone: "allowed" } } })
+			const phone = useField({ form, name: "billingAddress.phone", validators: { onChangeAsync: () => pending } })
+			return { form, phone }
+		})
+		act(() => env.result.current.phone.setMeta((meta) => ({ ...meta, isDirty: true, isTouched: false })))
+		let result: Promise<boolean> | undefined
+		act(() => {
+			result = tanStackValidateField(env.result.current.form, "billingAddress.phone")
+		})
+		expect(env.result.current.phone.state.meta).toMatchObject({ isDirty: true, isTouched: false })
+		act(() => env.result.current.phone.handleBlur())
+		await act(async () => {
+			complete()
+			await result
+		})
+		expect(env.result.current.phone.state.meta).toMatchObject({ isDirty: true, isTouched: true })
+	})
+	it.each([
+		["TanStack", TanStackCheckoutForm],
+		["React Hook Form", ReactHookFormCheckout],
+	] as const)(
+		"%s blocks an invalid postcode before first submit and saves a correction despite an unrelated error",
+		async (_name, Component) => {
+			const { sources, wrapper } = setup()
+			sources.storefront.address.fields.push(
+				field("postcode", {
+					location: "address",
+					label: "PIN",
+					required: true,
+					bindings: { billing: ["postcode"], shipping: ["postcode"] },
+				}),
+			)
+			render(createElement(Component), { wrapper })
+			const reference = await screen.findByLabelText("Reference")
+			const postcode = document.querySelector<HTMLInputElement>('input[name="shippingAddress.postcode"]')
+			if (!postcode) throw new Error("Missing shipping postcode")
+			vi.useFakeTimers()
+			fireEvent.change(reference, { target: { value: "" } })
+			fireEvent.change(postcode, { target: { value: "INVALID" } })
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(1600)
+			})
+			expect(procedures.cart.update.call).not.toHaveBeenCalled()
+			expect(procedures.checkout.confirm.call).not.toHaveBeenCalled()
+			fireEvent.change(postcode, { target: { value: "560002" } })
+			fireEvent.blur(postcode)
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(50)
+			})
+			expect(procedures.cart.update.call).toHaveBeenCalledTimes(1)
+			expect(procedures.cart.update.call.mock.calls[0]?.[0].body).toMatchObject({
+				shippingAddress: { postcode: "560002" },
+				billingAddress: { postcode: "560002" },
+			})
+			expect(reference).toHaveProperty("value", "")
+			expect(procedures.checkout.confirm.call).not.toHaveBeenCalled()
+		},
+	)
 	it.each(["TanStack", "React Hook Form"] as const)(
 		"%s copies without requesting validation and allows the consumer to validate the complete batch",
 		async (library) => {
@@ -187,7 +374,7 @@ describe("real form libraries", () => {
 								if (names.length) void form.trigger(names)
 							},
 						})
-						const form = useRHF<CheckoutFormValues>({
+						const form: UseFormReturn<CheckoutFormValues> = useRHF<CheckoutFormValues>({
 							defaultValues,
 							resolver: (values) => {
 								validate(values.billingAddress?.country, values.billingAddress?.state)
@@ -242,7 +429,7 @@ describe("real form libraries", () => {
 		if (!shippingState) throw new Error("Missing shipping state")
 		fireEvent.change(shippingState, { target: { value: "Later" } })
 		expect(document.querySelector<HTMLInputElement>('input[name="billingAddress.state"]')?.value).toBe("London")
-		expect(procedures.cart.update.call).not.toHaveBeenCalled()
+		await waitFor(() => expect(procedures.cart.update.call).toHaveBeenCalledTimes(1))
 		expect(procedures.checkout.confirm.call).not.toHaveBeenCalled()
 	})
 	it.each([
@@ -308,7 +495,7 @@ describe("real form libraries", () => {
 						},
 					})
 					const form = useTanStackForm({
-						defaultValues: { ...checkoutFormEncode(sources.values), useShippingAsBilling: false },
+						defaultValues: { ...checkoutFormEncode(sources.values), useShippingAsBilling: false } as CheckoutFormValues,
 						listeners: {
 							onChange: ({ fieldApi }) => {
 								listen(fieldApi.name)
@@ -328,7 +515,10 @@ describe("real form libraries", () => {
 			act(() => result.current.state.setMeta((meta) => ({ ...meta, isDirty: dirty, isTouched: dirty })))
 			act(() => result.current.country.handleChange("GB"))
 			expect(writes).toEqual([
-				[{ name: "billingAddress.state", value: "", options: { runListeners: false, meta: "preserve", validate: false } }],
+				[
+					{ name: "billingAddress.state", value: "", options: { runListeners: false, meta: "preserve", validate: false } },
+					{ name: "billingAddress.postcode", value: "", options: { runListeners: false, meta: "preserve", validate: false } },
+				],
 			])
 			expect(result.current.form.state.values.billingAddress?.state).toBe("")
 			expect(result.current.state.state.meta).toMatchObject({ isDirty: dirty, isTouched: dirty })
@@ -372,8 +562,8 @@ describe("real form libraries", () => {
 							if (names.length) void form.trigger(names)
 						},
 					})
-					const form = useRHF<CheckoutFormValues>({
-						defaultValues: { ...checkoutFormEncode(sources.values), useShippingAsBilling: false },
+					const form: UseFormReturn<CheckoutFormValues> = useRHF<CheckoutFormValues>({
+						defaultValues: { ...checkoutFormEncode(sources.values), useShippingAsBilling: false } as CheckoutFormValues,
 						resolver: fields.schema
 							? (values, context, options) => {
 									validate(values.billingAddress?.state)
@@ -388,7 +578,11 @@ describe("real form libraries", () => {
 				{ wrapper },
 			)
 			await waitFor(() => expect(result.current.fields.schema).not.toBeNull())
-			if (dirty) act(() => result.current.form.setValue("billingAddress.state", "dirty", { shouldDirty: true, shouldTouch: true }))
+			if (dirty)
+				act(() => {
+					result.current.form.setValue("billingAddress.state", "dirty", { shouldDirty: true, shouldTouch: true })
+					result.current.fields.handleFieldChange("billingAddress.state", "dirty")
+				})
 			act(() => {
 				result.current.country.field.onChange("GB")
 				result.current.fields.handleFieldChange("billingAddress.country", "GB")
@@ -433,7 +627,8 @@ describe("real form libraries", () => {
 		fireEvent.change(billingCountry, { target: { value: "GB" } })
 		await waitFor(() => expect(document.querySelector('input[name="billingAddress.state"]')).not.toBeNull())
 		expect(document.querySelector<HTMLInputElement>('input[name="billingAddress.state"]')?.value).toBe("")
-		expect(procedures.cart.update.call).not.toHaveBeenCalled()
+		await waitFor(() => expect(procedures.cart.update.call).toHaveBeenCalledTimes(1))
+		await waitFor(() => expect(screen.getByRole("button", { name: "Place order" }).hasAttribute("disabled")).toBe(false))
 		expect(procedures.checkout.confirm.call).not.toHaveBeenCalled()
 		fireEvent.click(screen.getByRole("button", { name: "Place order" }))
 		await waitFor(() => expect(procedures.checkout.confirm.call).toHaveBeenCalledTimes(1))
@@ -471,7 +666,7 @@ describe("real form server channels", () => {
 					},
 				})
 				const form = useTanStackForm({
-					defaultValues: { ...checkoutFormEncode(sources.values), useShippingAsBilling: false },
+					defaultValues: { ...checkoutFormEncode(sources.values), useShippingAsBilling: false } as CheckoutFormValues,
 					listeners: { onChange: ({ fieldApi }) => fields.handleFieldChange(fieldApi.name, fieldApi.state.value) },
 				})
 				const state = useField({ form, name: "billingAddress.state", validators: { onChange: validate } })
@@ -513,9 +708,11 @@ describe("real form server channels", () => {
 		const { result } = renderHook(
 			() => {
 				const checkout = useCheckout()
-				const [server] = useState(() => reactHookFormServerErrors(() => form))
+				const [server] = useState<ReturnType<typeof reactHookFormServerErrors>>(() => reactHookFormServerErrors(() => form))
 				const fields = useCheckoutFields({ getValues: () => form.getValues(), ...server })
-				const form = useRHF<CheckoutFormValues>({ defaultValues: { ...checkoutFormEncode(sources.values), useShippingAsBilling: false } })
+				const form: UseFormReturn<CheckoutFormValues> = useRHF<CheckoutFormValues>({
+					defaultValues: { ...checkoutFormEncode(sources.values), useShippingAsBilling: false },
+				})
 				const state = useController({ control: form.control, name: "billingAddress.state" })
 				return { fields, form, checkout, state }
 			},
@@ -702,7 +899,7 @@ it("React Hook Form retains the latest resolver client error when the server cha
 			const [server] = useState<ReturnType<typeof reactHookFormServerErrors>>(() => reactHookFormServerErrors(() => form))
 			const fields = useCheckoutFields({ getValues: () => form.getValues(), ...server })
 			const form: UseFormReturn<CheckoutFormValues> = useRHF<CheckoutFormValues>({
-				defaultValues: { ...checkoutFormEncode(sources.values), useShippingAsBilling: false },
+				defaultValues: { ...checkoutFormEncode(sources.values), useShippingAsBilling: false } as CheckoutFormValues,
 				resolver: fields.schema ? server.withResolver(standardSchemaResolver(fields.schema)) : undefined,
 			})
 			const control = useController({ control: form.control, name: safeName })
@@ -745,7 +942,7 @@ it("React Hook Form cannot resurrect server messages when reset occurs during re
 			const [server] = useState<ReturnType<typeof reactHookFormServerErrors>>(() => reactHookFormServerErrors(() => form))
 			const fields = useCheckoutFields({ getValues: () => form.getValues(), ...server })
 			const form: UseFormReturn<CheckoutFormValues> = useRHF<CheckoutFormValues>({
-				defaultValues: { ...checkoutFormEncode(sources.values), useShippingAsBilling: false },
+				defaultValues: { ...checkoutFormEncode(sources.values), useShippingAsBilling: false } as CheckoutFormValues,
 				resolver: server.withResolver(async (values) => {
 					validating()
 					await validation

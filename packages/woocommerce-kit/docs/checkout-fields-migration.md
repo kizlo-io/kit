@@ -14,7 +14,7 @@ The next minor replaces `useCheckoutFields({ values })` with form accessors and 
    subscription used to update field definitions. The getter returns the complete current snapshot; the setter receives
    readonly named patches and does not reset the whole form or defaults.
 4. Call `fields.handleFieldChange(name, normalizedValue)` once after each relevant edit commits. Choose either a form listener
-   or a field callback, and avoid attaching both. Remove application country/state clearing: Kit now requests those clears.
+   or a field callback, and avoid attaching both. Remove application country/state/postcode clearing: Kit now requests those clears.
    Native `getProps` forwards into your form callback and does not duplicate your configured event route.
 5. Honor each patch's separate listener, interaction metadata and validation options. Dependency clears use
    `{ runListeners: false, meta: "preserve", validate: false }`; they preserve existing dirty/touched state. Apply all patches
@@ -34,7 +34,7 @@ The next minor replaces `useCheckoutFields({ values })` with form accessors and 
    result is the decoded schema shape, including the sharing control. The application owns confirmation request assembly,
    effective address projection, removal of form-only controls and payment/provider data.
 9. After a silent reset or prefill, call `fields.reevaluate()`. This reevaluates fields without clearing a coherent prefilled
-   country/state pair. Keep the form library's reset defaults when refreshing its options; the TanStack example shows this.
+   country/state/postcode set. Keep the form library's reset defaults when refreshing its options; the TanStack example shows this.
 
 ```tsx
 // Before: each values render reevaluated the fields, with raw paths and consumer adapters.
@@ -51,8 +51,8 @@ await onSubmit(fields.decode(formValues))
 The complete [TanStack Form](../types/checkout-fields.example.tsx) and
 [React Hook Form](../types/checkout-fields-rhf.example.tsx) examples render contact, shipping, billing and order fields plus
 checkout controls in one form. They preserve the setter contract, wire a single event route and pass decoded values to
-application-owned submit callbacks. Repricing, address persistence, checkout status and server-error integration remain in
-their respective hooks and application callbacks. The fields hook adds no lifecycle callbacks or network mutations.
+application-owned submit callbacks. The examples now bind fresh named validation and input blur to automatic address syncing; cart transport owns scheduling and
+requests, and checkout submission remains application-owned. Metadata-only fields consumers do not initiate saves.
 
 ## Migrating key conversions
 
@@ -70,6 +70,24 @@ The introspection-generated additional-field registrations continue to supply th
 client. The encoded and decoded representations retain those types and optionality. Runtime storefront bindings and field
 schemas supply the corresponding form rules; conversion only reverses the key encoding.
 
-For repricing, pass native address snapshots to `useCartAddress().onAddressChange`, including `country`, `state`, `city`,
-`postcode` and the current sharing selection. Cart actions apply the store's effective-address policy to drafts separately
-from field key conversion.
+## Migrating automatic address updates
+
+Bind `validateField(name): boolean | Promise<boolean>` together with `getValues` and `setValues` to activate automatic
+syncing on one fields hook per form. Remove the separate cart `onAddressChange` listener. Run Kit's schema and your
+application validation; do not treat cached errors as fresh validity. RHF can use `form.trigger(name)` through its resolver.
+TanStack must execute the same schema for its sync-time validation cause, await the named result, and restore any
+synchronously changed interaction flags immediately, without restoring stale flags after an async result.
+
+Call `fields.handleFieldBlur(name)` after the form's blur handler. Kit debounces typing for 1500 ms and flushes valid country
+changes/blur. Pending invalid fields block the combined address batch; unrelated unchanged errors do not. State and postcode
+are cleared on country changes unless replacements are supplied together. Empty country resets have a narrow sync exemption;
+full submission still validates all required fields. Postcodes now receive a local country-specific format check.
+
+The form retains its values when cart responses arrive. `isRepricing` includes validation and queued/in-flight saves, which also
+participate in `useCheckout().isLocked` and its confirmation guard. Failure retains the draft and checkout guard through invalid
+edits; another edit or blur retries, or returning to the acknowledged address clears the failure. Hidden values/constraints and independent
+registered address buckets keep their existing Kit contract.
+
+Remove imports of `isAddressComplete` and `defaultShouldUpdateAddress`; neither is public. Do not replace them with a
+whole-address completeness gate. Standalone `useCartAddress` remains available with its existing default or full replacement
+callback, explicit patch mutations, and new `flush()`/`cancel()` controls.

@@ -2,6 +2,7 @@
 
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { checkoutAddressSource } from "../checkout-address"
+import { createCheckoutAddressSync } from "../checkout-address-sync"
 import { checkoutSession, createCheckoutErrorBridge, projectCheckoutErrors } from "../checkout-errors"
 import { type CheckoutFieldSources, checkoutDefaults } from "../checkout-field-document"
 import {
@@ -11,11 +12,20 @@ import {
 	checkoutFormSchema,
 	checkoutShippingToBillingUpdates,
 	isCheckoutFormName,
+	projectedFormValues,
 	resolveCheckoutFormState,
 } from "../checkout-form"
-import type { CheckoutFieldsApi, CheckoutFieldsOptions, CheckoutFormValues } from "../types"
+import type {
+	CartAddressInput,
+	CartAddressSnapshotInput,
+	CheckoutFieldsApi,
+	CheckoutFieldsOptions,
+	CheckoutFormValues,
+	UpdateCartInput,
+} from "../types"
+import { useCartAddressTransport } from "./cart-address"
 import { useCheckoutErrorState, useCheckoutErrorStore } from "./checkout-error-store"
-import { useCartActivity, useCartQuery, useCheckoutQuery } from "./session-queries"
+import { useAddressQueueActivity, useCartActivity, useCartQuery, useCheckoutQuery } from "./session-queries"
 import { useStorefront } from "./storefront"
 
 export type {
@@ -56,6 +66,59 @@ export function useCheckoutFields(options: CheckoutFieldsOptions = {}): Checkout
 	)
 	const committed = useRef(sources)
 	const accessors = useRef(options)
+	const active = !!options.validateField
+	if (active && (!options.getValues || !options.setValues)) throw new Error("Automatic address syncing requires getValues and setValues")
+	const validationActivity = useAddressQueueActivity()
+	const sessionRef = useRef(session)
+	const syncRef = useRef<ReturnType<typeof createCheckoutAddressSync> | null>(null)
+	const allows = useCallback(
+		(input: CartAddressSnapshotInput, cart: CheckoutFieldSources["cart"]) => syncRef.current?.allows(input, cart) ?? false,
+		[],
+	)
+	// The fields core has already projected sharing and removed unchanged addresses.
+	const project = useCallback((input: CartAddressInput) => input as UpdateCartInput, [])
+	const transport = useCartAddressTransport({ shouldUpdateAddress: allows }, project, checkoutQuery.data !== undefined)
+	const transportRef = useRef(transport)
+	const sync = useMemo(
+		() =>
+			createCheckoutAddressSync({
+				read: () => ({ sources: committed.current, values: accessors.current.getValues?.(), session: sessionRef.current }),
+				validate: (name) => accessors.current.validateField?.(name) ?? false,
+				queue: (input) => transportRef.current.onAddressChange(input),
+				cancel: () => transportRef.current.cancelQueued(),
+				flush: () => transportRef.current.flush(),
+				activity: validationActivity,
+				unchanged: () => {
+					const values = accessors.current.getValues?.()
+					if (!values) return
+					const { billingAddress, shippingAddress } = projectedFormValues(committed.current, values)
+					transportRef.current.clearSavedFailure({ billingAddress, shippingAddress } as CartAddressSnapshotInput, committed.current.cart)
+				},
+				blocked: (names) => {
+					const current = committedState.current
+					const projection = projectCheckoutErrors(errors.state.get().issues, committed.current, current.fields, {
+						useShippingAsBilling: current.useShippingAsBilling,
+					})
+					return [...projection.associations.values()].some((name) => names.includes(name))
+				},
+			}),
+		[validationActivity, errors],
+	)
+	const dependencies = useRef<
+		Partial<Record<"billingAddress" | "shippingAddress", { country?: unknown; state?: unknown; postcode?: unknown }>> | undefined
+	>(undefined)
+	const rememberDependencies = useCallback((values: CheckoutFormValues | undefined) => {
+		dependencies.current = Object.fromEntries(
+			(["billingAddress", "shippingAddress"] as const).map((root) => [
+				root,
+				{
+					country: values?.[root]?.country,
+					state: values?.[root]?.state,
+					postcode: values?.[root]?.postcode,
+				},
+			]),
+		)
+	}, [])
 	const initial = useRef<{ session: string; values: CheckoutFormValues } | null>(null)
 	const defaults = useCallback((source: CheckoutFieldSources) => {
 		const raw = source.storefront ? checkoutDefaults(source) : null
@@ -73,6 +136,8 @@ export function useCheckoutFields(options: CheckoutFieldsOptions = {}): Checkout
 	const committedState = useRef(state)
 	useLayoutEffect(() => {
 		accessors.current = options
+		transportRef.current = transport
+		syncRef.current = sync
 	})
 	useLayoutEffect(() => {
 		committed.current = sources
@@ -81,7 +146,15 @@ export function useCheckoutFields(options: CheckoutFieldsOptions = {}): Checkout
 		const next = resolveCheckoutFormState(sources, values, defaultValues, committedState.current)
 		committedState.current = next
 		setState(next)
-	}, [sources, defaults])
+		rememberDependencies(values)
+		if (active) sync.refresh()
+	}, [sources, defaults, rememberDependencies, active, sync])
+	useLayoutEffect(() => {
+		sessionRef.current = session
+		sync.reset()
+		if (!active) return
+		return () => sync.reset()
+	}, [session, active, sync])
 	const reevaluate = useCallback(() => {
 		const source = committed.current
 		const defaultValues = defaults(source)
@@ -89,7 +162,9 @@ export function useCheckoutFields(options: CheckoutFieldsOptions = {}): Checkout
 		const next = resolveCheckoutFormState(source, values, defaultValues, committedState.current)
 		committedState.current = next
 		setState(next)
-	}, [defaults])
+		rememberDependencies(values)
+		if (accessors.current.validateField) sync.refresh()
+	}, [defaults, rememberDependencies, sync])
 	const projection = useMemo(
 		() => projectCheckoutErrors(errorState.issues, sources, state.fields, { useShippingAsBilling: state.useShippingAsBilling }),
 		[errorState.issues, sources, state],
@@ -138,9 +213,9 @@ export function useCheckoutFields(options: CheckoutFieldsOptions = {}): Checkout
 			if (!getValues) throw new Error("Checkout field events require getValues")
 			changing.current = true
 			try {
-				getValues()
+				const before = getValues()
 				errors.clearIssues(new Set([...associated.current].filter(([, control]) => control === name).map(([id]) => id)))
-				const updates = checkoutFieldUpdates(name)
+				const updates = checkoutFieldUpdates(name, before, dependencies.current)
 				if (updates.length) {
 					if (!setValues) throw new Error("Country field dependencies require setValues")
 					setValues(updates)
@@ -151,11 +226,16 @@ export function useCheckoutFields(options: CheckoutFieldsOptions = {}): Checkout
 				const next = resolveCheckoutFormState(source, values, defaultValues, committedState.current)
 				committedState.current = next
 				setState(next)
+				rememberDependencies(values)
 			} finally {
 				changing.current = false
 			}
+			if (accessors.current.validateField) {
+				if (name.startsWith("billingAddress.") || name.startsWith("shippingAddress.") || name === "useShippingAsBilling") sync.change()
+				else sync.refresh()
+			}
 		},
-		[defaults, errors],
+		[defaults, errors, rememberDependencies, sync],
 	)
 	const copyShippingToBilling = useCallback(() => {
 		if (changing.current) return
@@ -172,7 +252,14 @@ export function useCheckoutFields(options: CheckoutFieldsOptions = {}): Checkout
 		} finally {
 			changing.current = false
 		}
-	}, [errors, reevaluate])
+		if (accessors.current.validateField) sync.change()
+	}, [errors, reevaluate, sync])
+	const handleFieldBlur = useCallback<CheckoutFieldsApi["handleFieldBlur"]>(
+		(name) => {
+			if (accessors.current.validateField && isCheckoutFormName(committed.current, name)) sync.blur()
+		},
+		[sync],
+	)
 	const validator = useMemo(() => checkoutFormSchema(() => committed.current), [])
 	return {
 		billing: { fields: state.fields.billing, errors: projection.sections.billing },
@@ -185,12 +272,13 @@ export function useCheckoutFields(options: CheckoutFieldsOptions = {}): Checkout
 		canUseShippingAsBilling: state.canUseShippingAsBilling,
 		schema: storefront && state.defaultValues && sources.checkout && !sources.checkout.isPaid && sources.cart ? validator : null,
 		handleFieldChange,
+		handleFieldBlur,
 		copyShippingToBilling,
 		reevaluate,
 		encode: checkoutFormEncode,
 		decode: checkoutFormDecode,
 		isLoading: storefrontLoading || checkoutQuery.isPending || (!sources.cart && cartQuery.isFetching),
 		isRepricing: activity.isRepricing || activity.isSelectingRate,
-		error: storefrontError ?? checkoutQuery.error ?? cartQuery.error,
+		error: storefrontError ?? checkoutQuery.error ?? cartQuery.error ?? transport.error,
 	}
 }

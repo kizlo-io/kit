@@ -18,7 +18,6 @@ import { useWooCommerceContext } from "./context"
 
 /** The core address types, available beside the hook whose payload they describe. */
 export type {
-	AddressCompletenessInput,
 	AddressCountryModel,
 	AddressField,
 	StorefrontAddress,
@@ -56,14 +55,13 @@ export type StorefrontApi = {
  * @example
  * ```tsx
  * "use client"
- * import { isAddressComplete, resolveAddressCountry, shippingCountries } from "@kizlo/woocommerce-kit"
+ * import { resolveAddressCountry, shippingCountries } from "@kizlo/woocommerce-kit"
  * import { useStorefront } from "@kizlo/woocommerce-kit/react/storefront"
  *
  * const { storefront } = useStorefront()
  * if (storefront) {
  * 	const countries = shippingCountries(storefront.address)
  * 	const { fields, states, stateLabel } = resolveAddressCountry(storefront.address, address.country)
- * 	const isComplete = isAddressComplete(storefront.address, address)
  * }
  * ```
  */

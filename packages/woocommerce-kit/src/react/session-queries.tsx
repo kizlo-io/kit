@@ -1,6 +1,7 @@
 "use client"
 
 import { isServer, skipToken, useQuery } from "@tanstack/react-query"
+import { useCallback, useId } from "react"
 import { cartStaleTime } from "../cart"
 import {
 	addressMutationKey,
@@ -16,6 +17,12 @@ import { useCheckoutLockStore, useCheckoutReadiness } from "./checkout-lock-stor
 import { useWooCommerceContext } from "./context"
 
 export { addressMutationKey, addressQueueKey, cartMutationKey } from "../session-keys"
+
+export function useAddressQueueActivity() {
+	const binding = useCheckoutLockStore()
+	const owner = useId()
+	return useCallback((active: boolean) => binding.queue(addressQueueKey, owner, active), [binding, owner])
+}
 
 export function useCheckoutQuery() {
 	const binding = useCheckoutLockStore()

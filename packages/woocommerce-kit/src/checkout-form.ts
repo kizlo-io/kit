@@ -67,7 +67,7 @@ export function canShareCheckoutAddress(sources: CheckoutFieldSources): boolean 
 	return !!sources.storefront && !!sources.cart && sources.cart.needsShipping && !sources.storefront.checkout.forcedBillingAddress
 }
 /** Effective addresses feed metadata and schema evaluation without changing the form values. */
-function projectedFormValues(sources: CheckoutFieldSources, values: CheckoutFormValues): CheckoutFieldValues {
+export function projectedFormValues(sources: CheckoutFieldSources, values: CheckoutFormValues): CheckoutFieldValues {
 	const decoded = checkoutFormDecode(values) as Record<string, unknown>
 	const roots = new Set([
 		"billingAddress",
@@ -92,8 +92,8 @@ function projectedFormValues(sources: CheckoutFieldSources, values: CheckoutForm
 	return projectCheckoutAddresses(sources, output, values.useShippingAsBilling) as CheckoutFieldValues
 }
 
-function projectedFormModel(sources: CheckoutFieldSources, values: CheckoutFormValues, output: CheckoutFieldValues) {
-	const model = { ...resolveCheckoutFields(sources, output), addressDiagnostics: [] as CheckoutFieldDiagnostic[] }
+function projectedFormModel(sources: CheckoutFieldSources, values: CheckoutFormValues, output: CheckoutFieldValues, validate = false) {
+	const model = { ...resolveCheckoutFields(sources, output, validate), addressDiagnostics: [] as CheckoutFieldDiagnostic[] }
 	const diagnose = (diagnostic: CheckoutFieldDiagnostic) => {
 		model.unsupported.push(diagnostic)
 		model.addressDiagnostics.push(diagnostic)
@@ -121,9 +121,9 @@ function projectedFormModel(sources: CheckoutFieldSources, values: CheckoutFormV
 	return model
 }
 
-export function resolveCheckoutForm(sources: CheckoutFieldSources, values?: CheckoutFormValues) {
+export function resolveCheckoutForm(sources: CheckoutFieldSources, values?: CheckoutFormValues, validate = false) {
 	const current = values ?? checkoutFormEncode(checkoutDefaults(sources) ?? {})
-	return projectedFormModel(sources, current, projectedFormValues(sources, current))
+	return projectedFormModel(sources, current, projectedFormValues(sources, current), validate)
 }
 export function isCheckoutFormName(sources: CheckoutFieldSources, name: string): boolean {
 	if (controls.has(name)) return true
@@ -249,13 +249,22 @@ export function checkoutShippingToBillingUpdates(values: CheckoutFormValues | un
 	})
 }
 
-export function checkoutFieldUpdates(name: CheckoutFormFieldName): readonly CheckoutFieldUpdate[] {
+export function checkoutFieldUpdates(
+	name: CheckoutFormFieldName,
+	values?: CheckoutFormValues,
+	previous?: Partial<Record<"billingAddress" | "shippingAddress", { country?: unknown; state?: unknown; postcode?: unknown }>>,
+): readonly CheckoutFieldUpdate[] {
 	if (name !== "billingAddress.country" && name !== "shippingAddress.country") return []
-	return [
-		{
-			name: name === "billingAddress.country" ? "billingAddress.state" : "shippingAddress.state",
-			value: "",
-			options: { runListeners: false, meta: "preserve", validate: false },
-		},
-	]
+	const root = name === "billingAddress.country" ? "billingAddress" : "shippingAddress"
+	if (previous && previous[root]?.country === values?.[root]?.country) return []
+	return (["state", "postcode"] as const).flatMap((key) => {
+		if (previous && values?.[root]?.[key] !== previous[root]?.[key]) return []
+		return [
+			{
+				name: checkoutFormName([root, key]),
+				value: "",
+				options: { runListeners: false, meta: "preserve", validate: false },
+			},
+		]
+	})
 }

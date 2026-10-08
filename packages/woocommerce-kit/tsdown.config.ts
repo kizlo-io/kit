@@ -14,6 +14,8 @@ const clientModules = [
 	"src/react/checkout-watch.ts",
 	"src/react/checkout-error-store.ts",
 	"src/react/cart.tsx",
+	"src/react/cart-action.ts",
+	"src/react/cart-address.ts",
 	"src/react/checkout.tsx",
 	"src/react/checkout-fields.tsx",
 	"src/react/session-queries.tsx",

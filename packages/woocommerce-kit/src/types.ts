@@ -233,6 +233,8 @@ export type CheckoutServerErrorCallbacks = {
 export type CheckoutFieldsOptions = {
 	getValues?: () => CheckoutFormValues | undefined
 	setValues?: (updates: readonly CheckoutFieldUpdate[]) => void
+	/** Enable automatic address syncing by validating named current fields through the form's complete validation pipeline. */
+	validateField?: (name: CheckoutFormFieldName) => boolean | Promise<boolean>
 } & (CheckoutServerErrorCallbacks | { setErrors?: undefined; clearErrors?: undefined })
 export type CheckoutFieldBinding = {
 	value: CheckoutFieldValue | undefined
@@ -296,6 +298,8 @@ export type CheckoutFieldsApi = Omit<CheckoutFieldsModel, "fields" | "defaultVal
 	schema: StandardFieldSchema<CheckoutFormValues> | null
 	canUseShippingAsBilling: boolean
 	handleFieldChange: (name: CheckoutFormFieldName, value: CheckoutFieldValue | undefined) => void
+	/** Validate the latest address edits and flush their pending save without waiting for typing to pause. */
+	handleFieldBlur: (name: CheckoutFormFieldName) => void
 	/** Copy native shipping draft values into billing once; requires getValues/setValues and leaves sharing unchanged. */
 	copyShippingToBilling: () => void
 	reevaluate: () => void
