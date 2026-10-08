@@ -3,6 +3,7 @@
 import { useCheckout } from "@kizlo/woocommerce-kit/react/checkout"
 import {
 	type CheckoutFieldsApi,
+	type CheckoutFieldValues,
 	type CheckoutFormValues,
 	type CheckoutServerErrorCallbacks,
 	useCheckoutFields,
@@ -13,14 +14,10 @@ import { CheckoutFieldControl } from "./checkout-field-control.example"
 
 const emptyValues: CheckoutFormValues = {}
 
-export function TanStackCheckoutForm() {
+export function TanStackCheckoutForm({ onSubmit }: { onSubmit: (values: CheckoutFieldValues) => Promise<void> }) {
 	const formRef = useRef<{ options: { defaultValues?: CheckoutFormValues } } | null>(null)
 	const [initialized, setInitialized] = useState(false)
-	const checkout = useCheckout({
-		onSuccess: ({ redirectUrl }) => {
-			if (redirectUrl) window.location.assign(redirectUrl)
-		},
-	})
+	const checkout = useCheckout()
 	const serverErrors: CheckoutServerErrorCallbacks = {
 		setErrors: (patches) => {
 			for (const { name, messages } of patches)
@@ -65,11 +62,7 @@ export function TanStackCheckoutForm() {
 		validators: { onSubmit: fields.schema ?? undefined },
 		listeners: { onChange: ({ fieldApi }) => fields.handleFieldChange(fieldApi.name, fieldApi.state.value) },
 		onSubmit: async ({ value }) => {
-			const output = fields.getOutput(value)
-			if (output.billingAddress && output.paymentMethod)
-				await checkout
-					.confirmAsync({ ...output, billingAddress: output.billingAddress, paymentMethod: output.paymentMethod })
-					.catch(() => {})
+			await onSubmit(fields.decode(value))
 		},
 	})
 	useLayoutEffect(() => {

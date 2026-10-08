@@ -7,19 +7,21 @@ import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from "@t
 import { createElement, type ReactNode, useState } from "react"
 import { type UseFormReturn, useController, useForm as useRHF } from "react-hook-form"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { TanStackCheckoutForm } from "../../types/checkout-fields.example"
-import { ReactHookFormCheckout } from "../../types/checkout-fields-rhf.example"
+import { TanStackCheckoutForm as TanStackFieldsForm } from "../../types/checkout-fields.example"
+import { ReactHookFormCheckout as ReactHookFieldsForm } from "../../types/checkout-fields-rhf.example"
 import { reactHookFormErrorMessages, reactHookFormServerErrors } from "../../types/checkout-server-errors.example"
 import { cartQueryKey } from "../cart"
 import { checkoutQueryKey } from "../checkout"
-import { checkoutFormInput } from "../checkout-form"
+import { projectCheckoutAddresses } from "../checkout-address"
+import { checkoutFormEncode } from "../checkout-form"
 import { validationFailure, validationIssue } from "../test/checkout-errors-fixture"
 import { field, fixtures } from "../test/checkout-fields-fixture"
-import type { CheckoutFieldsApi, CheckoutFieldUpdate, CheckoutFormValues } from "../types"
+import type { CheckoutFieldsApi, CheckoutFieldUpdate, CheckoutFieldValues, CheckoutFormValues, ConfirmCheckoutInput } from "../types"
+import { useCartAddress } from "./cart"
 import { useCheckout } from "./checkout"
 import { useCheckoutFields } from "./checkout-fields"
 import { WooCommerceProvider } from "./provider"
-import { storefrontQueryKey } from "./storefront"
+import { storefrontQueryKey, useStorefront } from "./storefront"
 
 const { procedures } = vi.hoisted(() => {
 	const procedure = () => ({ call: vi.fn() })
@@ -35,6 +37,26 @@ vi.mock("kizlo/react", () => {
 	const client = { woocommerce: procedures }
 	return { useKizloContext: () => ({ client }) }
 })
+// The host application owns confirmation assembly; the form examples only decode fields.
+function ApplicationCheckoutForm({ Component }: { Component: typeof TanStackFieldsForm | typeof ReactHookFieldsForm }) {
+	const checkout = useCheckout()
+	const { storefront } = useStorefront()
+	return createElement(Component, {
+		onSubmit: async (values: CheckoutFieldValues) => {
+			const projected = projectCheckoutAddresses({ storefront, cart: checkout.checkout?.cart ?? null }, values, values.useShippingAsBilling)
+			const { useShippingAsBilling: _sharing, ...input } = projected
+			// These integration fixtures initialize every native submission member.
+			await checkout.confirmAsync(input as ConfirmCheckoutInput).catch(() => {})
+		},
+	})
+}
+function TanStackCheckoutForm() {
+	return createElement(ApplicationCheckoutForm, { Component: TanStackFieldsForm })
+}
+function ReactHookFormCheckout() {
+	return createElement(ApplicationCheckoutForm, { Component: ReactHookFieldsForm })
+}
+
 const clients: QueryClient[] = []
 const id = "plugin/a.b[0]'%"
 const safeName = "additionalFields.plugin%2Fa%2Eb%5B0%5D%27%25" as const
@@ -82,7 +104,7 @@ describe("real form libraries", () => {
 		async (library) => {
 			const { sources, wrapper } = setup()
 			const defaultValues: CheckoutFormValues = {
-				...checkoutFormInput(sources.values),
+				...checkoutFormEncode(sources.values),
 				useShippingAsBilling: false,
 				shippingAddress: { ...sources.checkout.shippingAddress, country: "GB", state: "London" },
 			}
@@ -286,7 +308,7 @@ describe("real form libraries", () => {
 						},
 					})
 					const form = useTanStackForm({
-						defaultValues: { ...checkoutFormInput(sources.values), useShippingAsBilling: false },
+						defaultValues: { ...checkoutFormEncode(sources.values), useShippingAsBilling: false },
 						listeners: {
 							onChange: ({ fieldApi }) => {
 								listen(fieldApi.name)
@@ -351,7 +373,7 @@ describe("real form libraries", () => {
 						},
 					})
 					const form = useRHF<CheckoutFormValues>({
-						defaultValues: { ...checkoutFormInput(sources.values), useShippingAsBilling: false },
+						defaultValues: { ...checkoutFormEncode(sources.values), useShippingAsBilling: false },
 						resolver: fields.schema
 							? (values, context, options) => {
 									validate(values.billingAddress?.state)
@@ -381,7 +403,7 @@ describe("real form libraries", () => {
 			expect(result.current.form.getFieldState("billingAddress.state")).toMatchObject({ isDirty: dirty, isTouched: dirty })
 			act(() => {
 				result.current.form.reset({
-					...checkoutFormInput(sources.values),
+					...checkoutFormEncode(sources.values),
 					useShippingAsBilling: false,
 					billingAddress: { ...sources.checkout.billingAddress, country: "GB", state: "London" },
 				})
@@ -449,7 +471,7 @@ describe("real form server channels", () => {
 					},
 				})
 				const form = useTanStackForm({
-					defaultValues: { ...checkoutFormInput(sources.values), useShippingAsBilling: false },
+					defaultValues: { ...checkoutFormEncode(sources.values), useShippingAsBilling: false },
 					listeners: { onChange: ({ fieldApi }) => fields.handleFieldChange(fieldApi.name, fieldApi.state.value) },
 				})
 				const state = useField({ form, name: "billingAddress.state", validators: { onChange: validate } })
@@ -493,7 +515,7 @@ describe("real form server channels", () => {
 				const checkout = useCheckout()
 				const [server] = useState(() => reactHookFormServerErrors(() => form))
 				const fields = useCheckoutFields({ getValues: () => form.getValues(), ...server })
-				const form = useRHF<CheckoutFormValues>({ defaultValues: { ...checkoutFormInput(sources.values), useShippingAsBilling: false } })
+				const form = useRHF<CheckoutFormValues>({ defaultValues: { ...checkoutFormEncode(sources.values), useShippingAsBilling: false } })
 				const state = useController({ control: form.control, name: "billingAddress.state" })
 				return { fields, form, checkout, state }
 			},
@@ -680,7 +702,7 @@ it("React Hook Form retains the latest resolver client error when the server cha
 			const [server] = useState<ReturnType<typeof reactHookFormServerErrors>>(() => reactHookFormServerErrors(() => form))
 			const fields = useCheckoutFields({ getValues: () => form.getValues(), ...server })
 			const form: UseFormReturn<CheckoutFormValues> = useRHF<CheckoutFormValues>({
-				defaultValues: { ...checkoutFormInput(sources.values), useShippingAsBilling: false },
+				defaultValues: { ...checkoutFormEncode(sources.values), useShippingAsBilling: false },
 				resolver: fields.schema ? server.withResolver(standardSchemaResolver(fields.schema)) : undefined,
 			})
 			const control = useController({ control: form.control, name: safeName })
@@ -723,7 +745,7 @@ it("React Hook Form cannot resurrect server messages when reset occurs during re
 			const [server] = useState<ReturnType<typeof reactHookFormServerErrors>>(() => reactHookFormServerErrors(() => form))
 			const fields = useCheckoutFields({ getValues: () => form.getValues(), ...server })
 			const form: UseFormReturn<CheckoutFormValues> = useRHF<CheckoutFormValues>({
-				defaultValues: { ...checkoutFormInput(sources.values), useShippingAsBilling: false },
+				defaultValues: { ...checkoutFormEncode(sources.values), useShippingAsBilling: false },
 				resolver: server.withResolver(async (values) => {
 					validating()
 					await validation
@@ -751,4 +773,120 @@ it("React Hook Form cannot resurrect server messages when reset occurs during re
 	})
 	expect(result.current.form.getFieldState(safeName).error).toBeUndefined()
 	expect(result.current.fields.errors).toEqual([])
+})
+
+// The host application assembles the request, including the empty method of a payment-free order.
+it.each([
+	["TanStack", TanStackCheckoutForm],
+	["React Hook Form", ReactHookFormCheckout],
+] as const)("%s hands decoded values to the host for a payment-free digital confirmation", async (_name, Component) => {
+	const { sources, wrapper } = setup()
+	sources.cart.needsShipping = false
+	sources.cart.needsPayment = false
+	sources.checkout.paymentMethod = null
+	render(createElement(Component), { wrapper })
+	await screen.findByLabelText("Reference")
+	fireEvent.change(screen.getByLabelText("Quantity"), { target: { value: "2" } })
+	fireEvent.click(screen.getByRole("button", { name: "Place order" }))
+	await waitFor(() => expect(procedures.checkout.confirm.call).toHaveBeenCalledTimes(1))
+	const output = procedures.checkout.confirm.call.mock.calls[0]?.[0].body
+	expect(output).toMatchObject({ billingAddress: { country: "IN", additionalFields: {} }, paymentMethod: "" })
+	expect(output).not.toHaveProperty("shippingAddress")
+	expect(output).not.toHaveProperty("useShippingAsBilling")
+})
+it.each([
+	["TanStack", TanStackCheckoutForm],
+	["React Hook Form", ReactHookFormCheckout],
+] as const)("%s stops an unselected registered enum through form validation", async (_name, Component) => {
+	const { sources, wrapper } = setup()
+	sources.storefront.address.fields.push(
+		field("plugin/choice", {
+			label: "Choice",
+			type: "select",
+			required: true,
+			schema: { type: "string", enum: ["red", "blue"] },
+			options: [
+				{ label: "Red", value: "red" },
+				{ label: "Blue", value: "blue" },
+			],
+		}),
+	)
+	render(createElement(Component), { wrapper })
+	const control = await screen.findByLabelText("Choice")
+	fireEvent.change(screen.getByLabelText("Quantity"), { target: { value: "2" } })
+	fireEvent.click(screen.getByRole("button", { name: "Place order" }))
+	await waitFor(() => expect(control.getAttribute("aria-invalid")).toBe("true"))
+	expect(procedures.checkout.confirm.call).not.toHaveBeenCalled()
+	fireEvent.change(control, { target: { value: "red" } })
+	fireEvent.click(screen.getByRole("button", { name: "Place order" }))
+	await waitFor(() => expect(procedures.checkout.confirm.call).toHaveBeenCalledTimes(1))
+	expect(procedures.checkout.confirm.call.mock.calls[0]?.[0].body.additionalFields).toHaveProperty("plugin/choice", "red")
+})
+it("editing and repricing an incomplete form use draft projection without requiring confirmable output", async () => {
+	const { sources, wrapper } = setup()
+	sources.storefront.checkout.forcedBillingAddress = true
+	procedures.cart.update.call.mockResolvedValue(sources.cart)
+	const defaultValues: CheckoutFormValues = {
+		billingAddress: { country: "IN", state: "KA", city: "Bengaluru", postcode: "" },
+		additionalFields: { "plugin%2Fchoice": "" },
+	}
+	const { result } = renderHook(
+		() => {
+			const address = useCartAddress({ addressDebounceMs: 0, shouldUpdateAddress: () => true })
+			const fields: CheckoutFieldsApi = useCheckoutFields({ getValues: () => form.state.values })
+			const form = useTanStackForm({
+				defaultValues,
+				listeners: {
+					onChange: ({ fieldApi }) => {
+						fields.handleFieldChange(fieldApi.name, fieldApi.state.value)
+						const billing = form.state.values.billingAddress
+						address.onAddressChange({
+							billingAddress: {
+								country: billing?.country ?? "",
+								state: billing?.state ?? "",
+								city: billing?.city ?? "",
+								postcode: billing?.postcode ?? "",
+							},
+						})
+					},
+				},
+			})
+			const postcode = useField({ form, name: "billingAddress.postcode" })
+			return { fields, form, postcode }
+		},
+		{ wrapper },
+	)
+	await waitFor(() => expect(result.current.fields.schema).not.toBeNull())
+	expect(result.current.fields.decode(result.current.form.state.values)).toEqual({
+		billingAddress: defaultValues.billingAddress,
+		additionalFields: { "plugin/choice": "" },
+	})
+	act(() => result.current.postcode.handleChange("560002"))
+	await waitFor(() => expect(procedures.cart.update.call).toHaveBeenCalledTimes(1))
+	expect(result.current.fields.unsupported).toEqual([])
+	expect(result.current.form.state.values.billingAddress?.postcode).toBe("560002")
+	expect(procedures.cart.update.call.mock.calls[0]?.[0].body.shippingAddress).toMatchObject({ country: "IN", postcode: "560002" })
+	expect(procedures.checkout.confirm.call).not.toHaveBeenCalled()
+})
+
+it.each([
+	["TanStack", TanStackFieldsForm],
+	["React Hook Form", ReactHookFieldsForm],
+] as const)("%s example submits the decoded schema shape to its application callback", async (_name, Component) => {
+	const { sources, wrapper } = setup()
+	sources.cart.needsShipping = false
+	const submit = vi.fn(async (_values: CheckoutFieldValues) => {})
+	render(createElement(Component, { onSubmit: submit }), { wrapper })
+	await screen.findByLabelText("Reference")
+	fireEvent.change(screen.getByLabelText("Quantity"), { target: { value: "2" } })
+	fireEvent.click(screen.getByRole("button", { name: "Place order" }))
+	await waitFor(() => expect(submit).toHaveBeenCalledTimes(1))
+	const decoded = submit.mock.calls[0]?.[0]
+	expect(decoded).toMatchObject({
+		additionalFields: { [id]: "OLD", "consumer/quantity.a[0]'%%": 2 },
+		useShippingAsBilling: false,
+		billingAddress: { country: "IN" },
+		shippingAddress: { country: "IN" },
+	})
+	expect(procedures.checkout.confirm.call).not.toHaveBeenCalled()
 })

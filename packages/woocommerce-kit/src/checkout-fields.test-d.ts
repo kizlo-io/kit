@@ -16,7 +16,7 @@ import type {
 	ConfirmCheckoutInput,
 } from "./types"
 
-expectTypeOf<CheckoutFieldValues>().toEqualTypeOf<Partial<ConfirmCheckoutInput>>()
+expectTypeOf<ConfirmCheckoutInput>().toExtend<CheckoutFieldValues>()
 expectTypeOf<NonNullable<CheckoutFieldsApi["schema"]>>().toExtend<StandardSchemaV1<CheckoutFormValues>>()
 expectTypeOf<CheckoutFieldsApi["defaultValues"]>().toEqualTypeOf<CheckoutFormValues | null>()
 expectTypeOf<ReturnType<typeof useCheckoutFields>>().toEqualTypeOf<CheckoutFieldsApi>()
@@ -26,7 +26,23 @@ expectTypeOf<CheckoutFieldsApi["contact"]>().toHaveProperty("fields")
 expectTypeOf<CheckoutFieldsApi["order"]>().toHaveProperty("fields")
 
 expectTypeOf<CheckoutFormId<"plugin/a.b[0]'%">>().toEqualTypeOf<"plugin%2Fa%2Eb%5B0%5D%27%25">()
-expectTypeOf<ReturnType<CheckoutFieldsApi["getOutput"]>>().toExtend<Partial<ConfirmCheckoutInput>>()
+type FormSchema = NonNullable<CheckoutFieldsApi["schema"]>
+expectTypeOf<StandardSchemaV1.InferInput<FormSchema>>().toEqualTypeOf<CheckoutFormValues>()
+expectTypeOf<StandardSchemaV1.InferOutput<FormSchema>>().toEqualTypeOf<CheckoutFormValues>()
+expectTypeOf<Parameters<CheckoutFieldsApi["encode"]>[0]>().toEqualTypeOf<CheckoutFieldValues>()
+expectTypeOf<ReturnType<CheckoutFieldsApi["encode"]>>().toEqualTypeOf<CheckoutFormValues>()
+expectTypeOf<Parameters<CheckoutFieldsApi["decode"]>[0]>().toEqualTypeOf<CheckoutFormValues>()
+expectTypeOf<ReturnType<CheckoutFieldsApi["decode"]>>().toEqualTypeOf<CheckoutFieldValues>()
+declare const fields: CheckoutFieldsApi
+declare const formValues: CheckoutFormValues
+expectTypeOf(fields.decode(formValues).useShippingAsBilling).toEqualTypeOf<boolean | undefined>()
+// @ts-expect-error Decoding keys does not establish a complete confirmation request.
+const confirmation: ConfirmCheckoutInput = fields.decode(formValues)
+// @ts-expect-error The key converters replace the ambiguous getter names.
+void fields.getInput
+// @ts-expect-error The key converters replace the ambiguous getter names.
+void fields.getOutput
+void confirmation
 declare const oldValues: CheckoutFieldValues
 // @ts-expect-error The form accessors replace the render-driven values argument.
 const oldOptions: CheckoutFieldsOptions = { values: oldValues }

@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import { cartQueryKey } from "../cart"
 import { checkoutQueryKey } from "../checkout"
 import { checkoutErrorStore } from "../checkout-errors"
-import { checkoutFormInput } from "../checkout-form"
+import { checkoutFormEncode } from "../checkout-form"
 import { validationFailure, validationIssue } from "../test/checkout-errors-fixture"
 import { field, fixtures } from "../test/checkout-fields-fixture"
 import type { Checkout, CheckoutFieldsOptions, CheckoutFieldUpdate, CheckoutFormValues } from "../types"
@@ -81,7 +81,7 @@ describe("automatic checkout error integration", () => {
 			set = vi.fn(),
 			clear = vi.fn()
 		let values: CheckoutFormValues = {
-			...checkoutFormInput(env.sources.values),
+			...checkoutFormEncode(env.sources.values),
 			useShippingAsBilling: false,
 			shippingAddress: { ...env.sources.checkout.shippingAddress, postcode: "NEW" },
 		}
@@ -140,7 +140,7 @@ describe("automatic checkout error integration", () => {
 			clear = vi.fn(),
 			latest = vi.fn(),
 			failure = batch()
-		let values: CheckoutFormValues = { ...checkoutFormInput(env.sources.values), useShippingAsBilling: true }
+		let values: CheckoutFormValues = { ...checkoutFormEncode(env.sources.values), useShippingAsBilling: true }
 		let setter = set
 		procedures.checkout.confirm.call.mockRejectedValue(failure)
 		const { result, rerender, unmount } = renderHook(
@@ -198,7 +198,7 @@ describe("automatic checkout error integration", () => {
 		const attempt = store.start(JSON.stringify([env.sources.checkout.orderId, env.sources.checkout.orderKey]))
 		store.fail(attempt, batch())
 		store.settle(attempt)
-		const values = { ...checkoutFormInput(env.sources.values), useShippingAsBilling: true }
+		const values = { ...checkoutFormEncode(env.sources.values), useShippingAsBilling: true }
 		renderHook(() => useCheckoutFields({ getValues: () => values, setErrors: set, clearErrors: vi.fn() }), { wrapper: env.wrapper })
 		await waitFor(() => expect(set).toHaveBeenCalledTimes(1))
 		expect(set.mock.calls[0]?.[0][0].name).toBe("shippingAddress.postcode")
@@ -208,7 +208,7 @@ describe("automatic checkout error integration", () => {
 		const env = setup(),
 			set = vi.fn(),
 			clear = vi.fn()
-		let values = { ...checkoutFormInput(env.sources.values), useShippingAsBilling: false }
+		let values = { ...checkoutFormEncode(env.sources.values), useShippingAsBilling: false }
 		procedures.checkout.confirm.call.mockRejectedValue(batch())
 		const { result } = renderHook(
 			() => ({ fields: useCheckoutFields({ getValues: () => values, setErrors: set, clearErrors: clear }), checkout: useCheckout() }),

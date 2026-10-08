@@ -2,20 +2,21 @@
 
 import { standardSchemaResolver } from "@hookform/resolvers/standard-schema"
 import { useCheckout } from "@kizlo/woocommerce-kit/react/checkout"
-import { type CheckoutFieldsApi, type CheckoutFormValues, useCheckoutFields } from "@kizlo/woocommerce-kit/react/checkout-fields"
+import {
+	type CheckoutFieldsApi,
+	type CheckoutFieldValues,
+	type CheckoutFormValues,
+	useCheckoutFields,
+} from "@kizlo/woocommerce-kit/react/checkout-fields"
 import { useEffect, useState } from "react"
 import { Controller, type UseFormReturn, useForm } from "react-hook-form"
 import { CheckoutFieldControl } from "./checkout-field-control.example"
 import { reactHookFormErrorMessages, reactHookFormServerErrors } from "./checkout-server-errors.example"
 
-export function ReactHookFormCheckout() {
+export function ReactHookFormCheckout({ onSubmit }: { onSubmit: (values: CheckoutFieldValues) => Promise<void> }) {
 	const [initialized, setInitialized] = useState(false)
 	const [serverErrors] = useState<ReturnType<typeof reactHookFormServerErrors>>(() => reactHookFormServerErrors(() => form))
-	const checkout = useCheckout({
-		onSuccess: ({ redirectUrl }) => {
-			if (redirectUrl) window.location.assign(redirectUrl)
-		},
-	})
+	const checkout = useCheckout()
 	const fields: CheckoutFieldsApi = useCheckoutFields({
 		getValues: (): CheckoutFormValues => form.getValues(),
 		...(initialized ? serverErrors : { setErrors: undefined, clearErrors: undefined }),
@@ -55,11 +56,7 @@ export function ReactHookFormCheckout() {
 				if (fields.isRepricing || checkout.isPending || fields.unsupported.length) return
 				checkout.reset()
 				void form.handleSubmit(async (values) => {
-					const output = fields.getOutput(values)
-					if (output.billingAddress && output.paymentMethod)
-						await checkout
-							.confirmAsync({ ...output, billingAddress: output.billingAddress, paymentMethod: output.paymentMethod })
-							.catch(() => {})
+					await onSubmit(fields.decode(values))
 				})(event)
 			}}
 		>
