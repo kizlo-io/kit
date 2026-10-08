@@ -271,6 +271,20 @@ describe("automatic checkout error integration", () => {
 			next = result.current.b.confirmAsync(input)
 			void next.catch(() => {})
 		})
+		await expect(next).rejects.toMatchObject({ code: "CHECKOUT_LOCKED" })
+		expect(procedures.checkout.confirm.call).toHaveBeenCalledTimes(1)
+		// Replacement invalidates publication, while the dispatched old request still blocks submission.
+		act(() => env.client.setQueryData(checkoutQueryKey, { ...env.sources.checkout, orderKey: "replacement" }))
+		await act(async () => expect(result.current.b.confirmAsync(input)).rejects.toMatchObject({ code: "CHECKOUT_LOCKED" }))
+		await act(async () => {
+			first.resolve({ ...env.sources.checkout, orderKey: "old" })
+			await old
+		})
+		expect(env.client.getQueryData<Checkout>(checkoutQueryKey)?.orderKey).toBe("replacement")
+		act(() => {
+			next = result.current.b.confirmAsync(input)
+			void next.catch(() => {})
+		})
 		await waitFor(() => expect(procedures.checkout.confirm.call).toHaveBeenCalledTimes(2))
 		await act(async () => {
 			second.reject(failure)
@@ -278,13 +292,8 @@ describe("automatic checkout error integration", () => {
 		})
 		expect(result.current.a.error).toBe(failure)
 		act(() => result.current.a.reset())
-		expect(result.current.a.error).toBe(failure)
-		await act(async () => {
-			first.resolve({ ...env.sources.checkout, orderKey: "old" })
-			await old
-		})
-		expect(env.client.getQueryData<Checkout>(checkoutQueryKey)?.orderKey).toBe(env.sources.checkout.orderKey)
-		expect(result.current.b.error).toBe(failure)
+		expect(result.current.b.error).toBeNull()
+
 		act(() => {
 			next = result.current.a.confirmAsync(input)
 			void next.catch(() => {})

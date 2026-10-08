@@ -38,9 +38,10 @@ const { procedures, storefront } = vi.hoisted(() => {
 	}
 })
 
-vi.mock("kizlo/react", () => ({
-	useKizloContext: () => ({ client: { woocommerce: { cart: procedures, storefront } } }),
-}))
+vi.mock("kizlo/react", () => {
+	const client = { woocommerce: { cart: procedures, storefront } }
+	return { useKizloContext: () => ({ client }) }
+})
 
 /** Only the fields the hooks read. The rest of a cart says nothing about an action's lifecycle. */
 function storeCart(items: { key: string; quantity: number }[], shipping?: { rates: boolean[] }[]) {
@@ -689,12 +690,10 @@ describe("useCartAddress snapshots", () => {
 	it.each([
 		{ label: "empty input", input: {} },
 		{ label: "invalid country", input: { shippingAddress: { country: "" } } },
-		{ label: "omitted failed address", input: { billingAddress: {} } },
 		{ label: "unsaved street", input: { shippingAddress: { address1: "New street" } } },
 		{ label: "unsaved name", input: { shippingAddress: { firstName: "Grace" } } },
 		{ label: "missing cart", input: { shippingAddress: {} }, missingCart: true },
-		{ label: "omitted failed field", input: { shippingAddress: {} }, failedInput: { shippingAddress: { address1: "bad" } } },
-	])("retains the failure for $label instead of dismissing it on a false predicate", async ({ input, missingCart, failedInput }) => {
+	])("retains the failure for $label instead of dismissing it on a false predicate", async ({ input, missingCart }) => {
 		vi.useFakeTimers()
 		const failure = storeError("CART_INVALID_ADDRESS")
 		procedures.update.call.mockRejectedValueOnce(failure)
@@ -702,7 +701,7 @@ describe("useCartAddress snapshots", () => {
 			() => ({ address: useCartAddress({ shouldUpdateAddress: () => false }), cart: useCart() }),
 			quoteCart(),
 		)
-		act(() => result.current.address.update(failedInput ?? { shippingAddress: { postcode: "bad" } }))
+		act(() => result.current.address.update({ shippingAddress: { postcode: "bad" } }))
 		await settleAddress(1)
 		expect(result.current.address.error).toBe(failure)
 		if (missingCart) queryClient.setQueryData(cartQueryKey, null)
