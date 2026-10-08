@@ -13,6 +13,7 @@
  */
 
 import type { ActiveKizloClient, InferClientData, InferClientError, InferClientInput } from "kizlo"
+import type { CheckoutLockedError } from "./checkout-locks"
 
 type Procedures = ActiveKizloClient["woocommerce"]
 type CartProcedures = Procedures["cart"]
@@ -56,11 +57,13 @@ export type CartAddressSnapshotInput = Omit<CartAddressInput, "shippingAddress" 
  * Any way a cart action can fail, as the union of the procedures the cart hooks call.
  *
  * Distinct from the store's `cart.errors`, which is its own list of problems *with* the cart rather than the failure of an
- * action against it. Each member is a `KizloError`, so `code` is a token a call site can branch on and `data` narrows with it.
+ * action against it. SDK failures keep their `KizloError`; local admission refusals are `CheckoutLockedError`.
+ * `code` is a token a call site can branch on and `data` narrows with it.
  * Transport failures arrive here too: the client wraps anything it catches as a common error, and the common map is merged into
  * every procedure's union, so there is no failure outside this type.
  */
 export type CartError =
+	| CheckoutLockedError
 	| InferClientError<CartProcedures["get"]>
 	| InferClientError<CartProcedures["update"]>
 	| InferClientError<CartProcedures["selectShippingRate"]>
@@ -85,7 +88,10 @@ export type ConfirmCheckoutInput = InferClientInput<CheckoutProcedures["confirm"
  * Validation data follows the registered SDK contract. The issues-only SDK exposes messages, source evidence and domain
  * targets; consumers resolve those targets using loaded definitions and their own form handler.
  */
-export type CheckoutError = InferClientError<CheckoutProcedures["get"]> | InferClientError<CheckoutProcedures["confirm"]>
+export type CheckoutError =
+	| InferClientError<CheckoutProcedures["get"]>
+	| InferClientError<CheckoutProcedures["confirm"]>
+	| CheckoutLockedError
 export type CheckoutValidationIssue = Extract<CheckoutError, { code: "CHECKOUT_VALIDATION_FAILED" }>["data"]["issues"][number]
 export type CheckoutRegisteredFieldReference = CheckoutValidationIssue["registeredFields"][number]
 /** SDK evidence plus stable identities assigned to this submission and each individual message. */

@@ -10,12 +10,16 @@
 
 import { useMutation } from "@tanstack/react-query"
 import { useKizloContext } from "kizlo/react"
-import { useCallback, useLayoutEffect } from "react"
-import { cartQueryKey } from "../cart"
+import { useCallback, useLayoutEffect, useMemo } from "react"
 import { type CheckoutCallbacks, type CheckoutSuccessEvent, checkoutQueryKey, resolveCheckoutRedirect } from "../checkout"
 import { checkoutSession } from "../checkout-errors"
+import { type CheckoutLockEntry, CheckoutLockedError } from "../checkout-locks"
+import { checkoutMutationKey } from "../session-keys"
 import type { Checkout, CheckoutError, ConfirmCheckoutInput } from "../types"
 import { useCheckoutErrorState, useCheckoutErrorStore } from "./checkout-error-store"
+import type { CheckoutRequest } from "./checkout-lock-cache"
+import { useCheckoutLockState, useCheckoutLockStore, useCheckoutReadiness } from "./checkout-lock-store"
+import { type CheckoutDependency, checkoutWatchSignature } from "./checkout-watch"
 import { useWooCommerceContext } from "./context"
 import { notify } from "./notify"
 import { useCheckoutQuery } from "./session-queries"
@@ -31,7 +35,11 @@ export type {
 } from "../checkout"
 export type { CheckoutError } from "../types"
 
-export type CheckoutHookOptions = CheckoutCallbacks
+export type CheckoutHookOptions = CheckoutCallbacks & {
+	/** Application query and mutation prerequisites that must be ready before confirmation. */
+	dependencies?: readonly CheckoutDependency[]
+}
+export type { CheckoutDependency } from "./checkout-watch"
 
 export type CheckoutApi = {
 	/** The store's raw checkout snapshot, or `null` before it loads and when loading failed. */
@@ -40,16 +48,17 @@ export type CheckoutApi = {
 	error: CheckoutError | null
 	/** Places the order. Returns nothing: the order and where to send the browser next arrive on the success event. */
 	confirm: (input: ConfirmCheckoutInput) => void
-	/** Places the order and returns the acknowledged checkout; rejects with the original SDK error. */
+	/** Places the order and returns the acknowledged checkout; rejects with the original SDK error or a local CheckoutLockedError. */
 	confirmAsync: (input: ConfirmCheckoutInput) => Promise<Checkout>
 	isLoading: boolean
 	isPending: boolean
+	/** Shared readiness, including confirmation itself. Form validity is owned by the form. */
+	isLocked: boolean
+	locks: readonly CheckoutLockEntry[]
 	refresh: () => Promise<void>
 	/** Clears the last confirmation failure once it has settled. */
 	reset: () => void
 }
-
-const checkoutMutationKey = [...checkoutQueryKey, "mutation"] as const
 
 /** Module-level and pure, so both phases that report a success derive the same event from the same two inputs. */
 function checkoutSuccessEvent(checkout: Checkout, input: ConfirmCheckoutInput): CheckoutSuccessEvent {
@@ -80,7 +89,7 @@ function checkoutSuccessEvent(checkout: Checkout, input: ConfirmCheckoutInput): 
  *
  * export function CheckoutForm() {
  * 	const { cart } = useCart()
- * 	const { checkout, confirm, error, isLoading, isPending } = useCheckout({
+ * 	const { checkout, confirm, error, isLoading, isLocked } = useCheckout({
  * 		onSuccess: ({ checkout, redirectUrl }) => {
  * 			track("purchase", { orderId: checkout.orderId })
  * 			if (redirectUrl) window.location.assign(redirectUrl)
@@ -97,7 +106,7 @@ function checkoutSuccessEvent(checkout: Checkout, input: ConfirmCheckoutInput): 
  * 		}}>
  * 			{error ? <p role="alert">{error.message}</p> : null}
  * 			<p>{cart.itemCount} items</p>
- * 			<button disabled={isPending} type="submit">Place order</button>
+ * 			<button disabled={isLocked} type="submit">Place order</button>
  * 		</form>
  * 	)
  * }
@@ -108,41 +117,58 @@ export function useCheckout(options?: CheckoutHookOptions): CheckoutApi {
 	const { queryClient } = useWooCommerceContext()
 
 	const checkoutQuery = useCheckoutQuery()
+	const binding = useCheckoutLockStore()
+	const { store: locks } = binding
+	const owner = useMemo(() => ({}), [])
+	const signature = checkoutWatchSignature(options?.dependencies)
+	// biome-ignore lint/correctness/useExhaustiveDependencies: The signature includes keys and policies; equivalent inline dependencies share a registration.
+	const watchOptions = useMemo(() => options?.dependencies, [signature])
+	useLayoutEffect(() => binding.watch.register(owner, watchOptions), [binding, owner, watchOptions])
+	useLayoutEffect(() => () => binding.watch.unregister(owner), [binding, owner])
+	const lockState = useCheckoutLockState(locks)
+	useCheckoutReadiness(binding)
+	useLayoutEffect(() => binding.enableCheckout(), [binding])
 	const errors = useCheckoutErrorStore()
 	const errorState = useCheckoutErrorState(errors)
 	const session = checkoutSession(checkoutQuery.data)
 	useLayoutEffect(() => errors.syncSession(session), [errors, session])
 
 	// React Query runs the confirmation and callback phases; the store shares its submission lifecycle across observers.
-	const mutation = useMutation<Checkout, CheckoutError, ConfirmCheckoutInput, number>({
-		mutationFn: (input) => client.woocommerce.checkout.confirm.call({ body: input }),
+	const mutation = useMutation<Checkout, CheckoutError, CheckoutRequest<ConfirmCheckoutInput>, number>({
+		mutationFn: ({ payload: input, reservation: handle, token }) => {
+			binding.sync()
+			binding.assertCurrent(token)
+			if (!handle || !locks.isConfirmation(handle)) throw new CheckoutLockedError("CHECKOUT_SESSION_CHANGED", locks.state.get().entries)
+			return client.woocommerce.checkout.confirm.call({ body: input })
+		},
 		mutationKey: checkoutMutationKey,
+		meta: { kitCheckoutRole: "confirmation" },
 		// Pinned rather than inherited: query-core's own default is `this.options.retry ?? 0`, and `this.options` carries the app's
 		// `defaultOptions.mutations`. Placing an order twice is not a retry.
 		retry: 0,
-		onMutate: (input) => {
+		onMutate: ({ payload: input }) => {
 			const attempt = errors.start(checkoutSession(queryClient.getQueryData<Checkout>(checkoutQueryKey)))
 			notify(() => options?.onStart?.({ input, status: "start", type: "confirm_checkout" }))
 			return attempt
 		},
-		onSuccess: (checkout, input, attempt) => {
+		onSuccess: (checkout, request, attempt) => {
+			const { payload: input, reservation: handle, token } = request
 			// Cache sessions can change while every checkout observer is unmounted.
 			errors.syncSession(checkoutSession(queryClient.getQueryData<Checkout>(checkoutQueryKey)))
-			if (attempt !== undefined && errors.isCurrent(attempt)) {
+			if (attempt !== undefined && errors.isCurrent(attempt) && handle && locks.isConfirmation(handle) && binding.isCurrent(token)) {
 				errors.succeed(attempt, checkoutSession(checkout))
-				queryClient.setQueryData(checkoutQueryKey, checkout)
-				queryClient.setQueryData(cartQueryKey, checkout.cart)
+				binding.publishCheckout(request, checkout)
 			}
 			notify(() => options?.onSuccess?.(checkoutSuccessEvent(checkout, input)))
 		},
-		onError: (error, input, attempt) => {
+		onError: (error, { payload: input }, attempt) => {
 			errors.syncSession(checkoutSession(queryClient.getQueryData<Checkout>(checkoutQueryKey)))
 			if (attempt !== undefined) errors.fail(attempt, error)
 			notify(() => options?.onError?.({ error, input, status: "error", type: "confirm_checkout" }))
 		},
 		// A narrowing rather than a branch: query-core passes `(checkout, null, …)` on success and `(undefined, error, …)` on
 		// failure, never neither.
-		onSettled: (checkout, error, input, attempt) => {
+		onSettled: (checkout, error, { payload: input }, attempt) => {
 			if (attempt !== undefined) errors.settle(attempt)
 			if (error) notify(() => options?.onSettled?.({ error, input, status: "error", type: "confirm_checkout" }))
 			else if (checkout) notify(() => options?.onSettled?.(checkoutSuccessEvent(checkout, input)))
@@ -150,7 +176,7 @@ export function useCheckout(options?: CheckoutHookOptions): CheckoutApi {
 	})
 
 	// Every observer of this checkout/client sees the same confirmations in flight.
-	const isPending = errorState.pending > 0
+	const isPending = binding.isPending
 	const { reset } = mutation
 
 	// `reset` detaches the observer from the mutation it is watching, so resetting a confirmation that is still in flight would
@@ -166,14 +192,62 @@ export function useCheckout(options?: CheckoutHookOptions): CheckoutApi {
 		clearSettled()
 		await queryClient.refetchQueries({ queryKey: checkoutQueryKey })
 	}, [clearSettled, queryClient])
+	const rejectAdmission = useCallback(
+		(error: CheckoutLockedError, input: ConfirmCheckoutInput) => {
+			errors.reject(error)
+			notify(() => options?.onError?.({ error, input, status: "error", type: "confirm_checkout" }))
+			notify(() => options?.onSettled?.({ error, input, status: "error", type: "confirm_checkout" }))
+		},
+		[errors, options],
+	)
+	const admit = useCallback((input: ConfirmCheckoutInput) => binding.reserve(input), [binding])
+	const confirm = useCallback(
+		(input: ConfirmCheckoutInput) => {
+			let request: CheckoutRequest<ConfirmCheckoutInput>
+			try {
+				request = admit(input)
+			} catch (error) {
+				if (!(error instanceof CheckoutLockedError)) throw error
+				rejectAdmission(error, input)
+				return
+			}
+			try {
+				mutation.mutate(request)
+			} catch (error) {
+				binding.discard(request)
+				throw error
+			}
+		},
+		[admit, mutation.mutate, rejectAdmission, binding],
+	)
+	const confirmAsync = useCallback(
+		async (input: ConfirmCheckoutInput) => {
+			let request: CheckoutRequest<ConfirmCheckoutInput>
+			try {
+				request = admit(input)
+			} catch (error) {
+				if (error instanceof CheckoutLockedError) rejectAdmission(error, input)
+				throw error
+			}
+			try {
+				return await mutation.mutateAsync(request)
+			} catch (error) {
+				binding.discard(request)
+				throw error
+			}
+		},
+		[admit, mutation.mutateAsync, rejectAdmission, binding],
+	)
 
 	return {
 		checkout: checkoutQuery.data ?? null,
-		confirm: mutation.mutate,
-		confirmAsync: mutation.mutateAsync,
+		confirm,
+		confirmAsync,
 		error: errorState.error ?? checkoutQuery.error,
 		isLoading: checkoutQuery.isPending,
 		isPending,
+		isLocked: lockState.isLocked,
+		locks: lockState.entries,
 		refresh,
 		reset: clearSettled,
 	}

@@ -1,6 +1,8 @@
 export * from "./address"
 export * from "./cart"
 export * from "./checkout"
+export type { CheckoutLockEntry, CheckoutLockState } from "./checkout-locks"
+export { CheckoutLockedError } from "./checkout-locks"
 export * from "./contract"
 export { toStandardSchema } from "./field-schema"
 export { resolveBillingAddressFields, resolveContactFields, resolveOrderFields, resolveShippingAddressFields } from "./fields"

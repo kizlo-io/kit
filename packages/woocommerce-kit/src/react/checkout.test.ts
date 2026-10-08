@@ -56,6 +56,7 @@ describe("useCheckout confirmation", () => {
 		const { result, queryClient } = mount({ onSuccess: (event) => redirects.push(event.redirectUrl) })
 		await waitFor(() => expect(result.current.checkout).not.toBeNull())
 
+		await waitFor(() => expect(result.current.isLocked).toBe(false))
 		act(() => result.current.confirm(input))
 
 		await waitFor(() => expect(queryClient.getQueryData(checkoutQueryKey)).toStrictEqual(confirmed))
@@ -76,6 +77,7 @@ describe("useCheckout confirmation", () => {
 			onSuccess: () => phases.push("success"),
 		})
 
+		await waitFor(() => expect(result.current.isLocked).toBe(false))
 		act(() => result.current.confirm(input))
 
 		await waitFor(() => expect(phases).toEqual(["start", "error", "settled"]))
@@ -91,6 +93,7 @@ describe("useCheckout confirmation", () => {
 		procedures.confirm.call.mockRejectedValue(storeError("CHECKOUT_PAYMENT_FAILED"))
 
 		const { result } = mount(undefined, { retry: 2 })
+		await waitFor(() => expect(result.current.isLocked).toBe(false))
 		act(() => result.current.confirm(input))
 
 		await waitFor(() => expect(result.current.error?.code).toBe("CHECKOUT_PAYMENT_FAILED"))
@@ -103,6 +106,7 @@ describe("useCheckout confirmation", () => {
 		procedures.confirm.call.mockReturnValue(new Promise((_resolve, reject) => (refuse = reject)))
 
 		const { result } = mount()
+		await waitFor(() => expect(result.current.isLocked).toBe(false))
 		act(() => result.current.confirm(input))
 		await waitFor(() => expect(result.current.isPending).toBe(true))
 
@@ -190,6 +194,7 @@ describe("awaitable checkout", () => {
 		procedures.get.call.mockResolvedValue(storeCheckout(null, 2))
 		procedures.confirm.call.mockResolvedValue(storeCheckout(42, 0))
 		const { result } = mount()
+		await waitFor(() => expect(result.current.isLocked).toBe(false))
 		act(() => expect(result.current.confirm(input)).toBeUndefined())
 		await waitFor(() => expect(result.current.isPending).toBe(false))
 	})

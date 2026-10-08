@@ -9,7 +9,7 @@
 import type { Checkout, CheckoutError, ConfirmCheckoutInput, Order } from "./types"
 
 /** The one checkout snapshot shared by every checkout consumer in the app's query client. */
-export const checkoutQueryKey = ["kizlo", "woocommerce", "checkout"] as const
+export { checkoutQueryKey } from "./session-keys"
 
 /** Everything a confirmation reports about itself in every callback phase. */
 export type CheckoutActionPayload = { type: "confirm_checkout"; input: ConfirmCheckoutInput }

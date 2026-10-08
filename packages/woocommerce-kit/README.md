@@ -211,8 +211,8 @@ that caps its own quantity is `useCartItem({ limits: { maximum: 5 } })` with no 
 | Hook | Returns |
 | --- | --- |
 | `useCart()` | `{ cart, items, itemCount, format, isLoading, isMutating, isRepricing, error, refresh }`. The cart as a whole and read-only: `cart` is the store's payload, so totals, coupons and addresses are read from it directly. It performs no action, so it takes no callbacks, and `error` is the fetch failing. |
-| `useCartAddress(options?)` | `{ update, onAddressChange, isPending, error, reset }`. The customer's addresses. `update` takes whatever changed — a postcode alone is a valid save, and what makes the store re-quote shipping. The email is a field inside `billingAddress`. |
-| `useCartShippingRates(options?)` | `{ shippingPackages, selectShippingRate, hasSelectedShippingRates, isPending, error, reset }`. The packages the store quoted and the choice of rate. `hasSelectedShippingRates` is the question `cart.hasCalculatedShipping` does not answer: whether a rate is in effect for every package, not whether one was costed. The store's own default rate counts, so it is not proof the shopper chose anything. |
+| `useCartAddress(options?)` | `{ update, updateAsync, onAddressChange, onAddressChangeAsync, cancel, isPending, error, reset }`. The customer's addresses. `update` takes whatever changed — a postcode alone is a valid save, and what makes the store re-quote shipping. The email is a field inside `billingAddress`. |
+| `useCartShippingRates(options?)` | `{ shippingPackages, selectShippingRate, selectShippingRateAsync, hasSelectedShippingRates, cancel, isPending, error, reset }`. The packages the store quoted and the choice of rate. `hasSelectedShippingRates` is the question `cart.hasCalculatedShipping` does not answer: whether a rate is in effect for every package, not whether one was costed. The store's own default rate counts, so it is not proof the shopper chose anything. |
 | `useCartItem(key?, options?)` | `{ addItem, item, quantity, isPending, error, format, remove, reset }`. Everything item-shaped, `quantity` included as a whole control. The key is optional: without one the control is a draft and `addItem` sends it; with one it edits that line, and `item` is `null` once the key leaves the cart. |
 | `useCartCoupon(code?, options?)` | `{ coupons, isPending, error, apply, remove, reset }`. The code is optional, the same way a line's key is: without one the hook is the apply field, with one it is that chip alone, and `remove()` takes no argument because the hook already knows its code. `coupons` is the whole list either way. |
 
@@ -231,7 +231,7 @@ state held above them.
 
 `cart.errors` is a different thing from any hook's `error`: it is the store's own standing list of problems *with* the cart — a
 line that went out of stock, a coupon that stopped applying — read straight off `cart` as `{ code, message }`. A hook's `error` is
-the failure of the request that hook just made.
+the acting item/coupon observer's failure; address/shipping failures are shared across their feature's observers.
 
 Existing action names return immediately and report outcomes through callbacks and the hook's `error`. Their paired
 `Async` methods await the same mutation: the acknowledged cart or checkout is returned after cache updates and callback
@@ -263,8 +263,7 @@ controls resolve `undefined`. A failure rejects and discards that edit, leaving 
 set the desired quantity again to retry. The existing `quantity.commit(): Promise<void>` and automatic saves still swallow
 request failures and report them on the hook. `refresh()` still resolves after refetching.
 
-The last failure stays on the acting hook's `error`, with its store code intact, until `reset()`, the next action or the next
-success clears it. `reset()` clears only settled failures; an action still in flight keeps reporting its own outcome.
+Item/coupon errors stay on their acting observer until reset or another action. Address/shipping errors report the latest completed failure across observers. Checkout retains a feature failure through retries and cache eviction until a same-feature success or explicit abandonment. Item/coupon `reset()` dismisses only the settled failure it reports; address/shipping `reset()` dismisses presentation while `cancel()` abandons the failed feature draft. Pending requests remain protected.
 
 Direct calls are independent requests, including concurrent calls on one hook. Async handlers do not prevent duplicate
 submissions or add an idempotency guarantee. Address coalescing is the existing exception. A form library should return the
@@ -339,17 +338,18 @@ A false predicate cancels queued work once any current address request has settl
 snapshot; an already dispatched request can still finish. The core exports `shippingQuoteSignature` and
 `defaultShouldUpdateAddress` for comparisons outside React.
 
-`useCart().isRepricing` is shared across components and covers both queued snapshots and actual address requests. Show
-“Updating…” beside totals and guard checkout with it, while leaving the fields editable. `isMutating` covers actual cart
-requests only; `useCartAddress().isPending` covers actual address requests only. A settled save failure clears repricing,
-so also guard submission on the address hook's `error` and your own form validity. `useCheckout` does not wait for repricing
-automatically: apply the guard in the submit handler as well as on the order button.
+`useCart().isRepricing` is shared across components and covers queued snapshots and actual address requests. Use it to
+show “Updating…” beside totals while leaving fields editable. `isMutating` and the address hook's `isPending` describe
+requests only. Checkout readiness is shared separately: `useCheckout().isLocked` covers address and keyed quantity queues, all pending/paused writes, retained
+feature failures, required data/refetches, shipping prerequisites and confirmation. A failed required save keeps checkout locked through `reset()`. Retry it,
+return to the acknowledged address, or call `useCartAddress().cancel()` and restore the form from the cart. Cancellation
+abandons queued edits and settled failed drafts; dispatched requests retain protection until settlement. Unmount cancels queued edits; dispatched requests and retained failures remain protected.
 
 ```tsx
 const { cart, format, isRepricing } = useCart()
 const { onAddressChange, error: addressError } = useCartAddress()
-const { confirm, isPending } = useCheckout()
-const canSubmit = isFormValid && !isRepricing && !addressError && !isPending
+const { confirm, isLocked } = useCheckout()
+const canSubmit = isFormValid && !isLocked
 
 <form onSubmit={(event) => {
 	event.preventDefault()
@@ -366,8 +366,8 @@ const canSubmit = isFormValid && !isRepricing && !addressError && !isPending
 </form>
 ```
 
-The address writer and error reader should be the same `useCartAddress` instance: repricing is shared, but an action failure
-belongs to the hook that performed it.
+Address error readers can use another `useCartAddress` instance: both repricing and the latest completed feature failure
+are shared across the client/cache session.
 
 ### Cart events
 
@@ -419,7 +419,7 @@ export function CheckoutForm({ values, isFormValid, onAddressValuesChange }: {
 	const { onAddressChange, error: addressError } = useCartAddress()
 	const { selectShippingRate } = useCartShippingRates()
 	const { apply: applyCoupon } = useCartCoupon()
-	const { checkout, confirm, error, isLoading, isPending, refresh, reset } = useCheckout({
+	const { checkout, confirm, error, isLoading, isLocked, refresh, reset } = useCheckout({
 		onSuccess: ({ checkout, redirectUrl }) => {
 			track("purchase", { orderId: checkout.orderId })
 			if (redirectUrl) window.location.assign(redirectUrl)
@@ -431,7 +431,7 @@ export function CheckoutForm({ values, isFormValid, onAddressValuesChange }: {
 		return <button onClick={() => void refresh()}>Try checkout again</button>
 	}
 
-	const canSubmit = isFormValid && !isRepricing && !addressError && !isPending
+	const canSubmit = isFormValid && !isLocked
 
 	return (
 		<form
@@ -476,7 +476,7 @@ import { useCheckout } from "@kizlo/woocommerce-kit/react/checkout"
 const { confirmAsync } = useCheckout({ onSuccess: ({ redirectUrl }) => {
   if (redirectUrl) window.location.assign(redirectUrl)
 } })
-// The form owns validation and submission guards; returning this promise keeps it submitting until settlement.
+// The form owns validation; Kit enforces live checkout admission. Awaiting keeps the form submitting until settlement.
 const onSubmit = async (values: ConfirmCheckoutInput) => {
   const checkout = await confirmAsync(values)
   return checkout
@@ -500,6 +500,121 @@ Navigate from the success event's `redirectUrl` rather than from `checkout.payme
 destination when there is one, and the store's return URL rebuilt from your `successPath` when the gateway names none —
 WooCommerce's own client treats an empty redirect as "stay here", which leaves the shopper on the form with a placed order
 behind them. It is `null` when you passed no `successPath`, and when there is no placed order to return to.
+
+### Checkout readiness
+
+`useCheckout().isLocked` derives built-in readiness from the app's query and mutation caches. Kit mutations all carry keys.
+The controller matches the cart/checkout namespaces by inclusive prefixes, so item IDs, coupon codes and request parameters
+need no separate registration. A feature contributes one automatic entry, such as `cart.address`, `cart.item` or `cart.coupon`.
+It watches reads as well as writes; storefront and product-search requests remain outside checkout readiness.
+
+All pending requests count, including paused requests and older calls whose observers moved on. Each mutation feature retains
+its latest **completed** outcome: if B succeeds and A later fails, the feature stays locked; if B fails and A later succeeds,
+the feature clears. Starting a retry does not clear the failure. A success in another feature cannot clear it, and cache GC or
+unmount cannot resolve it. Address/shipping hooks read that same shared error; item/coupon hooks keep entity-local errors.
+Their `reset()` can dismiss the settled failure they report, without clearing a newer failure from another entity.
+
+Address/shipping `reset()` dismisses presentation; `cancel()` or a safe return to the acknowledged address abandons the failed
+draft. Both queued address edits and keyed quantity edits block before HTTP, including `autoCommit: false` edits awaiting
+`quantity.commit()`. Use `quantity.revert()` to discard an unsent edit. Keyless product quantity drafts do not change the cart
+and do not block checkout. Queue-to-request handoff and autosave unmount flush stay protected.
+
+Cart and checkout snapshots are required, including in `cartEnabled: false` mode. Background/paused refetches and failed
+refetches with old data block until a successful refresh; idle disabled optional queries and unused historical parameters do
+not. Shipping requires exactly one selected rate in every physical package, even when the shipping hook is absent. Digital
+carts need none. Overlapping full-cart writes stay protected through an authoritative reconciliation read after work drains;
+seeded mode refreshes checkout instead of launching a separate cart bootstrap. A failed reconciliation needs a successful
+refresh. Form validity remains an additional application concern.
+
+Register application work with inclusive prefixes in `useCheckout({ dependencies })`. Use the same app QueryClient and give
+every watched mutation a `mutationKey`; query keys already identify queries. No manual acquire/release lifecycle is needed.
+
+```tsx
+import { useMutation, useQuery } from "@tanstack/react-query"
+import { useCheckout } from "@kizlo/woocommerce-kit/react/checkout"
+
+export function InventoryCheck({ cartId }: { cartId: string }) {
+  const checkout = useCheckout({
+    dependencies: [
+      { keys: ["inventory"], type: "query" }, // Defaults to blocking pending work and errors.
+      { keys: ["reserveInventory"], type: "mutation", block: { onPending: true, onError: true } },
+      { keys: ["promotion"], type: "mutation", block: { onPending: true, onError: false } },
+    ],
+  })
+  const inventory = useQuery({
+    queryKey: ["inventory", cartId], // Matches the registered prefix.
+    queryFn: () => fetchInventory(cartId),
+  })
+  const reservation = useMutation({
+    mutationKey: ["reserveInventory", cartId],
+    mutationFn: () => reserveInventory(cartId),
+  })
+  const promotion = useMutation({
+    mutationKey: ["promotion", cartId],
+    mutationFn: () => checkPromotion(cartId),
+  })
+
+  return (
+    <>
+      {inventory.error ? <p role="alert">{inventory.error.message}</p> : null}
+      {reservation.error ? <p role="alert">{reservation.error.message}</p> : null}
+      {promotion.error ? <p role="alert">{promotion.error.message}</p> : null}
+      <button onClick={() => void inventory.refetch()}>Refresh inventory</button>
+      <button onClick={() => reservation.mutate()}>Reserve inventory</button>
+      <button onClick={() => promotion.mutate()}>Check promotion</button>
+      <button disabled={checkout.isLocked}>Place order</button>
+    </>
+  )
+}
+```
+
+`dependencies` accepts a readonly array of `CheckoutDependency` objects. Each object's `keys` is **one nonempty array prefix**,
+using TanStack's inclusive structural matching: `["inventory"]` matches `["inventory", cartId]`. Add another object to watch
+another prefix. `type` chooses the query or mutation cache. Each optional `block.onPending` / `block.onError` flag defaults
+independently to `true`; omitting `block` enables both. Pending includes paused requests, background fetches and asynchronous
+mutation callbacks. Setting `onError: false` lets an optional task fail without blocking checkout; its original hook still
+reports the error. Setting `onPending: false` allows confirmation while that custom work runs, while `onError: true` blocks
+after a failure. Setting both flags to `false` contributes no custom blocker.
+
+These policies apply to application dependencies. Kit's cart writes, queued edits, required reads/data, shipping prerequisites,
+reconciliation and confirmation remain enforced independently, including when a custom dependency matches a Kit namespace.
+Callbacks such as `onSuccess` stay at the top level. The previous draft's `readiness` group and flat selector options are unsupported.
+
+Registrations from all mounted checkout consumers combine; duplicate type/prefix pairs share one entry, and any matching
+policy that requires blocking wins. Changing flags on a still-registered prefix updates that consumer's policy without
+clearing request/error state. Removing a prefix or unmounting removes idle observation, while already observed work and
+blocking failures retain the last registered policy until recovery or an acknowledged checkout session replacement.
+Re-registering replaces that consumer's retained policy. A pending-only registration ends after its in-flight work settles,
+even if it fails; its error does not become a blocker. Mutation success clears its registered feature's last completed failure. Query failures are
+retained per concrete key: a successful fetch for another product does not hide a failure. Refresh the failed query or retry
+the failed mutation; removing cache entries or calling checkout's confirmation `reset()` is not recovery. Cold mutation
+history is conservative because its completion order is unknown: an existing failed entry needs a new matching success.
+
+Absent, idle disabled and unused historical custom queries do not block. With the corresponding flags enabled, active errors and fetching/paused queries block,
+including background refetches with data. Query cancellation ends its pending fetch without clearing an earlier failure;
+whether the transport actually aborts depends on the app's query function. Custom mutation failures survive cache GC, and
+removed pending mutations remain protected until settlement. Register prerequisites before starting them; registrations
+observe app-owned work and do not prevent arbitrary application mutations from starting during confirmation. Apps must guard
+those writes themselves using checkout readiness/confirmation state. Unkeyed and unregistered work is outside this decision.
+
+`checkout.locks` provides readonly `{ id, name, message }` entries; `isPending` describes confirmation progress. No new provider
+is needed. The core exposes `CheckoutLockedError` and readonly entry/state types; there is no public manual lock hook or store.
+One shared controller observes each SDK client and app cache. Different live WooCommerce clients require separate QueryClients;
+Kit does not replace application cache defaults or callbacks. Form validity remains an additional application concern.
+
+Both confirmation variants read live readiness and reserve synchronously before dispatch. Locked, stale-render, duplicate or
+reentrant attempts issue no HTTP. `confirmAsync` rejects with `CheckoutLockedError` (`CHECKOUT_LOCKED`, `data.locks`); `confirm`
+reports it through `error`, `onError` and `onSettled`, without `onStart`. Confirmation stays reserved through cache publication
+and settled callbacks. Conflicting Kit cart actions and queued edits fail with `CHECKOUT_CONFIRMING`. A session
+replaced before an admitted request starts fails with `CHECKOUT_SESSION_CHANGED`; SDK failures retain their original error.
+A failed confirmation preserves its error/server-field issues while allowing another attempt after settlement. This retry
+exception applies only to confirmation, so other watched checkout features still retain failures.
+
+Session replacement clears old settled outcomes and invalidates old Kit result publication; cache absence alone does not
+resolve a failure or cancel a dispatched mutation. Already dispatched writes keep the replacement protected until settlement,
+and obsolete Kit completions cannot publish data, latch new-session errors or release another reservation.
+App-owned requests still publish to their own caches; Kit ignores their old-session readiness outcomes. Initial bootstrap
+preserves relevant work. Confirmation advances its own session while keeping its reservation until terminal cache notification.
 
 ### The return route
 

@@ -95,7 +95,7 @@ export function defaultShouldUpdateAddress(input: UpdateCartInput, cart: Cart | 
  * queryClient.setQueryData(cartQueryKey, snapshot.cart)
  * ```
  */
-export const cartQueryKey = ["kizlo", "woocommerce", "cart"] as const
+export { cartQueryKey } from "./session-keys"
 
 /** How long a fetched cart stays fresh. Long enough to survive a navigation, short enough that a second tab is noticed. */
 export const cartStaleTime = 30_000

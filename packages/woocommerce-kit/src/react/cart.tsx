@@ -15,7 +15,7 @@
  * Renders nothing. Every class name, icon, label and route stays in the consumer.
  */
 
-import { useIsMutating, useMutation } from "@tanstack/react-query"
+import { useMutation } from "@tanstack/react-query"
 import type { ActiveKizloClient } from "kizlo"
 import { useKizloContext } from "kizlo/react"
 import { type ChangeEvent, type FocusEvent, type KeyboardEvent, useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
@@ -34,11 +34,15 @@ import {
 	shippingQuoteSignature,
 	stepQuantity,
 } from "../cart"
+import { CheckoutLockedError } from "../checkout-locks"
 import { formatStoreMoney } from "../money"
-import type { AddCartItemInput, Cart, CartAddressInput, CartAddressSnapshotInput, CartError, Storefront, UpdateCartInput } from "../types"
+import { quantityQueueKey } from "../session-keys"
+import type { AddCartItemInput, Cart, CartAddressInput, CartAddressSnapshotInput, CartError, Storefront } from "../types"
+import type { CheckoutRequest } from "./checkout-lock-cache"
+import { useCheckoutLockStore, useCheckoutReadiness } from "./checkout-lock-store"
 import { useWooCommerceContext } from "./context"
 import { notify } from "./notify"
-import { addressMutationKey, addressQueueKey, cartMutationKey, noQueuedAddresses, useCartActivity, useCartQuery } from "./session-queries"
+import { addressMutationKey, addressQueueKey, cartMutationKey, useCartActivity, useCartQuery } from "./session-queries"
 import { storefrontQueryKey, useStorefront } from "./storefront"
 
 /**
@@ -126,62 +130,131 @@ function useCartData() {
 }
 
 /**
- * One hook's own action: a mutation keyed to that hook's scope, so `isPending` and `error` describe its action and no other one.
- * React Query runs it — the four callback phases, the pending state and the last failure are all its own.
+ * One keyed action observer. Item/coupon errors stay local; address/shipping failures are shared per feature.
+ * The cache controller owns checkout readiness across observers, while React Query runs the callback phases.
  *
  * Composes {@link useCartData} rather than sitting beside it, so a hook that only acts is still subscribed to the shared cart
  * query: an address form on a page of its own is what fetches the cart for it.
  */
-function useCartAction(scope: readonly string[], options: CartHookOptions | undefined) {
+function useCartAction(scope: readonly string[], options: CartHookOptions | undefined, sharedError = false) {
 	const { client } = useKizloContext()
-	const { queryClient } = useWooCommerceContext()
 	const data = useCartData()
+	const binding = useCheckoutLockStore()
+	useCheckoutReadiness(binding)
+	const feature = binding.feature(scope)
+	const [dismissed, setDismissed] = useState<number | null>(null)
+	const [admissionError, setAdmissionError] = useState<CheckoutLockedError | null>(null)
 
 	// Each hook owns one mutation, keyed to its scope: the caller already memoised `scope`, so the key is stable. The options
 	// below are read from the last committed render, which is what a callback ref used to buy.
-	const mutation = useMutation<Cart, CartError, CartActionPayload>({
-		mutationFn: (variables) => cartRequest(client.woocommerce.cart, variables),
+	const mutation = useMutation<Cart, CartError, CheckoutRequest<CartActionPayload>>({
+		mutationFn: (operation) => {
+			binding.sync()
+			binding.assertCurrent(operation.token)
+			return cartRequest(client.woocommerce.cart, operation.payload)
+		},
 		mutationKey: scope,
 		// Pinned rather than inherited: query-core's own default is `this.options.retry ?? 0`, and `this.options` carries the app's
 		// `defaultOptions.mutations`. A cart write is not idempotent, so a retry is a second line rather than a second attempt.
 		retry: 0,
-		onMutate: (variables) => {
+		onMutate: ({ payload: variables }) => {
 			notify(() => options?.onStart?.({ ...variables, status: "start" }))
 		},
-		onSuccess: (cart, variables) => {
-			queryClient.setQueryData(cartQueryKey, cart)
+		onSuccess: (cart, operation) => {
+			binding.sync()
+			const variables = operation.payload
+			binding.publishCart(operation.token, cart)
 			notify(() => options?.onSuccess?.({ ...variables, cart, status: "success" }))
 		},
-		onError: (error, variables) => {
+		onError: (error, operation) => {
+			const variables = operation.payload
 			notify(() => options?.onError?.({ ...variables, error, status: "error" }))
 		},
 		// A narrowing rather than a branch: query-core passes `(cart, null, …)` on success and `(undefined, error, …)` on
 		// failure, never neither, so this avoids asserting `cart` is there.
-		onSettled: (cart, error, variables) => {
+		onSettled: (cart, error, operation) => {
+			const variables = operation.payload
 			if (error) notify(() => options?.onSettled?.({ ...variables, error, status: "error" }))
 			else if (cart) notify(() => options?.onSettled?.({ ...variables, cart, status: "success" }))
 		},
 	})
 
 	// Read from the mutation cache rather than from local state: two components showing the same line both see it saving.
-	const isPending = useIsMutating({ mutationKey: scope }) > 0
+	const isPending = binding.pending(scope)
 
-	const { mutate, mutateAsync, reset } = mutation
+	const { reset } = mutation
+	const rejectAdmission = useCallback(
+		(error: CheckoutLockedError, variables: CartActionPayload) => {
+			setAdmissionError(error)
+			notify(() => options?.onError?.({ ...variables, error, status: "error" }))
+			notify(() => options?.onSettled?.({ ...variables, error, status: "error" }))
+		},
+		[options],
+	)
+	const begin = useCallback(
+		(variables: CartActionPayload) => {
+			binding.sync()
+			setAdmissionError(null)
+			return binding.admit(variables)
+		},
+		[binding],
+	)
+	const mutate = useCallback(
+		(variables: CartActionPayload) => {
+			try {
+				binding.dispatch(scope, () => mutation.mutate(begin(variables)))
+			} catch (error) {
+				if (!(error instanceof CheckoutLockedError)) throw error
+				rejectAdmission(error, variables)
+			}
+		},
+		[begin, binding, scope, mutation.mutate, rejectAdmission],
+	)
+	const mutateAsync = useCallback(
+		async (variables: CartActionPayload) => {
+			let request: Promise<Cart>
+			try {
+				request = binding.dispatch(scope, () => mutation.mutateAsync(begin(variables)))
+			} catch (error) {
+				if (error instanceof CheckoutLockedError) rejectAdmission(error, variables)
+				throw error
+			}
+			return request
+		},
+		[begin, binding, scope, mutation.mutateAsync, rejectAdmission],
+	)
 
 	// `reset` detaches the observer from the mutation it is watching, so resetting an action that is still in flight would leave
 	// the refusal it is about to report with nowhere to land. A settled failure is the only one cleared.
 	const clearSettled = useCallback(() => {
-		if (!isPending) reset()
-	}, [isPending, reset])
+		if (!isPending) {
+			setAdmissionError(null)
+			const failure = binding.readiness.failure(feature)
+			if (sharedError) setDismissed(failure?.sequence ?? null)
+			else if (failure && binding.failureMatches(feature, mutation.variables)) binding.readiness.dismiss(feature, failure.identity)
+			binding.sync()
+			reset()
+		}
+	}, [binding, feature, isPending, mutation.variables, sharedError, reset])
 
 	return {
 		...data,
-		error: mutation.error,
-		failedAddressInput: mutation.error && mutation.variables?.type === "update_customer" ? mutation.variables.input : null,
+		error:
+			admissionError ??
+			(sharedError
+				? binding.readiness.failure(feature)?.sequence === dismissed
+					? null
+					: ((binding.readiness.failure(feature)?.error as CartError) ?? null)
+				: mutation.error),
 		isPending,
 		mutate,
 		mutateAsync,
 		reset: clearSettled,
+		cancelFailures: useCallback(() => {
+			binding.readiness.dismiss(feature)
+			binding.sync()
+		}, [binding, feature]),
+		rejectAdmission,
 	}
 }
 
@@ -260,7 +333,9 @@ export function useCart(): CartApi {
 }
 
 export type CartAddressApi = {
-	/** The last failure of this save, and of nothing else. */
+	/** Abandons queued edits and settled failed saves. Restore the form from the cart; dispatched requests still settle. */
+	cancel: () => void
+	/** The shared address feature's last completed failure. */
 	error: CartError | null
 	/** This hook's own save is in flight. A rate selection or a line saving elsewhere does not set it. */
 	isPending: boolean
@@ -268,7 +343,7 @@ export type CartAddressApi = {
 	onAddressChange: (input: CartAddressSnapshotInput) => void
 	/** Awaits the latest coalesced snapshot; skipped or cancelled queued edits resolve undefined. */
 	onAddressChangeAsync: (input: CartAddressSnapshotInput) => Promise<Cart | undefined>
-	/** Clears the last failure once it has settled. */
+	/** Dismisses the displayed settled error. Use cancel() to abandon the failed draft. */
 	reset: () => void
 	/** Saves the customer's addresses. The email is a field inside `billingAddress` rather than a sibling of it. */
 	update: (input: CartAddressInput) => void
@@ -276,12 +351,11 @@ export type CartAddressApi = {
 	updateAsync: (input: CartAddressInput) => Promise<Cart>
 }
 
-function matchesSavedAddresses(input: CartAddressSnapshotInput, cart: Cart | null, failedInput: UpdateCartInput): boolean {
+function matchesSavedAddresses(input: CartAddressSnapshotInput, cart: Cart | null): boolean {
 	if (!cart || (!input.shippingAddress && !input.billingAddress)) return false
 	return (["shippingAddress", "billingAddress"] as const).every((key) => {
 		const address = input[key]
-		if (!address) return !failedInput[key]
-		if (!Object.keys(failedInput[key] ?? {}).every((field) => field in address)) return false
+		if (!address) return true
 		const saved = cart[key]
 		if (!address.country.trim() || !saved || shippingQuoteSignature(address) !== shippingQuoteSignature(saved)) return false
 		return Object.entries(address).every(
@@ -304,7 +378,7 @@ function matchesSavedAddresses(input: CartAddressSnapshotInput, cart: Cart | nul
  * address save runs. A correction back to the pre-request address is checked after that request settles, not discarded early.
  * Either shipping or billing can qualify; postcode whitespace and case are ignored. Pass `shouldUpdateAddress` for validation
  * or carrier-specific fields. Returning to the saved address clears a settled failure without another request.
- * Read `useCart().isRepricing` to show updating totals and guard checkout while keeping fields editable.
+ * Read `useCart().isRepricing` for progress and `useCheckout().isLocked` for readiness while keeping fields editable.
  *
  * @example Recalculate from the whole current shipping form, without disabling its fields
  * ```tsx
@@ -340,8 +414,11 @@ function matchesSavedAddresses(input: CartAddressSnapshotInput, cart: Cart | nul
 export function useCartAddress(options?: CartAddressHookOptions): CartAddressApi {
 	useStorefront()
 	const scope = useMemo(() => addressMutationKey, [])
-	const { error, failedAddressInput, isPending, mutate, mutateAsync, reset } = useCartAction(scope, options)
+	const { error, isPending, mutate, mutateAsync, reset, cancelFailures, rejectAdmission } = useCartAction(scope, options, true)
 	const { queryClient } = useWooCommerceContext()
+	const binding = useCheckoutLockStore()
+	const { store } = binding
+	const queuedGeneration = useRef<number | null>(null)
 	const owner = useId()
 	const latest = useRef<CartAddressSnapshotInput | null>(null)
 	const waiters = useRef<{ resolve: (cart: Cart | undefined) => void; reject: (error: unknown) => void }[]>([])
@@ -349,12 +426,11 @@ export function useCartAddress(options?: CartAddressHookOptions): CartAddressApi
 
 	const markQueued = useCallback(
 		(queued: boolean) => {
-			queryClient.setQueryData<string[]>(addressQueueKey, (owners = noQueuedAddresses) => {
-				if (queued) return owners.includes(owner) ? owners : [...owners, owner]
-				return owners.includes(owner) ? owners.filter((id) => id !== owner) : owners
-			})
+			if (!queued) queuedGeneration.current = null
+			binding.queue(addressQueueKey, owner, queued)
+			if (queued) queuedGeneration.current = store.generation
 		},
-		[owner, queryClient],
+		[binding, owner, store],
 	)
 
 	useEffect(
@@ -383,16 +459,19 @@ export function useCartAddress(options?: CartAddressHookOptions): CartAddressApi
 
 	const clearSavedFailure = useCallback(
 		(input: CartAddressSnapshotInput, cart: Cart | null) => {
-			if (failedAddressInput && matchesSavedAddresses(input, cart, failedAddressInput)) reset()
+			if (matchesSavedAddresses(input, cart)) {
+				cancelFailures()
+				reset()
+			}
 		},
-		[failedAddressInput, reset],
+		[cancelFailures, reset],
 	)
 
 	const push = useDebouncedCallback(() => {
 		const snapshot = latest.current
 		if (!snapshot) return
 		// Compare only after the store has answered: a revert can match the old cache while the in-flight save will change it.
-		if (queryClient.isMutating({ mutationKey: scope }) > 0) {
+		if (binding.pending(scope)) {
 			push()
 			return
 		}
@@ -429,7 +508,7 @@ export function useCartAddress(options?: CartAddressHookOptions): CartAddressApi
 			}
 			const cart = queryClient.getQueryData<Cart>(cartQueryKey) ?? null
 			const projected = normalize(latest.current) as CartAddressSnapshotInput
-			if (queryClient.isMutating({ mutationKey: scope }) === 0 && !shouldUpdateAddress(projected, cart)) {
+			if (!binding.pending(scope) && !shouldUpdateAddress(projected, cart)) {
 				clearSavedFailure(projected, cart)
 				latest.current = null
 				push.cancel()
@@ -437,10 +516,18 @@ export function useCartAddress(options?: CartAddressHookOptions): CartAddressApi
 				markQueued(false)
 				return
 			}
-			markQueued(true)
+			try {
+				markQueued(true)
+			} catch (error) {
+				if (!(error instanceof CheckoutLockedError)) throw error
+				rejectAdmission(error, { input: projected, type: "update_customer" })
+				latest.current = null
+				for (const waiter of waiters.current.splice(0)) waiter.reject(error)
+				return
+			}
 			push()
 		},
-		[clearSavedFailure, markQueued, normalize, push, queryClient, scope, shouldUpdateAddress],
+		[clearSavedFailure, markQueued, normalize, push, queryClient, scope, shouldUpdateAddress, rejectAdmission, binding],
 	)
 
 	const onAddressChangeAsync = useCallback(
@@ -452,17 +539,35 @@ export function useCartAddress(options?: CartAddressHookOptions): CartAddressApi
 		[onAddressChange],
 	)
 
-	return { error, isPending, onAddressChange, onAddressChangeAsync, reset, update, updateAsync }
+	const cancel = useCallback(() => {
+		latest.current = null
+		push.cancel()
+		for (const waiter of waiters.current.splice(0)) waiter.resolve(undefined)
+		markQueued(false)
+		cancelFailures()
+		reset()
+	}, [cancelFailures, markQueued, push, reset])
+	useEffect(
+		() =>
+			store.state.listen(() => {
+				if (queuedGeneration.current !== null && queuedGeneration.current !== store.generation) cancel()
+			}),
+		[cancel, store],
+	)
+
+	return { cancel, error, isPending, onAddressChange, onAddressChangeAsync, reset, update, updateAsync }
 }
 
 export type CartShippingRatesApi = {
-	/** The last failure of a rate selection, and of nothing else. */
+	/** Abandons a settled failed choice. The acknowledged selection and in-flight requests remain authoritative. */
+	cancel: () => void
+	/** The shared shipping feature's last completed failure. */
 	error: CartError | null
 	/** A rate is in effect for every package that needs shipping — the store's default counts. `false` while there is no cart. */
 	hasSelectedShippingRates: boolean
 	/** A selection is in flight. Not per package: the store re-quotes the whole cart, so one boolean matches every list. */
 	isPending: boolean
-	/** Clears the last failure once it has settled. */
+	/** Dismisses the displayed settled error. Use cancel() to abandon the failed choice. */
 	reset: () => void
 	/** Chooses one of a package's rates. Pass the package's own `id`; omit it for a cart with a single package. */
 	selectShippingRate: (rateId: string, packageId?: string | number | null) => void
@@ -525,7 +630,11 @@ export type CartShippingRatesApi = {
  */
 export function useCartShippingRates(options?: CartHookOptions): CartShippingRatesApi {
 	const scope = useMemo(() => [...cartMutationKey, "shippingRate"], [])
-	const { cart, error, isPending, mutate, mutateAsync, reset } = useCartAction(scope, options)
+	const { cart, error, isPending, mutate, mutateAsync, reset, cancelFailures } = useCartAction(scope, options, true)
+	const cancel = useCallback(() => {
+		cancelFailures()
+		reset()
+	}, [cancelFailures, reset])
 
 	const selectShippingRate = useCallback(
 		(rateId: string, packageId?: string | number | null) => mutate({ packageId, rateId, type: "select_shipping_rate" }),
@@ -538,6 +647,7 @@ export function useCartShippingRates(options?: CartHookOptions): CartShippingRat
 	)
 
 	return {
+		cancel,
 		error,
 		hasSelectedShippingRates: hasSelectedShippingRates(cart),
 		isPending,
@@ -630,6 +740,19 @@ type QuantityFieldOptions = {
  */
 function useQuantityField({ autoCommit, committed, debounceMs, itemKey, limits, write }: QuantityFieldOptions): CartItemQuantity {
 	const keyed = itemKey !== undefined
+	const keyedRef = useRef(keyed)
+	keyedRef.current = keyed
+	const binding = useCheckoutLockStore()
+	const owner = useId()
+	const queuedGeneration = useRef<number | null>(null)
+	const markQueued = useCallback(
+		(queued: boolean) => {
+			if (!queued) queuedGeneration.current = null
+			binding.queue(quantityQueueKey, owner, queued && keyedRef.current)
+			if (queued && keyedRef.current) queuedGeneration.current = binding.store.generation
+		},
+		[binding, owner],
+	)
 	// One piece of state for the whole edit: the quantity the shopper chose that the store does not hold yet. Mirrored in a ref
 	// because the commit paths — `commit()`, the unmount flush — read it in the same tick it is set.
 	const [pending, setPending] = useState<number | null>(null)
@@ -642,26 +765,42 @@ function useQuantityField({ autoCommit, committed, debounceMs, itemKey, limits, 
 	const writeLatest = useLatest(write)
 	const autoCommitLatest = useLatest(autoCommit)
 
-	const setPendingQuantity = useCallback((quantity: number | null) => {
-		pendingRef.current = quantity
-		setPending(quantity)
-	}, [])
+	const setPendingQuantity = useCallback(
+		(quantity: number | null) => {
+			if (quantity === null) markQueued(false)
+			pendingRef.current = quantity
+			setPending(quantity)
+		},
+		[markQueued],
+	)
 
 	const saveAsync = useCallback(
 		async (quantity: number) => {
 			sentRef.current = quantity
 			try {
-				return await writeLatest.current(quantity)
+				const request = writeLatest.current(quantity)
+				markQueued(false)
+				return await request
 			} finally {
 				// Both APIs drop a refused edit and fall back to the acknowledged line quantity.
 				if (pendingRef.current === quantity) setPendingQuantity(null)
 			}
 		},
-		[setPendingQuantity, writeLatest],
+		[setPendingQuantity, writeLatest, markQueued],
 	)
 
 	const save = useCallback((quantity: number) => saveAsync(quantity).then(noop, noop), [saveAsync])
 	const schedule = useDebouncedCallback((quantity: number) => void save(quantity), debounceMs)
+	useEffect(
+		() =>
+			binding.store.state.listen(() => {
+				if (queuedGeneration.current === null || queuedGeneration.current === binding.store.generation) return
+				schedule.cancel()
+				setPendingQuantity(null)
+				sentRef.current = null
+			}),
+		[binding, schedule, setPendingQuantity],
+	)
 
 	// The store caught up — through this hook's save, or a cart changed in another tab — so nothing is owed any more, and a save
 	// still waiting out its window would only re-send what the store already holds. Done on the store's value rather than when the
@@ -685,8 +824,10 @@ function useQuantityField({ autoCommit, committed, debounceMs, itemKey, limits, 
 	// choice — by the time this runs, the writer below belongs to the new line, so saving it would charge the wrong one.
 	// biome-ignore lint/correctness/useExhaustiveDependencies: `itemKey` is this hook's argument, so it does change between renders.
 	useEffect(() => {
+		schedule.cancel()
+		sentRef.current = null
 		setPendingQuantity(null)
-	}, [itemKey, setPendingQuantity])
+	}, [itemKey, schedule, setPendingQuantity])
 
 	// A drawer closing a moment after a click would otherwise discard the edit. React Query mutations outlive the component, so
 	// the request survives the unmount. `use-debounce` cancels its own timer here, which is why this writes directly instead of
@@ -697,11 +838,10 @@ function useQuantityField({ autoCommit, committed, debounceMs, itemKey, limits, 
 	useEffect(
 		() => () => {
 			const quantity = pendingRef.current
-			if (quantity === null || quantity === sentRef.current || !autoCommitLatest.current) return
-
-			void writeLatest.current(quantity).then(noop, noop)
+			if (quantity !== null && quantity !== sentRef.current && autoCommitLatest.current) void writeLatest.current(quantity).then(noop, noop)
+			markQueued(false)
 		},
-		[autoCommitLatest, writeLatest],
+		[autoCommitLatest, writeLatest, markQueued],
 	)
 
 	const apply = useCallback(
@@ -730,6 +870,14 @@ function useQuantityField({ autoCommit, committed, debounceMs, itemKey, limits, 
 				return
 			}
 
+			try {
+				markQueued(true)
+			} catch (error) {
+				if (!(error instanceof CheckoutLockedError)) throw error
+				setInput(String(value))
+				void writeLatest.current(quantity).then(noop, noop)
+				return
+			}
 			setPendingQuantity(quantity)
 			sentRef.current = null
 			if (!autoCommit) return
@@ -742,7 +890,7 @@ function useQuantityField({ autoCommit, committed, debounceMs, itemKey, limits, 
 
 			schedule(quantity)
 		},
-		[autoCommit, committed, keyed, limits, save, schedule, setPendingQuantity, value],
+		[autoCommit, committed, keyed, limits, save, schedule, setPendingQuantity, value, markQueued, writeLatest],
 	)
 
 	const commit = useCallback(async () => {

@@ -1,0 +1,67 @@
+import { describe, expect, it, vi } from "vitest"
+import { CheckoutLockedError, checkoutLockStore, createCheckoutLockStore } from "./checkout-locks"
+
+describe("checkout readiness store", () => {
+	it("publishes stable readonly feature entries without acquiring on subscription", () => {
+		const store = createCheckoutLockStore()
+		const unsubscribe = store.state.listen(() => {})
+		expect(store.state.get()).toEqual({ isLocked: false, entries: [] })
+		store.setAutomatic(new Map([["cart.item", "Saving"]]))
+		const entry = store.state.get().entries[0],
+			snapshot = store.state.get()
+		store.setAutomatic(new Map([["cart.item", "Saving"]]))
+		expect(store.state.get()).toBe(snapshot)
+		store.setAutomatic(new Map([["cart.item", "Failed"]]))
+		expect(store.state.get().entries[0]?.id).toBe(entry?.id)
+		expect(Object.isFrozen(store.state.get().entries)).toBe(true)
+		expect(Object.isFrozen(store.state.get().entries[0])).toBe(true)
+		expect("set" in store.state).toBe(false)
+		expect("source" in store).toBe(false)
+		unsubscribe()
+	})
+	it("isolates SDK/cache pairs and advances generation only on acknowledged replacement", () => {
+		const client = {},
+			cache = {},
+			other = {},
+			store = checkoutLockStore(client, cache)
+		expect(checkoutLockStore(client, cache)).toBe(store)
+		expect(checkoutLockStore(client, other)).not.toBe(store)
+		expect(checkoutLockStore(other, cache)).not.toBe(store)
+		const changed = vi.fn()
+		const unsubscribe = store.state.listen(changed)
+		store.syncSession("first")
+		expect(store.generation).toBe(0)
+		store.syncSession(null)
+		expect(store.generation).toBe(0)
+		store.syncSession("second")
+		expect(store.generation).toBe(1)
+		expect(changed).toHaveBeenCalledOnce()
+		unsubscribe()
+	})
+	it("reserves synchronously and only retires the matching private reservation", () => {
+		const store = createCheckoutLockStore()
+		store.setAutomatic(new Map([["application.mutation", "Required"]]))
+		expect(() => store.reserveConfirmation()).toThrow(CheckoutLockedError)
+		store.setAutomatic(new Map())
+		const first = store.reserveConfirmation()
+		expect(() => store.reserveConfirmation()).toThrow(CheckoutLockedError)
+		store.releaseConfirmation(first)
+		const second = store.reserveConfirmation()
+		store.releaseConfirmation(first)
+		expect(store.isConfirmation(second)).toBe(true)
+		store.releaseConfirmation(second)
+		expect(store.state.get().isLocked).toBe(false)
+	})
+	it("retains confirmation protection across replacement and its own successful session advance", () => {
+		const store = createCheckoutLockStore()
+		store.syncSession("first")
+		const reservation = store.reserveConfirmation()
+		store.syncSession("replacement")
+		expect(store.isConfirmation(reservation)).toBe(true)
+		expect(store.state.get().isLocked).toBe(true)
+		store.acceptSession("confirmed")
+		expect(store.isConfirmation(reservation)).toBe(true)
+		store.releaseConfirmation(reservation)
+		expect(store.state.get().isLocked).toBe(false)
+	})
+})

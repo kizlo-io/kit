@@ -30,6 +30,10 @@ export function createCheckoutErrorStore() {
 	const clear = () => state.set({ ...state.get(), error: null, issues: [] })
 	return {
 		state,
+		reject(error: CheckoutError) {
+			// Admission refusals must not replace the accepted submission's identity or server-field issues.
+			state.set({ ...state.get(), error })
+		},
 		syncSession(next: string | null) {
 			if (session === next) return
 			// Bootstrap may finish after an initial confirmation; it is not a revived checkout.
