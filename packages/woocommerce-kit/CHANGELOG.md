@@ -1,5 +1,19 @@
 # @kizlo/woocommerce-kit
 
+## 0.10.0
+
+### Minor Changes
+
+- [#39](https://github.com/kizlo-io/kit/pull/39) [`5de020e`](https://github.com/kizlo-io/kit/commit/5de020e6c77b3969ae298a27a367ea9d70687b2a) Thanks [@IDJGILL](https://github.com/IDJGILL)! - Validate automatic checkout address changes through form bindings and country-aware postcode rules while keeping address policy helpers internal.
+
+- [#38](https://github.com/kizlo-io/kit/pull/38) [`da3e569`](https://github.com/kizlo-io/kit/commit/da3e56976245439cdd707494c83e345f08fde726) Thanks [@IDJGILL](https://github.com/IDJGILL)! - Derive checkout readiness automatically and configure application query and mutation dependencies with independent pending and error policies.
+
+- [#40](https://github.com/kizlo-io/kit/pull/40) [`dc934b3`](https://github.com/kizlo-io/kit/commit/dc934b36aadb95b71dd8733d030ca4e5e73f5799) Thanks [@IDJGILL](https://github.com/IDJGILL)! - Add optional checkout form adapters for TanStack Form and React Hook Form.
+
+- [#35](https://github.com/kizlo-io/kit/pull/35) [`dc3f207`](https://github.com/kizlo-io/kit/commit/dc3f207148f9a65086f7b930717cc3b28dd9e248) Thanks [@IDJGILL](https://github.com/IDJGILL)! - Apply checkout address settings consistently, retain hidden field bindings and constraints, and provide a one-time shipping-to-billing form copy.
+
+- [#37](https://github.com/kizlo-io/kit/pull/37) [`9549e72`](https://github.com/kizlo-io/kit/commit/9549e7262f1d75324d3215bdd845c9d72d39cae8) Thanks [@IDJGILL](https://github.com/IDJGILL)! - Expose encode and decode as shape-preserving checkout field key converters.
+
 ## 0.9.0
 
 ### Minor Changes
