@@ -213,6 +213,17 @@ export type CheckoutFormFieldName =
 	| `billingAddress.${AddressFormNames<NonNullable<CheckoutFormValues["billingAddress"]>>}`
 	| `shippingAddress.${AddressFormNames<NonNullable<CheckoutFormValues["shippingAddress"]>>}`
 	| `additionalFields.${keyof NonNullable<CheckoutFormValues["additionalFields"]> & string}`
+type FormPathValue<T, Name extends string> = T extends undefined
+	? undefined
+	: Name extends `${infer Head}.${infer Tail}`
+		? Head extends keyof T
+			? FormPathValue<T[Head], Tail>
+			: never
+		: Name extends keyof T
+			? T[Name]
+			: never
+/** The exact registered value type at a safe encoded scalar form name. */
+export type CheckoutFormFieldValue<Name extends CheckoutFormFieldName> = FormPathValue<CheckoutFormValues, Name>
 type ScalarValue<T> = T extends object ? { [K in keyof T]: ScalarValue<T[K]> }[keyof T] : Extract<T, string | boolean | number>
 export type CheckoutFieldValue = ScalarValue<
 	Pick<

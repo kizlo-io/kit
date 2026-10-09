@@ -3,16 +3,42 @@
 	"extends": "./build.json",
 	"compilerOptions": {
 		"paths": {
-			"@kizlo/kit": ["${configDir}/../kit/src/index.ts"],
-			"@kizlo/woocommerce-kit": ["${configDir}/../woocommerce-kit/src/index.ts"],
-			"@kizlo/woocommerce-kit/react": ["${configDir}/../woocommerce-kit/src/react/client.tsx"],
-			"@kizlo/woocommerce-kit/react/cart": ["${configDir}/../woocommerce-kit/src/react/cart.tsx"],
-			"@kizlo/woocommerce-kit/react/checkout": ["${configDir}/../woocommerce-kit/src/react/checkout.tsx"],
-			"@kizlo/woocommerce-kit/react/checkout-fields": ["${configDir}/../woocommerce-kit/src/react/checkout-fields.tsx"],
-			"@kizlo/woocommerce-kit/react/provider": ["${configDir}/../woocommerce-kit/src/react/provider.tsx"],
-			"@kizlo/woocommerce-kit/react/search": ["${configDir}/../woocommerce-kit/src/react/search.tsx"],
-			"@kizlo/woocommerce-kit/react/server": ["${configDir}/../woocommerce-kit/src/react/server.tsx"],
-			"@kizlo/woocommerce-kit/react/storefront": ["${configDir}/../woocommerce-kit/src/react/storefront.tsx"]
+			"@kizlo/kit": [
+				"${configDir}/../kit/src/index.ts"
+			],
+			"@kizlo/woocommerce-kit": [
+				"${configDir}/../woocommerce-kit/src/index.ts"
+			],
+			"@kizlo/woocommerce-kit/react": [
+				"${configDir}/../woocommerce-kit/src/react/client.tsx"
+			],
+			"@kizlo/woocommerce-kit/react/cart": [
+				"${configDir}/../woocommerce-kit/src/react/cart.tsx"
+			],
+			"@kizlo/woocommerce-kit/react/checkout": [
+				"${configDir}/../woocommerce-kit/src/react/checkout.tsx"
+			],
+			"@kizlo/woocommerce-kit/react/checkout-fields": [
+				"${configDir}/../woocommerce-kit/src/react/checkout-fields.tsx"
+			],
+			"@kizlo/woocommerce-kit/react/provider": [
+				"${configDir}/../woocommerce-kit/src/react/provider.tsx"
+			],
+			"@kizlo/woocommerce-kit/react/search": [
+				"${configDir}/../woocommerce-kit/src/react/search.tsx"
+			],
+			"@kizlo/woocommerce-kit/react/server": [
+				"${configDir}/../woocommerce-kit/src/react/server.tsx"
+			],
+			"@kizlo/woocommerce-kit/react/storefront": [
+				"${configDir}/../woocommerce-kit/src/react/storefront.tsx"
+			],
+			"@kizlo/woocommerce-kit/react/checkout-fields/tanstack-form": [
+				"${configDir}/../woocommerce-kit/src/react/checkout-fields-tanstack-form.tsx"
+			],
+			"@kizlo/woocommerce-kit/react/checkout-fields/react-hook-form": [
+				"${configDir}/../woocommerce-kit/src/react/checkout-fields-react-hook-form.tsx"
+			]
 		}
 	}
 }

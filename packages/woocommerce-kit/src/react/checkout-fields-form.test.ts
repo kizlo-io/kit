@@ -761,7 +761,7 @@ describe("real form server channels", () => {
 	it.each([
 		["TanStack", TanStackCheckoutForm],
 		["React Hook Form", ReactHookFormCheckout],
-	] as const)("%s example renders server messages and resubmits without stale server flags", async (_name, Component) => {
+	] as const)("%s example replaces repeated submission failures and retries without stale server flags", async (_name, Component) => {
 		const { sources, wrapper } = setup()
 		const error = validationFailure([
 			validationIssue({ registeredFields: [{ id, bucket: "additionalFields" }], message: "server one" }),
@@ -769,7 +769,12 @@ describe("real form server channels", () => {
 			validationIssue({ scope: "group", target: ["billingAddress"], message: "billing section" }),
 			validationIssue({ message: "summary refusal" }),
 		])
-		procedures.checkout.confirm.call.mockRejectedValueOnce(error).mockResolvedValueOnce(sources.checkout)
+		procedures.checkout.confirm.call
+			.mockRejectedValueOnce(error)
+			.mockRejectedValueOnce(
+				validationFailure([validationIssue({ registeredFields: [{ id, bucket: "additionalFields" }], message: "new refusal" })]),
+			)
+			.mockResolvedValueOnce(sources.checkout)
 		render(createElement(Component), { wrapper })
 		await screen.findByLabelText("Reference")
 		fireEvent.change(screen.getByLabelText("Quantity"), { target: { value: "2" } })
@@ -783,6 +788,12 @@ describe("real form server channels", () => {
 		await waitFor(() => expect(procedures.checkout.confirm.call).toHaveBeenCalledTimes(2))
 		expect(screen.queryByText("billing section")).toBeNull()
 		expect(screen.queryByText("summary refusal")).toBeNull()
+		await screen.findByText("new refusal")
+		expect(screen.queryByText(/server one, server two/)).toBeNull()
+		await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Place order" }).disabled).toBe(false))
+		fireEvent.click(screen.getByRole("button", { name: "Place order" }))
+		await waitFor(() => expect(procedures.checkout.confirm.call).toHaveBeenCalledTimes(3))
+		expect(screen.queryByText("new refusal")).toBeNull()
 	})
 	it.each([
 		["TanStack", TanStackCheckoutForm],
