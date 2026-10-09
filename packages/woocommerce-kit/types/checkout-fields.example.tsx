@@ -1,89 +1,40 @@
 "use client"
 
 import { useCheckout } from "@kizlo/woocommerce-kit/react/checkout"
+import { type CheckoutFieldsApi, useCheckoutFields } from "@kizlo/woocommerce-kit/react/checkout-fields"
 import {
-	type CheckoutFieldsApi,
 	type CheckoutFieldValues,
 	type CheckoutFormValues,
-	type CheckoutServerErrorCallbacks,
-	useCheckoutFields,
-} from "@kizlo/woocommerce-kit/react/checkout-fields"
+	checkoutFormErrorMessages,
+	tanstackFormAdapter,
+} from "@kizlo/woocommerce-kit/react/checkout-fields/tanstack-form"
 import { useForm } from "@tanstack/react-form"
-import { useEffect, useLayoutEffect, useRef, useState } from "react"
+import { useState } from "react"
 import { CheckoutFieldControl } from "./checkout-field-control.example"
-import { tanStackValidateField } from "./checkout-server-errors.example"
-
-const emptyValues: CheckoutFormValues = {}
+import { useTanStackCheckoutDefaults, validateCheckoutForm } from "./checkout-form-tanstack.example"
 
 export function TanStackCheckoutForm({ onSubmit }: { onSubmit: (values: CheckoutFieldValues) => Promise<void> }) {
-	const formRef = useRef<{ options: { defaultValues?: CheckoutFormValues } } | null>(null)
-	const [initialized, setInitialized] = useState(false)
 	const checkout = useCheckout()
-	const serverErrors: CheckoutServerErrorCallbacks = {
-		setErrors: (patches) => {
-			for (const { name, messages } of patches)
-				form.setFieldMeta(name, (meta) => ({ ...meta, errorMap: { ...meta.errorMap, onServer: [...messages] } }))
-		},
-		clearErrors: (names) => {
-			for (const name of names) form.setFieldMeta(name, (meta) => ({ ...meta, errorMap: { ...meta.errorMap, onServer: undefined } }))
-		},
-	}
-
-	const fields: CheckoutFieldsApi = useCheckoutFields({
-		getValues: (): CheckoutFormValues => form.state.values,
-		validateField: (name) => tanStackValidateField(form, name),
-		...(initialized ? serverErrors : { setErrors: undefined, clearErrors: undefined }),
-		setValues: (updates) => {
-			const metadata = updates.map(({ name }) => form.getFieldMeta(name))
-			for (const { name, value, options } of updates)
-				form.setFieldValue(name, value, {
-					dontRunListeners: !options.runListeners,
-					dontUpdateMeta: options.meta === "preserve",
-					dontValidate: true,
-				})
-			// All patches are visible before validation. validateField itself can mark a field touched.
-			updates.forEach(({ name, options }, index) => {
-				if (!options.validate) return
-				const restore = () => {
-					if (options.meta === "preserve")
-						form.setFieldMeta(name, (meta) => ({
-							...meta,
-							isDirty: metadata[index]?.isDirty ?? false,
-							isTouched: metadata[index]?.isTouched ?? false,
-						}))
-				}
-				const validation = form.validateField(name, "change")
-				restore()
-				void Promise.resolve(validation).finally(restore)
-			})
-		},
-	})
+	const [defaults, setDefaults] = useState<CheckoutFormValues>({})
 	const form = useForm({
-		// Keep the form library's reset defaults when hook metadata causes a render.
-		defaultValues: formRef.current?.options.defaultValues ?? fields.defaultValues ?? emptyValues,
-		validators: { onChange: fields.schema ?? undefined, onSubmit: fields.schema ?? undefined },
-		listeners: { onChange: ({ fieldApi }) => fields.handleFieldChange(fieldApi.name, fieldApi.state.value) },
+		defaultValues: defaults,
+		validators: {
+			onChange: ({ value }) => validateCheckoutForm(fields, value),
+			onSubmit: ({ value }) => validateCheckoutForm(fields, value),
+		},
 		onSubmit: async ({ value }) => {
-			await onSubmit(fields.decode(value))
+			if (fields.schema && !fields.unsupported.length && !checkout.isLocked) await onSubmit(fields.decode(value))
 		},
 	})
-	useLayoutEffect(() => {
-		formRef.current = form
-	})
-	useEffect(() => {
-		if (!initialized && fields.defaultValues) {
-			setInitialized(true)
-			form.reset(fields.defaultValues)
-			fields.reevaluate()
-		}
-	}, [fields.defaultValues, fields.reevaluate, form, initialized])
+	const fields: CheckoutFieldsApi = useCheckoutFields(tanstackFormAdapter(form))
+	useTanStackCheckoutDefaults(form, fields, setDefaults)
 	if (!fields.schema) return <p>{fields.error?.message ?? "Loading checkout…"}</p>
 	return (
 		<form
 			noValidate
 			onSubmit={(event) => {
 				event.preventDefault()
-				if (!fields.isRepricing && !checkout.isPending && !fields.unsupported.length) {
+				if (!checkout.isLocked && !fields.unsupported.length) {
 					checkout.reset()
 					void form.handleSubmit()
 				}
@@ -104,7 +55,10 @@ export function TanStackCheckoutForm({ onSubmit }: { onSubmit: (values: Checkout
 									definition={definition}
 									binding={{
 										value: field.state.value,
-										onValueChange: field.handleChange,
+										onValueChange: (value) => {
+											field.handleChange(value)
+											fields.handleFieldChange(definition.name, value)
+										},
 										onBlur: () => {
 											field.handleBlur()
 											fields.handleFieldBlur(definition.name)
@@ -113,7 +67,7 @@ export function TanStackCheckoutForm({ onSubmit }: { onSubmit: (values: Checkout
 									}}
 									error={
 										field.state.meta.isBlurred || form.state.submissionAttempts > 0 || field.state.meta.errorMap.onServer
-											? field.state.meta.errors.map((error) => (typeof error === "string" ? error : error?.message)).join(", ")
+											? checkoutFormErrorMessages(field.state.meta.errors)
 											: undefined
 									}
 								/>
@@ -132,13 +86,19 @@ export function TanStackCheckoutForm({ onSubmit }: { onSubmit: (values: Checkout
 								aria-invalid={field.state.meta.errors.length > 0}
 								aria-describedby={field.state.meta.errors.length ? "paymentMethod-error" : undefined}
 								value={field.state.value ?? ""}
-								onChange={(event) => field.handleChange(event.currentTarget.value)}
-								onBlur={field.handleBlur}
+								onChange={(event) => {
+									field.handleChange(event.currentTarget.value)
+									fields.handleFieldChange(field.name, event.currentTarget.value)
+								}}
+								onBlur={() => {
+									field.handleBlur()
+									fields.handleFieldBlur(field.name)
+								}}
 							/>
 						</label>
 						{field.state.meta.errors.length ? (
 							<p id="paymentMethod-error" role="alert">
-								{field.state.meta.errors.map((error) => (typeof error === "string" ? error : error?.message)).join(", ")}
+								{checkoutFormErrorMessages(field.state.meta.errors)}
 							</p>
 						) : null}
 					</>
@@ -154,13 +114,19 @@ export function TanStackCheckoutForm({ onSubmit }: { onSubmit: (values: Checkout
 								aria-invalid={field.state.meta.errors.length > 0}
 								aria-describedby={field.state.meta.errors.length ? "customerNote-error" : undefined}
 								value={field.state.value ?? ""}
-								onChange={(event) => field.handleChange(event.currentTarget.value)}
-								onBlur={field.handleBlur}
+								onChange={(event) => {
+									field.handleChange(event.currentTarget.value)
+									fields.handleFieldChange(field.name, event.currentTarget.value)
+								}}
+								onBlur={() => {
+									field.handleBlur()
+									fields.handleFieldBlur(field.name)
+								}}
 							/>
 						</label>
 						{field.state.meta.errors.length ? (
 							<p id="customerNote-error" role="alert">
-								{field.state.meta.errors.map((error) => (typeof error === "string" ? error : error?.message)).join(", ")}
+								{checkoutFormErrorMessages(field.state.meta.errors)}
 							</p>
 						) : null}
 					</>
@@ -175,14 +141,20 @@ export function TanStackCheckoutForm({ onSubmit }: { onSubmit: (values: Checkout
 								aria-invalid={field.state.meta.errors.length > 0}
 								aria-describedby={field.state.meta.errors.length ? "createAccount-error" : undefined}
 								checked={field.state.value ?? false}
-								onChange={(event) => field.handleChange(event.currentTarget.checked)}
-								onBlur={field.handleBlur}
+								onChange={(event) => {
+									field.handleChange(event.currentTarget.checked)
+									fields.handleFieldChange(field.name, event.currentTarget.checked)
+								}}
+								onBlur={() => {
+									field.handleBlur()
+									fields.handleFieldBlur(field.name)
+								}}
 							/>
 							Create account
 						</label>
 						{field.state.meta.errors.length ? (
 							<p id="createAccount-error" role="alert">
-								{field.state.meta.errors.map((error) => (typeof error === "string" ? error : error?.message)).join(", ")}
+								{checkoutFormErrorMessages(field.state.meta.errors)}
 							</p>
 						) : null}
 					</>
@@ -198,8 +170,14 @@ export function TanStackCheckoutForm({ onSubmit }: { onSubmit: (values: Checkout
 									aria-invalid={field.state.meta.errors.length > 0}
 									aria-describedby={field.state.meta.errors.length ? "useShippingAsBilling-error" : undefined}
 									checked={field.state.value ?? true}
-									onChange={(event) => field.handleChange(event.currentTarget.checked)}
-									onBlur={field.handleBlur}
+									onChange={(event) => {
+										field.handleChange(event.currentTarget.checked)
+										fields.handleFieldChange(field.name, event.currentTarget.checked)
+									}}
+									onBlur={() => {
+										field.handleBlur()
+										fields.handleFieldBlur(field.name)
+									}}
 								/>
 								Use shipping address for billing
 							</label>
@@ -210,7 +188,7 @@ export function TanStackCheckoutForm({ onSubmit }: { onSubmit: (values: Checkout
 							) : null}
 							{field.state.meta.errors.length ? (
 								<p id="useShippingAsBilling-error" role="alert">
-									{field.state.meta.errors.map((error) => (typeof error === "string" ? error : error?.message)).join(", ")}
+									{checkoutFormErrorMessages(field.state.meta.errors)}
 								</p>
 							) : null}
 						</>
@@ -224,7 +202,7 @@ export function TanStackCheckoutForm({ onSubmit }: { onSubmit: (values: Checkout
 			))}
 			{fields.error ? <p role="alert">{fields.error.message}</p> : null}
 			{fields.unsupported.length ? <p>Some fields require application integration.</p> : null}
-			<button type="submit" disabled={checkout.isPending || fields.isRepricing || fields.unsupported.length > 0}>
+			<button type="submit" disabled={checkout.isLocked || fields.unsupported.length > 0}>
 				Place order
 			</button>
 		</form>

@@ -6,9 +6,15 @@ settings:
 
 catalogs:
   default:
+    '@hookform/resolvers':
+      specifier: 5.4.0
+      version: 5.4.0
     '@kizlo/woocommerce':
       specifier: ^0.14.0
       version: 0.14.0
+    '@tanstack/react-form':
+      specifier: 1.33.5
+      version: 1.33.5
     '@tanstack/react-query':
       specifier: ^5.102.0
       version: 5.104.0
@@ -27,6 +33,9 @@ catalogs:
     nuqs:
       specifier: ^2.10.0
       version: 2.10.1
+    react-hook-form:
+      specifier: 7.89.0
+      version: 7.89.0
     tsdown:
       specifier: ^0.15.6
       version: 0.15.12
@@ -122,7 +131,7 @@ importers:
         version: 10.1.1(react@19.3.0)
     devDependencies:
       '@hookform/resolvers':
-        specifier: 5.4.0
+        specifier: 'catalog:'
         version: 5.4.0(react-hook-form@7.89.0(@types/react@19.3.0)(react@19.3.0))
       '@kizlo/woocommerce':
         specifier: 'catalog:'
@@ -131,7 +140,7 @@ importers:
         specifier: ^1.1.0
         version: 1.1.0
       '@tanstack/react-form':
-        specifier: 1.33.5
+        specifier: 'catalog:'
         version: 1.33.5(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
       '@tanstack/react-query':
         specifier: 'catalog:'
@@ -167,7 +176,7 @@ importers:
         specifier: catalog:react19
         version: 19.3.0(react@19.3.0)
       react-hook-form:
-        specifier: 7.89.0
+        specifier: 'catalog:'
         version: 7.89.0(@types/react@19.3.0)(react@19.3.0)
       tsdown:
         specifier: 'catalog:'

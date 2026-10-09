@@ -2,62 +2,48 @@
 
 import { standardSchemaResolver } from "@hookform/resolvers/standard-schema"
 import { useCheckout } from "@kizlo/woocommerce-kit/react/checkout"
+import { type CheckoutFieldsApi, type CheckoutFormFieldName, useCheckoutFields } from "@kizlo/woocommerce-kit/react/checkout-fields"
 import {
-	type CheckoutFieldsApi,
 	type CheckoutFieldValues,
 	type CheckoutFormValues,
-	useCheckoutFields,
-} from "@kizlo/woocommerce-kit/react/checkout-fields"
-import { useEffect, useState } from "react"
+	checkoutErrorMessages,
+	reactHookFormAdapter,
+} from "@kizlo/woocommerce-kit/react/checkout-fields/react-hook-form"
 import { Controller, type UseFormReturn, useForm } from "react-hook-form"
 import { CheckoutFieldControl } from "./checkout-field-control.example"
-import { reactHookFormErrorMessages, reactHookFormServerErrors } from "./checkout-server-errors.example"
+import { useReactHookFormCheckoutDefaults } from "./checkout-form-rhf.example"
 
 export function ReactHookFormCheckout({ onSubmit }: { onSubmit: (values: CheckoutFieldValues) => Promise<void> }) {
-	const [initialized, setInitialized] = useState(false)
-	const [serverErrors] = useState<ReturnType<typeof reactHookFormServerErrors>>(() => reactHookFormServerErrors(() => form))
 	const checkout = useCheckout()
-	const fields: CheckoutFieldsApi = useCheckoutFields({
-		getValues: (): CheckoutFormValues => form.getValues(),
-		validateField: (name) => form.trigger(name),
-		...(initialized ? serverErrors : { setErrors: undefined, clearErrors: undefined }),
-		setValues: (updates) => {
-			for (const { name, value, options } of updates) {
-				form.setValue(name, value, {
-					shouldDirty: options.meta === "update",
-					shouldTouch: options.meta === "update",
-					shouldValidate: false,
-				})
-				if (options.runListeners) fields.handleFieldChange(name, value)
-			}
-			// trigger does not change interaction metadata; all patches have already been applied.
-			const names = updates.filter((update) => update.options.validate).map((update) => update.name)
-			if (names.length) void form.trigger(names)
-		},
-	})
 	const form: UseFormReturn<CheckoutFormValues> = useForm<CheckoutFormValues>({
-		defaultValues: {},
 		mode: "onSubmit",
 		reValidateMode: "onBlur",
-		resolver: fields.schema ? serverErrors.withResolver(standardSchemaResolver(fields.schema)) : undefined,
+		defaultValues: {},
+		resolver: (values, context, options) =>
+			adapter.withResolver(async (input, ctx, native) =>
+				fields.schema
+					? standardSchemaResolver(fields.schema)(input, ctx, native)
+					: { values: {}, errors: { root: { type: "kitSchema", message: "Checkout fields are not ready" } } },
+			)(values, context, options),
 	})
-	useEffect(() => {
-		if (!initialized && fields.defaultValues) {
-			setInitialized(true)
-			form.reset(fields.defaultValues)
-			fields.reevaluate()
-		}
-	}, [fields.defaultValues, fields.reevaluate, form, initialized])
+	const adapter = reactHookFormAdapter(form)
+	const fields: CheckoutFieldsApi = useCheckoutFields(adapter)
+	useReactHookFormCheckoutDefaults(form, fields)
+	const register = (name: CheckoutFormFieldName) =>
+		form.register(name, {
+			onChange: () => fields.handleFieldChange(name, adapter.getFieldValue(name)),
+			onBlur: () => fields.handleFieldBlur(name),
+		})
 	if (!fields.schema) return <p>{fields.error?.message ?? "Loading checkout…"}</p>
 	return (
 		<form
 			noValidate
 			onSubmit={(event) => {
 				event.preventDefault()
-				if (fields.isRepricing || checkout.isPending || fields.unsupported.length) return
+				if (checkout.isLocked || fields.unsupported.length) return
 				checkout.reset()
 				void form.handleSubmit(async (values) => {
-					await onSubmit(fields.decode(values))
+					if (!checkout.isLocked && fields.schema && !fields.unsupported.length) await onSubmit(fields.decode(values))
 				})(event)
 			}}
 		>
@@ -91,7 +77,7 @@ export function ReactHookFormCheckout({ onSubmit }: { onSubmit: (values: Checkou
 									}}
 									error={
 										fieldState.isTouched || form.formState.isSubmitted || fieldState.error?.types?.kitServer
-											? reactHookFormErrorMessages(fieldState.error)
+											? checkoutErrorMessages(fieldState.error)
 											: undefined
 									}
 								/>
@@ -105,14 +91,12 @@ export function ReactHookFormCheckout({ onSubmit }: { onSubmit: (values: Checkou
 				<input
 					aria-invalid={!!form.formState.errors.paymentMethod}
 					aria-describedby={form.formState.errors.paymentMethod ? "paymentMethod-error" : undefined}
-					{...form.register("paymentMethod", {
-						onChange: () => fields.handleFieldChange("paymentMethod", form.getValues("paymentMethod")),
-					})}
+					{...register("paymentMethod")}
 				/>
 			</label>
 			{form.formState.errors.paymentMethod ? (
 				<p id="paymentMethod-error" role="alert">
-					{reactHookFormErrorMessages(form.formState.errors.paymentMethod)}
+					{checkoutErrorMessages(form.formState.errors.paymentMethod)}
 				</p>
 			) : null}
 			<label>
@@ -120,12 +104,12 @@ export function ReactHookFormCheckout({ onSubmit }: { onSubmit: (values: Checkou
 				<textarea
 					aria-invalid={!!form.formState.errors.customerNote}
 					aria-describedby={form.formState.errors.customerNote ? "customerNote-error" : undefined}
-					{...form.register("customerNote", { onChange: () => fields.handleFieldChange("customerNote", form.getValues("customerNote")) })}
+					{...register("customerNote")}
 				/>
 			</label>
 			{form.formState.errors.customerNote ? (
 				<p id="customerNote-error" role="alert">
-					{reactHookFormErrorMessages(form.formState.errors.customerNote)}
+					{checkoutErrorMessages(form.formState.errors.customerNote)}
 				</p>
 			) : null}
 			<label>
@@ -133,15 +117,13 @@ export function ReactHookFormCheckout({ onSubmit }: { onSubmit: (values: Checkou
 					aria-invalid={!!form.formState.errors.createAccount}
 					aria-describedby={form.formState.errors.createAccount ? "createAccount-error" : undefined}
 					type="checkbox"
-					{...form.register("createAccount", {
-						onChange: () => fields.handleFieldChange("createAccount", form.getValues("createAccount")),
-					})}
+					{...register("createAccount")}
 				/>
 				Create account
 			</label>
 			{form.formState.errors.createAccount ? (
 				<p id="createAccount-error" role="alert">
-					{reactHookFormErrorMessages(form.formState.errors.createAccount)}
+					{checkoutErrorMessages(form.formState.errors.createAccount)}
 				</p>
 			) : null}
 			{fields.canUseShippingAsBilling ? (
@@ -151,9 +133,7 @@ export function ReactHookFormCheckout({ onSubmit }: { onSubmit: (values: Checkou
 							aria-invalid={!!form.formState.errors.useShippingAsBilling}
 							aria-describedby={form.formState.errors.useShippingAsBilling ? "useShippingAsBilling-error" : undefined}
 							type="checkbox"
-							{...form.register("useShippingAsBilling", {
-								onChange: () => fields.handleFieldChange("useShippingAsBilling", form.getValues("useShippingAsBilling")),
-							})}
+							{...register("useShippingAsBilling")}
 						/>
 						Use shipping address for billing
 					</label>
@@ -164,7 +144,7 @@ export function ReactHookFormCheckout({ onSubmit }: { onSubmit: (values: Checkou
 					) : null}
 					{form.formState.errors.useShippingAsBilling ? (
 						<p id="useShippingAsBilling-error" role="alert">
-							{reactHookFormErrorMessages(form.formState.errors.useShippingAsBilling)}
+							{checkoutErrorMessages(form.formState.errors.useShippingAsBilling)}
 						</p>
 					) : null}
 				</>
@@ -176,7 +156,7 @@ export function ReactHookFormCheckout({ onSubmit }: { onSubmit: (values: Checkou
 			))}
 			{fields.error ? <p role="alert">{fields.error.message}</p> : null}
 			{fields.unsupported.length ? <p>Some fields require application integration.</p> : null}
-			<button type="submit" disabled={checkout.isPending || fields.isRepricing || fields.unsupported.length > 0}>
+			<button type="submit" disabled={checkout.isLocked || fields.unsupported.length > 0}>
 				Place order
 			</button>
 		</form>

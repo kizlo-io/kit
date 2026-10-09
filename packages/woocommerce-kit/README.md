@@ -848,7 +848,7 @@ Each section exposes `fields` and `errors`. Migration: replace `fields.billing` 
 
 Configure `setErrors` and `clearErrors` together on exactly one `useCheckoutFields` call per form. `setErrors` receives readonly patches `{ name, messages: readonly string[] }`; `clearErrors` receives readonly safe names. Additional read-only consumers omit both callbacks. Register the bridge after initial form reset finishes so initialization cannot erase freshly hydrated errors. These adapters run outside render, patch only Kit's server channel, and preserve values, client errors, dirty/touched metadata and validation timing. Callback identity changes and ordinary rerenders do not replay applied or cleared errors; remounting hydrates only still-active issues.
 
-Input messages come from the form library's field state, including manually rendered payment, order-note and account controls. TanStack Form's example uses `errorMap.onServer`; React Hook Form's example reserves `types.kitServer` and wraps its resolver to merge still-active server messages with the latest client validation. Blur validation keeps server messages until an edit or reset clears them, and asynchronous validation cannot restore cleared server patches. The examples call `checkout.reset()` before form submission validation so stale server flags cannot prevent resubmission, and await `confirmAsync` through settlement. Kit performs no form-library validation or submission and neither form library is a production dependency.
+Input messages come from the form library's field state, including manually rendered payment, order-note and account controls. The optional TanStack Form adapter reserves a source-tagged value inside `errorMap.onServer`; the React Hook Form adapter reserves `types.kitServer` and wraps its resolver to merge still-active server messages with the latest client validation. Clearing Kit messages preserves other errors on the same field. Blur validation keeps server messages until an edit or reset clears them, and asynchronous validation cannot restore cleared server patches. The examples call `checkout.reset()` before form submission validation so stale server flags cannot prevent resubmission. The generic fields hook delegates validation and submission to your binding; the optional factories supply callbacks for an existing form; the app configures its native lifecycle.
 
 Edits clear only exact issues associated with that control, including copied billing failures displayed on shipping controls. Section/general issues survive unrelated edits until the next submission, success or reset. Address-sharing, hidden fields and registry changes reproject still-active messages: missing editable controls fall back to a known section or summary. An unqualified registered address identity never selects billing or shipping, and an `additionalFields` group error stays in the summary because it cannot distinguish contact from order.
 
@@ -908,6 +908,159 @@ typechecked [TanStack Form example](./types/checkout-fields.example.tsx) and
 [application-owned native markup](./types/checkout-field-control.example.tsx). Both are mounted in tests against their real
 APIs. Neither form library is a production dependency. The examples bind named validation and blur to automatic address
 syncing, and confirm through the separate `useCheckout` hook. Shipping-rate selection remains in its own hook.
+
+### Optional form adapters
+
+Import `tanstackFormAdapter` from `@kizlo/woocommerce-kit/react/checkout-fields/tanstack-form`, or
+`reactHookFormAdapter` from `@kizlo/woocommerce-kit/react/checkout-fields/react-hook-form`. Create your native form first,
+then pass the factory result to the generic `useCheckoutFields`. The factories supply `getValues`, `setValues`,
+`validateField`, `setErrors` and `clearErrors`; they do not create, configure, initialize or submit a form.
+
+The app owns schema registration, defaults, field events and submission. Install `@tanstack/react-form@^1.33.5` for TanStack,
+or `react-hook-form@^7.89.0` for RHF. The RHF example also uses `@hookform/resolvers@^5.4.0` for Standard Schema validation.
+These are optional peers; core, the generic fields hook and either adapter resolve without the unused form library.
+
+TanStack validates Kit's schema through native validators. This app initializes each new checkout snapshot and explicitly
+routes edits and blur after the native field updates:
+
+```tsx
+"use client"
+import type { CheckoutFieldValues, CheckoutFormValues } from "@kizlo/woocommerce-kit"
+import { useCheckout } from "@kizlo/woocommerce-kit/react/checkout"
+import { useCheckoutFields, type CheckoutFieldsApi } from "@kizlo/woocommerce-kit/react/checkout-fields"
+import { tanstackFormAdapter } from "@kizlo/woocommerce-kit/react/checkout-fields/tanstack-form"
+import { standardSchemaValidators, useForm } from "@tanstack/react-form"
+import { useEffect, useRef, useState } from "react"
+
+export function TanStackCheckout({ onSubmit }: { onSubmit: (values: CheckoutFieldValues) => Promise<void> }) {
+  const checkout = useCheckout({ dependencies: [
+    { keys: ["inventory"], type: "query" },
+    { keys: ["promotion"], type: "mutation", block: { onPending: true, onError: false } },
+  ] })
+  const [defaults, setDefaults] = useState<CheckoutFormValues>({})
+  const validate = (value: CheckoutFormValues) => fields.schema
+    ? standardSchemaValidators.validate({ value, validationSource: "form" }, fields.schema)
+    : { form: "Checkout fields are not ready", fields: {} }
+  const form = useForm({
+    defaultValues: defaults,
+    validators: { onChange: ({ value }) => validate(value), onSubmit: ({ value }) => validate(value) },
+    onSubmit: async ({ value }) => {
+      if (fields.schema && !fields.unsupported.length && !checkout.isLocked) await onSubmit(fields.decode(value))
+    },
+  })
+  const fields: CheckoutFieldsApi = useCheckoutFields(tanstackFormAdapter(form))
+  const snapshot = useRef<CheckoutFormValues | null>(null)
+  useEffect(() => {
+    if (!fields.defaultValues || snapshot.current === fields.defaultValues) return
+    snapshot.current = fields.defaultValues
+    setDefaults(fields.defaultValues)
+    form.reset(fields.defaultValues)
+    fields.reevaluate()
+  }, [fields.defaultValues, fields.reevaluate, form])
+  if (!fields.schema) return null
+  return (
+    <form onSubmit={(event) => {
+      event.preventDefault()
+      if (checkout.isLocked || fields.unsupported.length) return
+      checkout.reset()
+      void form.handleSubmit()
+    }}>
+      <form.Field name="customerNote">{(field) => (
+        <textarea value={field.state.value ?? ""} onChange={(event) => {
+          field.handleChange(event.target.value)
+          fields.handleFieldChange("customerNote", event.target.value)
+        }} onBlur={() => { field.handleBlur(); fields.handleFieldBlur("customerNote") }} />
+      )}</form.Field>
+      <button disabled={checkout.isLocked || fields.unsupported.length > 0}>Submit validated fields</button>
+    </form>
+  )
+}
+```
+
+RHF's `withResolver` explicitly wraps the app's chosen resolver to preserve active Kit messages during native validation.
+It does not install a resolver. The app uses native `register`, `Controller` and `handleSubmit`, wiring events itself:
+
+```tsx
+"use client"
+import { standardSchemaResolver } from "@hookform/resolvers/standard-schema"
+import type { CheckoutFieldValues, CheckoutFormValues } from "@kizlo/woocommerce-kit"
+import { useCheckout } from "@kizlo/woocommerce-kit/react/checkout"
+import { useCheckoutFields, type CheckoutFieldsApi } from "@kizlo/woocommerce-kit/react/checkout-fields"
+import { reactHookFormAdapter } from "@kizlo/woocommerce-kit/react/checkout-fields/react-hook-form"
+import { useEffect, useRef } from "react"
+import { useForm, type UseFormReturn } from "react-hook-form"
+
+export function ReactHookCheckout({ onSubmit }: { onSubmit: (values: CheckoutFieldValues) => Promise<void> }) {
+  const checkout = useCheckout()
+  const form: UseFormReturn<CheckoutFormValues> = useForm<CheckoutFormValues>({
+    defaultValues: {},
+    resolver: (values, context, options) => adapter.withResolver((input, ctx, native) => fields.schema
+      ? standardSchemaResolver(fields.schema)(input, ctx, native)
+      : { values: {}, errors: { root: { type: "kitSchema", message: "Checkout fields are not ready" } } },
+    )(values, context, options),
+  })
+  const adapter = reactHookFormAdapter(form)
+  const fields: CheckoutFieldsApi = useCheckoutFields(adapter)
+  const snapshot = useRef<CheckoutFormValues | null>(null)
+  useEffect(() => {
+    if (!fields.defaultValues || snapshot.current === fields.defaultValues) return
+    const first = !snapshot.current
+    snapshot.current = fields.defaultValues
+    form.reset(fields.defaultValues, first ? { keepErrors: true } : undefined)
+    fields.reevaluate()
+  }, [fields.defaultValues, fields.reevaluate, form])
+  if (!fields.schema) return null
+  return (
+    <form onSubmit={(event) => {
+      event.preventDefault()
+      if (checkout.isLocked || fields.unsupported.length) return
+      checkout.reset()
+      void form.handleSubmit(async (values) => {
+        if (!checkout.isLocked && fields.schema && !fields.unsupported.length) await onSubmit(fields.decode(values))
+      })(event)
+    }}>
+      <textarea {...form.register("customerNote", {
+        onChange: () => fields.handleFieldChange("customerNote", form.getValues("customerNote")),
+        onBlur: () => fields.handleFieldBlur("customerNote"),
+      })} />
+      <button disabled={checkout.isLocked || fields.unsupported.length > 0}>Submit validated fields</button>
+    </form>
+  )
+}
+```
+
+These minimal examples render the order note. The complete examples above render all resolved groups and errors and preserve edits made during loading. Snapshot identity keeps ordinary query refreshes from
+replacing drafts; acknowledged session changes initialize a new snapshot. Explicit resets and prefill remain app-owned. When TanStack defaults are passed from React state, use
+`form.reset(values, { keepDefaultValues: true })` for a temporary reset, or update that defaults state to replace the baseline.
+TanStack's `checkoutFormErrorMessages(field.state.meta.errors)` and RHF's `checkoutErrorMessages(fieldState.error)` include
+Kit messages. Clear a settled checkout failure with `checkout.reset()` before validating a retry. The app assembles
+confirmation input and calls `confirmAsync`; decoding preserves drafts and form-only controls without guaranteeing a
+complete confirmation request.
+
+The factories cache only their Kit error channel per native form. Repeated factory calls preserve active errors. TanStack
+reserves a `{ kitServer: messages }` token in `errorMap.onServer`; it subscribes to restore that channel only while Kit errors
+are active, and releases the subscription when they clear. RHF reserves `error.types.kitServer`; explicitly compose
+`adapter.withResolver(yourResolver)` to retain them through validation. `mergeCheckoutFormErrors(kitErrors, appErrors)` is
+available for apps combining a Kit schema resolver with other validation. Clearing Kit messages keeps current client and
+unrelated server errors, including errors without a message and errors produced by asynchronous validation.
+
+The adapter's `validateField` runs the native validation pipeline and checks current field errors, including errors from
+TanStack's form-level async validators. Register Kit's schema and route field events to the generic
+hook so the existing address coordinator handles dependencies, freshness and saves. No separate transport, provider or
+readiness lifecycle is added. Register app-owned work with `useCheckout` dependencies before starting it. Prefixes include descendant query/mutation keys;
+pending/error policies default independently to true.
+
+Both factories also expose `getFieldValue(name)` and `setFieldValue(name, value, options?)` with the exact registered scalar
+type, including encoded opaque IDs. Native forms keep the complete typed `CheckoutFormValues`. Single-field updates default
+to listeners, metadata updates and validation. For silent prefill, call
+`await adapter.setValues([{ name, value, options: { runListeners: false, meta: "preserve", validate: false } }])`, then
+`fields.reevaluate()`. Batches write every value before requested listeners and validation.
+
+`runListeners` controls TanStack's native field listeners. RHF has no equivalent setter flag; an optional
+`reactHookFormAdapter(form, { onChange })` callback runs only for requested listener updates. This callback is app-owned;
+the default factory does not synthesize field events. Native value subscriptions run normally. Metadata preservation remains
+independent of validation and does not erase a later blur while async validation is pending. Other form libraries can
+implement the same generic callbacks without adding a form-library import to core.
 
 Ordinary physical checkout is shipping-first. `useShippingAsBilling` defaults to sharing when omitted; initialized form
 defaults include `true`. Common native billing controls are hidden and output/validation derive billing from shipping.
@@ -1066,6 +1219,8 @@ client from `QueryClientProvider`.
 | `@kizlo/woocommerce-kit/react` | `ProductCollectionProvider`, `useProductCollection`, and the model types it returns. Carries `"use client"`. |
 | `@kizlo/woocommerce-kit/react/cart` | `useCart`, `useCartAddress`, `useCartShippingRates`, `useCartItem`, `useCartCoupon`. Carries `"use client"`. Needs `@tanstack/react-query`. |
 | `@kizlo/woocommerce-kit/react/checkout-fields` | `useCheckoutFields` and its form values, field bindings, updates, result and diagnostic types. Carries `"use client"`. Needs `@tanstack/react-query`. |
+| `@kizlo/woocommerce-kit/react/checkout-fields/tanstack-form` | Optional `tanstackFormAdapter(form)` factory, typed field accessors and Kit error formatter. Carries `"use client"`. Needs `@tanstack/react-form`. |
+| `@kizlo/woocommerce-kit/react/checkout-fields/react-hook-form` | Optional `reactHookFormAdapter(form)` factory, explicit resolver wrapper and Kit error formatter. Carries `"use client"`. Needs `react-hook-form`; app schema setup may use `@hookform/resolvers`. |
 | `@kizlo/woocommerce-kit/react/checkout` | `useCheckout` and its callback types. Carries `"use client"`. Needs `@tanstack/react-query`. |
 | `@kizlo/woocommerce-kit/react/provider` | `WooCommerceProvider`, this kit's app-level configuration. Carries `"use client"`. Needs `@tanstack/react-query`. |
 | `@kizlo/woocommerce-kit/react/search` | `useProductSearch`. Carries `"use client"`. Needs `@tanstack/react-query`. |
