@@ -1,5 +1,11 @@
 # @kizlo/woocommerce-kit
 
+## 0.11.1
+
+### Patch Changes
+
+- [#43](https://github.com/kizlo-io/kit/pull/43) [`cc0fe09`](https://github.com/kizlo-io/kit/commit/cc0fe092179ca5451c9370d35d49f00a031f0e25) Thanks [@IDJGILL](https://github.com/IDJGILL)! - Keep checkout usable after optional rejections while protecting unresolved changes and uncertain order outcomes.
+
 ## 0.11.0
 
 ### Minor Changes
