@@ -5,6 +5,7 @@ import { checkoutAddressSource } from "../checkout-address"
 import { createCheckoutAddressSync } from "../checkout-address-sync"
 import { checkoutSession, createCheckoutErrorBridge, projectCheckoutErrors } from "../checkout-errors"
 import { type CheckoutFieldSources, checkoutDefaults } from "../checkout-field-document"
+import { CheckoutFieldsAcquisitionError } from "../checkout-fields-availability"
 import {
 	checkoutFieldUpdates,
 	checkoutFormDecode,
@@ -15,26 +16,34 @@ import {
 	projectedFormValues,
 	resolveCheckoutFormState,
 } from "../checkout-form"
+import { CheckoutPreparationError, prepareCheckout } from "../checkout-preparation"
 import type {
 	CartAddressInput,
 	CartAddressSnapshotInput,
 	CheckoutFieldsApi,
+	CheckoutFieldsFetchFailure,
 	CheckoutFieldsOptions,
 	CheckoutFormValues,
 	UpdateCartInput,
 } from "../types"
 import { useCartAddressTransport } from "./cart-address"
 import { useCheckoutErrorState, useCheckoutErrorStore } from "./checkout-error-store"
+import { useCheckoutLockStore } from "./checkout-lock-store"
+import { useWooCommerceContext } from "./context"
 import { useAddressQueueActivity, useCartActivity, useCartQuery, useCheckoutQuery } from "./session-queries"
 import { useStorefront } from "./storefront"
 
+export { CheckoutFieldsAcquisitionError } from "../checkout-fields-availability"
+export { CheckoutPreparationError } from "../checkout-preparation"
 export type {
 	CheckoutFieldBinding,
 	CheckoutFieldDiagnostic,
 	CheckoutFieldGroup,
 	CheckoutFieldsApi,
+	CheckoutFieldsFetchFailure,
 	CheckoutFieldsOptions,
 	CheckoutFieldsSection,
+	CheckoutFieldsUnavailableReason,
 	CheckoutFieldUpdate,
 	CheckoutFieldValue,
 	CheckoutFieldValues,
@@ -43,16 +52,27 @@ export type {
 	CheckoutFormId,
 	CheckoutFormValues,
 	CheckoutNativeControl,
+	CheckoutPreparationOptions,
 	CheckoutRegisteredFieldReference,
 	CheckoutServerErrorCallbacks,
 	CheckoutServerFieldError,
 	CheckoutServerIssue,
 	CheckoutValidationIssue,
+	ReadyCheckoutFieldsApi,
+	UnavailableCheckoutFieldsApi,
 } from "../types"
 
 /** The form owns editable values; only field metadata and the initial snapshot are retained here. */
 export function useCheckoutFields(options: CheckoutFieldsOptions = {}): CheckoutFieldsApi {
-	const { storefront, error: storefrontError, isLoading: storefrontLoading } = useStorefront()
+	const {
+		storefront,
+		error: storefrontError,
+		isLoading: storefrontLoading,
+		isFetching: storefrontFetching,
+		refresh: refreshStorefront,
+	} = useStorefront()
+	const { cartEnabled } = useWooCommerceContext()
+	const binding = useCheckoutLockStore()
 	const checkoutQuery = useCheckoutQuery()
 	const cartQuery = useCartQuery(checkoutQuery.data !== undefined)
 	const activity = useCartActivity()
@@ -132,7 +152,8 @@ export function useCheckoutFields(options: CheckoutFieldsOptions = {}): Checkout
 		return initial.current.values
 	}, [])
 	const bridge = useMemo(() => createCheckoutErrorBridge(), [])
-	const [state, setState] = useState(() => resolveCheckoutFormState(sources, undefined, defaults(sources)))
+	const renderedDefaults = defaults(sources)
+	const [state, setState] = useState(() => resolveCheckoutFormState(sources, undefined, renderedDefaults))
 	const committedState = useRef(state)
 	useLayoutEffect(() => {
 		accessors.current = options
@@ -261,24 +282,70 @@ export function useCheckoutFields(options: CheckoutFieldsOptions = {}): Checkout
 		[sync],
 	)
 	const validator = useMemo(() => checkoutFormSchema(() => committed.current), [])
-	return {
+	const toCheckout = useCallback<CheckoutFieldsApi["toCheckout"]>(
+		(options = {}) => {
+			try {
+				return prepareCheckout(committed.current, { ...options, values: options.values ?? accessors.current.getValues?.() })
+			} catch (error) {
+				if (error instanceof CheckoutPreparationError) {
+					if (errors.state.get().pending) errors.reject(error)
+					else {
+						const attempt = errors.start(checkoutSession(committed.current.checkout))
+						errors.fail(attempt, error)
+						errors.settle(attempt)
+					}
+				}
+				throw error
+			}
+		},
+		[errors],
+	)
+	const error = useMemo(() => {
+		const failures: CheckoutFieldsFetchFailure[] = []
+		if (storefrontError) failures.push({ source: "storefront", error: storefrontError })
+		if (checkoutQuery.error) failures.push({ source: "checkout", error: checkoutQuery.error })
+		if (cartQuery.error) failures.push({ source: "cart", error: cartQuery.error })
+		const first = failures[0]
+		return first ? new CheckoutFieldsAcquisitionError([first, ...failures.slice(1)]) : null
+	}, [storefrontError, checkoutQuery.error, cartQuery.error])
+	const refresh = useCallback(async () => {
+		await Promise.all([refreshStorefront(), binding.refreshFields()])
+	}, [refreshStorefront, binding])
+	const isLoading =
+		(!storefront && storefrontLoading) ||
+		(!sources.checkout && checkoutQuery.isPending) ||
+		(!sources.cart && !!sources.checkout && cartEnabled && cartQuery.isPending)
+	const ready = !!storefront && !!renderedDefaults && !!sources.checkout && !sources.checkout.isPaid && !!sources.cart && !!session
+	const common = {
 		billing: { fields: state.fields.billing, errors: projection.sections.billing },
 		shipping: { fields: state.fields.shipping, errors: projection.sections.shipping },
 		contact: { fields: state.fields.contact, errors: projection.sections.contact },
 		order: { fields: state.fields.order, errors: projection.sections.order },
 		errors: projection.errors,
-		defaultValues: state.defaultValues,
 		unsupported: state.unsupported,
 		canUseShippingAsBilling: state.canUseShippingAsBilling,
-		schema: storefront && state.defaultValues && sources.checkout && !sources.checkout.isPaid && sources.cart ? validator : null,
 		handleFieldChange,
 		handleFieldBlur,
 		copyShippingToBilling,
 		reevaluate,
 		encode: checkoutFormEncode,
 		decode: checkoutFormDecode,
-		isLoading: storefrontLoading || checkoutQuery.isPending || (!sources.cart && cartQuery.isFetching),
+		toCheckout,
+		isLoading,
+		isFetching: storefrontFetching || checkoutQuery.isFetching || cartQuery.isFetching,
 		isRepricing: activity.isRepricing || activity.isSelectingRate,
-		error: storefrontError ?? checkoutQuery.error ?? cartQuery.error ?? transport.error,
+		error,
+		syncError: transport.error,
+		refresh,
+	}
+	if (ready && renderedDefaults && session)
+		return { ...common, isReady: true, reason: null, session, defaultValues: renderedDefaults, schema: validator }
+	return {
+		...common,
+		isReady: false,
+		reason: sources.checkout?.isPaid ? "paid" : error ? "fetch-failed" : isLoading ? "loading" : "missing-data",
+		session,
+		defaultValues: renderedDefaults,
+		schema: null,
 	}
 }

@@ -10,8 +10,8 @@ catalogs:
       specifier: 5.4.0
       version: 5.4.0
     '@kizlo/woocommerce':
-      specifier: ^0.14.0
-      version: 0.14.0
+      specifier: ^0.15.0
+      version: 0.15.0
     '@tanstack/react-form':
       specifier: 1.33.5
       version: 1.33.5
@@ -28,8 +28,8 @@ catalogs:
       specifier: ^20.14.5
       version: 20.14.5
     kizlo:
-      specifier: ^0.26.0
-      version: 0.26.0
+      specifier: ^0.26.1
+      version: 0.26.1
     nuqs:
       specifier: ^2.10.0
       version: 2.10.1
@@ -135,7 +135,7 @@ importers:
         version: 5.4.0(react-hook-form@7.89.0(@types/react@19.3.0)(react@19.3.0))
       '@kizlo/woocommerce':
         specifier: 'catalog:'
-        version: 0.14.0(kizlo@0.26.0(@cfworker/json-schema@4.1.1)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(typescript@5.9.3)(ws@8.22.0))
+        version: 0.15.0(kizlo@0.26.1(@cfworker/json-schema@4.1.1)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(typescript@5.9.3)(ws@8.22.0))
       '@standard-schema/spec':
         specifier: ^1.1.0
         version: 1.1.0
@@ -165,7 +165,7 @@ importers:
         version: 20.14.5
       kizlo:
         specifier: 'catalog:'
-        version: 0.26.0(@cfworker/json-schema@4.1.1)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(typescript@5.9.3)(ws@8.22.0)
+        version: 0.26.1(@cfworker/json-schema@4.1.1)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(typescript@5.9.3)(ws@8.22.0)
       nuqs:
         specifier: 'catalog:'
         version: 2.10.1(react@19.3.0)
@@ -554,11 +554,11 @@ packages:
     resolution: {integrity: sha512-Bv/mQ2CFd5bpMxIrcxm67aPWwPAcF8c8rtfGiB2DC56bALYAc9Zp8iRwJ1gFTj+5Neun97jGUCx14cx4hGrnkw==}
     engines: {node: '>=22.14.0'}
 
-  '@kizlo/woocommerce@0.14.0':
-    resolution: {integrity: sha512-kKC8EWOx00aWOnoa3KqUPkh6UTpMzOeY+Bg24HuzPsnhdYQ190jOjjFlrX+6O9RPxuOoTSnkKKINJoLzbffJtg==}
+  '@kizlo/woocommerce@0.15.0':
+    resolution: {integrity: sha512-oAjsxv2zsIeXBgxRHTiCAtFPhEJzzdf4eVSEDeswptS4E6cpfD3A8fIS7+qmLFnCTVJ9pH192zSO7i1JnVp9og==}
     engines: {node: '>=22.14.0'}
     peerDependencies:
-      kizlo: '>=0.16.0'
+      kizlo: '>=0.26.1'
 
   '@manypkg/find-root@1.1.0':
     resolution: {integrity: sha512-mki5uBvhHzO8kYYix/WRy2WX8S3B5wdVSc9D6KcU5lQNglP2yt58/VfLuAK49glRXChosY8ap2oJ1qgma3GUVA==}
@@ -1583,8 +1583,8 @@ packages:
   jsonfile@4.0.0:
     resolution: {integrity: sha512-m6F1R3z8jjlf2imQHS2Qez5sjKWQzbuuhuJ/FKYFRZvPE3PuHcSMVZzfsLhGVOkfd20obL5SWEBew5ShlquNxg==}
 
-  kizlo@0.26.0:
-    resolution: {integrity: sha512-CK6QNpdP3gQF6E9m8ZrTztzlV1z5nVKz680Sweceuq6uhrb304166rPW14zX7lLcLmmDfzAUxurJrxcxAHDHPA==}
+  kizlo@0.26.1:
+    resolution: {integrity: sha512-jzGvzFL02rZSTT8EFDCFu5yW8CHBvVW+fIlmu5OPJa7YPlIRdqwsrtlFApNl7PAh+5uGOPhPDKYeCUvkA1gjHA==}
     engines: {node: '>=22.14.0'}
     hasBin: true
     peerDependencies:
@@ -2661,11 +2661,11 @@ snapshots:
       ua-parser-js: 2.0.10
       zod: 4.6.5
 
-  '@kizlo/woocommerce@0.14.0(kizlo@0.26.0(@cfworker/json-schema@4.1.1)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(typescript@5.9.3)(ws@8.22.0))':
+  '@kizlo/woocommerce@0.15.0(kizlo@0.26.1(@cfworker/json-schema@4.1.1)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(typescript@5.9.3)(ws@8.22.0))':
     dependencies:
       '@kizlo/shared': 0.10.0
       jose: 6.1.0
-      kizlo: 0.26.0(@cfworker/json-schema@4.1.1)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(typescript@5.9.3)(ws@8.22.0)
+      kizlo: 0.26.1(@cfworker/json-schema@4.1.1)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(typescript@5.9.3)(ws@8.22.0)
       zod: 4.6.5
 
   '@manypkg/find-root@1.1.0':
@@ -3646,7 +3646,7 @@ snapshots:
     optionalDependencies:
       graceful-fs: 4.2.11
 
-  kizlo@0.26.0(@cfworker/json-schema@4.1.1)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(typescript@5.9.3)(ws@8.22.0):
+  kizlo@0.26.1(@cfworker/json-schema@4.1.1)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(typescript@5.9.3)(ws@8.22.0):
     dependencies:
       '@clack/prompts': 1.8.1
       '@kizlo/shared': 0.10.0

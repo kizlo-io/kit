@@ -792,6 +792,7 @@ timing and submission.
 | Return value | Meaning |
 | -- | -- |
 | `billing`, `shipping`, `contact`, `order` | Each section contains `{ fields, errors }`. Definitions retain metadata and raw SDK `key` segments, and add a safe form `name` and `getProps(binding)`. Keep `hidden` fields registered in the form and hide their controls visually; their values and schema constraints remain. |
+| `isReady`, `reason`, `session` | One `isReady` guard guarantees non-null schema/defaults and a session key. `ReadyCheckoutFieldsApi` is the ready child-prop type. Unavailable reasons are `loading`, `fetch-failed`, `paid` and `missing-data`. Availability does not establish validity, payment eligibility or permission to submit. |
 | `defaultValues` | An encoded `CheckoutFormValues` initial snapshot, or `null` while sources are unavailable or checkout is paid. Its identity and content stay stable for the same checkout session across refreshes. Initialize the form once. |
 | `schema` | Standard Schema v1 for the encoded form representation, or `null` while sources are unavailable. A captured validator reads current committed source rules and validates its supplied candidate. |
 | `handleFieldChange(name, value)` | Reads the committed form, clears exact server issues associated with that edited control, applies local dependencies synchronously and resolves metadata. Country edits clear stale state/postcode; an active validation binding coordinates eligible saves. |
@@ -800,10 +801,13 @@ timing and submission.
 | `reevaluate()` | Explicitly reads the form after silent prefill/reset, without edit-dependency clears. |
 | `encode(raw)` | Pure key conversion from decoded `CheckoutFieldValues` to the encoded `CheckoutFormValues` representation. Preserves every supplied member and value. |
 | `decode(values)` | Pure key conversion from encoded `CheckoutFormValues` to decoded `CheckoutFieldValues`. Preserves drafts, independent addresses, provider data and form controls. |
+| `toCheckout({ values?, input? })` | Synchronously validate and prepare `ConfirmCheckoutInput` from an explicit candidate or the bound form’s current `getValues()`. Apply effective addresses, preserve caller input and capture the reviewed total. Throw `CheckoutPreparationError` with field-path issues on failure. |
 | `canUseShippingAsBilling` | Whether native address sharing is available: shipping is needed and the store does not force separate billing. |
 | `unsupported` | Field diagnostics for unsupported widgets, invalid schemas/bindings and unavailable condition dependencies. |
-| `isLoading`, `isRepricing`, `error` | Shared source loading, address validation/queued/request or rate-selection activity, and the latest source or address-save failure. |
-| `errors` | General, unresolved and unplaceable submission issues. Separate from the singular source or address-save `error`. |
+| `isLoading`, `isFetching`, `refresh()` | Initial required-source loading, any background source reads, and an aggregate retry through the shared queries. Checkout seeds the cart; disabled standalone cart queries stay disabled. |
+| `error` | `CheckoutFieldsAcquisitionError` retains every failed source in `failures`, with each original SDK error. `source`, `cause`, `code` and `data` describe the first failure. Cached usable data remains ready after a background failure. |
+| `syncError`, `isRepricing` | Address-save failure, separately from acquisition, and validation/queued/request or rate-selection activity. Drafts survive either failure. |
+| `errors` | General, unresolved and unplaceable local preparation or server submission issues. Field issues reach the same adapter error channel as server validation. |
 
 `CheckoutFieldValues` is the decoded schema-value shape; `CheckoutFormValues` is the same shape with opaque
 additional-field IDs encoded for the form library. Both derive their additional-field types from the active client's
@@ -818,18 +822,34 @@ silently overwriting an answer. Neither method mutates its input or reads the cu
 
 **Migration:** replace `fields.getInput(raw)` with `fields.encode(raw)` and `fields.getOutput(values)` with
 `fields.decode(values)`. The old getters are removed. Initialize new forms from `fields.defaultValues`; encoding a saved
-partial draft preserves its omissions. The examples accept an application-owned submit callback:
+partial draft preserves its omissions. The preferred submit path prepares the request directly:
 
 ```tsx
-onSubmit: async ({ value }) => {
-  await onSubmit(fields.decode(value))
-}
+await checkout.confirmAsync(fields.toCheckout({ input: { paymentData: providerData } }))
+// A validated submit callback can instead supply its exact candidate:
+await checkout.confirmAsync(fields.toCheckout({ values: formValues, input: { successPath: "/thanks" } }))
 ```
 
-The callback receives decoded schema values, not `ConfirmCheckoutInput`. The application assembles the complete request,
-applies the store's address policy, removes form-only controls and supplies payment/provider data before calling
-`checkout.confirmAsync`. Decoding does not establish submission completeness or checkout readiness. Keep validation in the
-form library through `fields.schema`; required answers, checkbox consent, text patterns and conditional rules remain there.
+`input` overrides decoded properties at the top level; nested objects and arrays replace that property completely.
+Kit then projects addresses and validates the final merchant rules and SDK request structure, including selected payment
+methods. Required native address members must be present; preparation does not invent empty address values. Billing email,
+Tax ID and additional-field buckets stay independent. Provider data, caller extensions and return paths are preserved;
+response extensions are never echoed automatically. Historical additional-field keys remain available for server sanitization.
+The SDK accepts string/boolean additional-field answers; native number controls remain useful for form drafts and other bindings,
+but numeric additional-field request answers are rejected locally.
+
+Preparation captures `cart.totals.total` from the committed source snapshot as a minor-unit digit string. Set
+`input.expectedTotal` to override it, or explicitly supply `undefined` to opt out. The prepared request remains unchanged
+if the cart refreshes later. Preparation performs no confirmation, address save, refetch or tokenization. Missing sources or
+an unbound form without explicit `values` throw a structured local failure; saved defaults are never substituted for edits.
+
+Keep native validation through `fields.schema`. `encode`/`decode` and manual confirmation assembly remain supported;
+`decode()` alone still returns a draft and performs no submission validation or projection.
+
+Upgrade the registered dev SDK to `@kizlo/woocommerce@^0.15.0` and the browser client to `kizlo@^0.26.1` together.
+On `CHECKOUT_TOTAL_MISMATCH`, Kit publishes current usable cart evidence or safely reloads it, preserves the draft, and
+shows a checkout-level review message. Display the updated total and let the shopper submit again explicitly. Kit never
+retries the POST automatically or changes the old request’s expected total.
 
 Field metadata and schema evaluation still use the effective-address policy without changing the supplied candidate.
 For automatic address persistence/repricing, bind `validateField` and input blur as described below. Standalone address forms
@@ -920,122 +940,86 @@ The app owns schema registration, defaults, field events and submission. Install
 or `react-hook-form@^7.89.0` for RHF. The RHF example also uses `@hookform/resolvers@^5.4.0` for Standard Schema validation.
 These are optional peers; core, the generic fields hook and either adapter resolve without the unused form library.
 
-TanStack validates Kit's schema through native validators. This app initializes each new checkout snapshot and explicitly
-routes edits and blur after the native field updates:
+Guard availability in a parent, then mount a child keyed by `session`. The child initializes its native form directly
+from the required defaults/schema. Its bound fields hook reads the same shared queries and the form's current edits.
+Ordinary refreshes keep the session key and draft; a replacement checkout mounts a new form.
 
 ```tsx
-"use client"
-import type { CheckoutFieldValues, CheckoutFormValues } from "@kizlo/woocommerce-kit"
-import { useCheckout } from "@kizlo/woocommerce-kit/react/checkout"
-import { useCheckoutFields, type CheckoutFieldsApi } from "@kizlo/woocommerce-kit/react/checkout-fields"
-import { tanstackFormAdapter } from "@kizlo/woocommerce-kit/react/checkout-fields/tanstack-form"
-import { standardSchemaValidators, useForm } from "@tanstack/react-form"
-import { useEffect, useRef, useState } from "react"
+import type { ReadyCheckoutFieldsApi } from "@kizlo/woocommerce-kit/react/checkout-fields"
+import { useCheckoutFields } from "@kizlo/woocommerce-kit/react/checkout-fields"
 
-export function TanStackCheckout({ onSubmit }: { onSubmit: (values: CheckoutFieldValues) => Promise<void> }) {
-  const checkout = useCheckout({ dependencies: [
-    { keys: ["inventory"], type: "query" },
-    { keys: ["promotion"], type: "mutation", block: { onPending: true, onError: false } },
-  ] })
-  const [defaults, setDefaults] = useState<CheckoutFormValues>({})
-  const validate = (value: CheckoutFormValues) => fields.schema
-    ? standardSchemaValidators.validate({ value, validationSource: "form" }, fields.schema)
-    : { form: "Checkout fields are not ready", fields: {} }
+function CheckoutPage() {
+  const fields = useCheckoutFields()
+  if (!fields.isReady) return <p>{fields.error?.message ?? "Loading checkout…"}
+    {fields.error ? <button onClick={() => void fields.refresh()}>Try again</button> : null}</p>
+  return <CheckoutForm key={fields.session} ready={fields} />
+}
+```
+
+TanStack uses the required schema directly, without empty defaults or a reset effect:
+
+```tsx
+import { useForm } from "@tanstack/react-form"
+import { useCheckout } from "@kizlo/woocommerce-kit/react/checkout"
+import { tanstackFormAdapter } from "@kizlo/woocommerce-kit/react/checkout-fields/tanstack-form"
+
+function CheckoutForm({ ready }: { ready: ReadyCheckoutFieldsApi }) {
+  const checkout = useCheckout()
   const form = useForm({
-    defaultValues: defaults,
-    validators: { onChange: ({ value }) => validate(value), onSubmit: ({ value }) => validate(value) },
-    onSubmit: async ({ value }) => {
-      if (fields.schema && !fields.unsupported.length && !checkout.isLocked) await onSubmit(fields.decode(value))
+    defaultValues: ready.defaultValues,
+    validators: { onChange: ready.schema, onSubmit: ready.schema },
+    onSubmit: async () => {
+      if (checkout.isLocked) return
+      try { await checkout.confirmAsync(fields.toCheckout()) } catch {
+        // Kit exposes preparation/server failures through its existing error channels.
+      }
     },
   })
-  const fields: CheckoutFieldsApi = useCheckoutFields(tanstackFormAdapter(form))
-  const snapshot = useRef<CheckoutFormValues | null>(null)
-  useEffect(() => {
-    if (!fields.defaultValues || snapshot.current === fields.defaultValues) return
-    snapshot.current = fields.defaultValues
-    setDefaults(fields.defaultValues)
-    form.reset(fields.defaultValues)
-    fields.reevaluate()
-  }, [fields.defaultValues, fields.reevaluate, form])
-  if (!fields.schema) return null
-  return (
-    <form onSubmit={(event) => {
-      event.preventDefault()
-      if (checkout.isLocked || fields.unsupported.length) return
-      checkout.reset()
-      void form.handleSubmit()
-    }}>
-      <form.Field name="customerNote">{(field) => (
-        <textarea value={field.state.value ?? ""} onChange={(event) => {
-          field.handleChange(event.target.value)
-          fields.handleFieldChange("customerNote", event.target.value)
-        }} onBlur={() => { field.handleBlur(); fields.handleFieldBlur("customerNote") }} />
-      )}</form.Field>
-      <button disabled={checkout.isLocked || fields.unsupported.length > 0}>Submit validated fields</button>
-    </form>
-  )
+  const fields = useCheckoutFields(tanstackFormAdapter(form))
+  // Render definitions with form.Field; route change/blur after the native handlers.
+  return <form onSubmit={(event) => {
+    event.preventDefault()
+    if (!checkout.isLocked) { checkout.reset(); void form.handleSubmit() }
+  }}><button disabled={checkout.isLocked}>Place order</button></form>
 }
 ```
 
-RHF's `withResolver` explicitly wraps the app's chosen resolver to preserve active Kit messages during native validation.
-It does not install a resolver. The app uses native `register`, `Controller` and `handleSubmit`, wiring events itself:
+RHF composes the required schema with the adapter's error-preserving resolver:
 
 ```tsx
-"use client"
 import { standardSchemaResolver } from "@hookform/resolvers/standard-schema"
-import type { CheckoutFieldValues, CheckoutFormValues } from "@kizlo/woocommerce-kit"
-import { useCheckout } from "@kizlo/woocommerce-kit/react/checkout"
-import { useCheckoutFields, type CheckoutFieldsApi } from "@kizlo/woocommerce-kit/react/checkout-fields"
+import type { CheckoutFormValues } from "@kizlo/woocommerce-kit"
+import { useForm } from "react-hook-form"
 import { reactHookFormAdapter } from "@kizlo/woocommerce-kit/react/checkout-fields/react-hook-form"
-import { useEffect, useRef } from "react"
-import { useForm, type UseFormReturn } from "react-hook-form"
 
-export function ReactHookCheckout({ onSubmit }: { onSubmit: (values: CheckoutFieldValues) => Promise<void> }) {
+function CheckoutForm({ ready }: { ready: ReadyCheckoutFieldsApi }) {
   const checkout = useCheckout()
-  const form: UseFormReturn<CheckoutFormValues> = useForm<CheckoutFormValues>({
-    defaultValues: {},
-    resolver: (values, context, options) => adapter.withResolver((input, ctx, native) => fields.schema
-      ? standardSchemaResolver(fields.schema)(input, ctx, native)
-      : { values: {}, errors: { root: { type: "kitSchema", message: "Checkout fields are not ready" } } },
-    )(values, context, options),
+  const form = useForm<CheckoutFormValues>({
+    defaultValues: ready.defaultValues,
+    resolver: (values, context, options) =>
+      adapter.withResolver(standardSchemaResolver(ready.schema))(values, context, options),
   })
   const adapter = reactHookFormAdapter(form)
-  const fields: CheckoutFieldsApi = useCheckoutFields(adapter)
-  const snapshot = useRef<CheckoutFormValues | null>(null)
-  useEffect(() => {
-    if (!fields.defaultValues || snapshot.current === fields.defaultValues) return
-    const first = !snapshot.current
-    snapshot.current = fields.defaultValues
-    form.reset(fields.defaultValues, first ? { keepErrors: true } : undefined)
-    fields.reevaluate()
-  }, [fields.defaultValues, fields.reevaluate, form])
-  if (!fields.schema) return null
-  return (
-    <form onSubmit={(event) => {
-      event.preventDefault()
-      if (checkout.isLocked || fields.unsupported.length) return
-      checkout.reset()
-      void form.handleSubmit(async (values) => {
-        if (!checkout.isLocked && fields.schema && !fields.unsupported.length) await onSubmit(fields.decode(values))
-      })(event)
-    }}>
-      <textarea {...form.register("customerNote", {
-        onChange: () => fields.handleFieldChange("customerNote", form.getValues("customerNote")),
-        onBlur: () => fields.handleFieldBlur("customerNote"),
-      })} />
-      <button disabled={checkout.isLocked || fields.unsupported.length > 0}>Submit validated fields</button>
-    </form>
-  )
+  const fields = useCheckoutFields(reactHookFormAdapter(form))
+  return <form onSubmit={form.handleSubmit(async (values) => {
+    if (checkout.isLocked) return
+    try { await checkout.confirmAsync(fields.toCheckout({ values })) } catch {
+      // Render fields.errors and the native field errors before the next explicit attempt.
+    }
+  })}><button disabled={checkout.isLocked}>Place order</button></form>
 }
 ```
 
-These minimal examples render the order note. The complete examples above render all resolved groups and errors and preserve edits made during loading. Snapshot identity keeps ordinary query refreshes from
-replacing drafts; acknowledged session changes initialize a new snapshot. Explicit resets and prefill remain app-owned. When TanStack defaults are passed from React state, use
-`form.reset(values, { keepDefaultValues: true })` for a temporary reset, or update that defaults state to replace the baseline.
-TanStack's `checkoutFormErrorMessages(field.state.meta.errors)` and RHF's `checkoutErrorMessages(fieldState.error)` include
-Kit messages. Clear a settled checkout failure with `checkout.reset()` before validating a retry. The app assembles
-confirmation input and calls `confirmAsync`; decoding preserves drafts and form-only controls without guaranteeing a
-complete confirmation request.
+The [complete TanStack](./types/checkout-fields.example.tsx) and [complete RHF](./types/checkout-fields-rhf.example.tsx)
+examples render every resolved group and checkout control, updated totals, loading/retry and background failures. They
+clear settled errors on an explicit submit gesture, display total-review errors, and submit the newly prepared reviewed total.
+`fields.error` describes acquisition; `fields.syncError` describes address saves. Neither resets the form. Render
+`fields.isFetching` as background progress while keeping the form available.
+
+Early-mounted forms and application-owned reset/prefill are still supported; the optional helpers in
+[checkout-form-tanstack.example.ts](./types/checkout-form-tanstack.example.ts) and
+[checkout-form-rhf.example.ts](./types/checkout-form-rhf.example.ts) preserve early edits. Call `fields.reevaluate()` after a
+silent reset. If you choose manual `decode()` instead of preparation, your app still assembles the confirmation input.
 
 The factories cache only their Kit error channel per native form. Repeated factory calls preserve active errors. TanStack
 reserves a `{ kitServer: messages }` token in `errorMap.onServer`; it subscribes to restore that channel only while Kit errors
@@ -1071,7 +1055,7 @@ Forced billing shows billing and visually hides shipping controls. Keep applicab
 the supplied schema derive physical shipping from billing’s shared native members, overriding stale hidden shipping values.
 Digital carts show billing and omit shipping output. Billing email, Tax ID, registered additional-field buckets and extension data remain independent.
 Missing authoritative addresses produce structural diagnostics; no address values are invented. Missing or invalid required
-field values are checked only when your form invokes the supplied schema, without hook metadata or output-conversion rejection.
+field values are checked when your form invokes the supplied schema or `toCheckout()` prepares a request; metadata resolution and key conversion remain non-validating.
 Native copied-address errors target the visible source control, while independent or unplaceable errors remain in their section
 or the summary. Country eligibility, locale labels, state options and conditional rules use these
 same effective addresses.
@@ -1103,23 +1087,23 @@ const { onAddressChange } = useCartAddress()
 onAddressChange({ billingAddress: billingValues })
 // In an ordinary checkout, pass the form's explicit sharing selection for repricing.
 onAddressChange({ shippingAddress: shippingValues, billingAddress: billingValues, useShippingAsBilling: shareAddresses })
-// In the form's validated submit callback, before application request assembly:
-await onSubmit(fields.decode(formValues))
+// In the form's validated submit callback:
+await checkout.confirmAsync(fields.toCheckout({ values: formValues }))
 ```
 
 ```tsx
 form.reset(fields.encode(savedFields))
 fields.reevaluate() // preserves the prefilled country/state pair
-// Decode the validated form candidate for the application submit callback.
-await onSubmit(fields.decode(formValues))
+// Prepare the exact candidate for confirmation.
+await checkout.confirmAsync(fields.toCheckout({ values: formValues }))
 ```
 
 Only literal additional-field IDs are escaped; structural paths retain their meaning. For example, raw
 `["additionalFields", "plugin/a.b[0]'%"]` becomes `additionalFields.plugin%2Fa%2Eb%5B0%5D%27%25`.
 Defaults, names, `encode` and issue paths use the same collision-free encoding. `decode` restores the original ID,
-including encoded-looking IDs. Decode values before passing them to the application submit callback: validation preserves
-encoded values on success and TanStack submits its stored values. Conversion and validation never read/write the form, invoke
-callbacks, mutate cache data or start checkout/cart actions. You may validate a candidate and retain it for a review step before confirming separately.
+including encoded-looking IDs. Native validation preserves encoded values on success. `toCheckout()` reads the current
+adapter values or accepts an explicit candidate, then decodes and validates without changing form values or starting remote actions.
+Pure `encode`/`decode` remain available for manual integrations. You may validate a candidate and retain it for a review step before confirming separately.
 
 Checkout bootstrap seeds the existing cart cache. A fields-only consumer waits for this seed before enabling its own cart
 fetch; `cartEnabled: false` still permits cache subscriptions and forbids that fetch. Existing cart consumers keep their own

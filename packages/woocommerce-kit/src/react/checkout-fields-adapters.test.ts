@@ -3,10 +3,12 @@
 import { standardSchemaResolver } from "@hookform/resolvers/standard-schema"
 import { useField, useForm as useTanStackForm } from "@tanstack/react-form"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
-import { act, cleanup, renderHook, waitFor } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react"
 import { createElement, type ReactNode, useState } from "react"
 import { type Resolver, type ResolverResult, type UseFormReturn, useController, useForm as useReactHookForm } from "react-hook-form"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { TanStackCheckoutForm } from "../../types/checkout-fields.example"
+import { ReactHookFormCheckout } from "../../types/checkout-fields-rhf.example"
 import { useReactHookFormCheckoutDefaults } from "../../types/checkout-form-rhf.example"
 import { useTanStackCheckoutDefaults, validateCheckoutForm } from "../../types/checkout-form-tanstack.example"
 import { cartQueryKey } from "../cart"
@@ -699,4 +701,27 @@ it("React Hook Form factory has no native lifecycle side effects and shares erro
 	expect(form.getFieldState("customerNote").error).toBeUndefined()
 	expect(first.getValues().customerNote).toBe("owned draft")
 	expect(listener).not.toHaveBeenCalled()
+})
+
+describe.each(["TanStack", "React Hook Form"] as const)("%s complete available-form example", (library) => {
+	it("mounts with required defaults, keeps edits on refresh and initializes a replacement session directly", async () => {
+		const env = setup()
+		const Component = library === "TanStack" ? TanStackCheckoutForm : ReactHookFormCheckout
+		render(createElement(Component), { wrapper: env.wrapper })
+		const note = (await screen.findByLabelText("Order note")) as HTMLTextAreaElement
+		expect(note.value).toBe("saved")
+		fireEvent.change(note, { target: { value: "keep this draft" } })
+		await waitFor(() => expect(note.value).toBe("keep this draft"))
+		act(() => env.client.setQueryData(checkoutQueryKey, { ...env.sources.checkout, customerNote: "ordinary refresh" }))
+		await waitFor(() => expect((screen.getByLabelText("Order note") as HTMLTextAreaElement).value).toBe("keep this draft"))
+		act(() =>
+			env.client.setQueryData(checkoutQueryKey, {
+				...env.sources.checkout,
+				orderId: 99,
+				orderKey: "replacement",
+				customerNote: "new session",
+			}),
+		)
+		await waitFor(() => expect((screen.getByLabelText("Order note") as HTMLTextAreaElement).value).toBe("new session"))
+	})
 })

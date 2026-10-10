@@ -1,7 +1,7 @@
 import { atom } from "nanostores"
 import { checkoutAddressPath } from "./checkout-address"
 import { type CheckoutFieldSources, fieldPaths } from "./checkout-field-document"
-import { type CheckoutFormState, checkoutFormName } from "./checkout-form"
+import { type CheckoutFormState, canShareCheckoutAddress, checkoutFormName } from "./checkout-form"
 import type {
 	Checkout,
 	CheckoutError,
@@ -62,17 +62,26 @@ export function createCheckoutErrorStore() {
 			const issues =
 				error.code === "CHECKOUT_VALIDATION_FAILED"
 					? error.data.issues
-					: [
-							{
-								scope: "unresolved" as const,
-								target: null,
-								message: error.message,
+					: error.code === "CHECKOUT_PREPARATION_FAILED"
+						? error.data.issues.map(({ message, path }) => ({
+								...(path.length ? { scope: "field" as const, target: path.map(String) } : { scope: "unresolved" as const, target: null }),
+								message,
 								code: error.code,
 								source: null,
 								sourcePath: [],
 								registeredFields: [],
-							},
-						]
+							}))
+						: [
+								{
+									scope: "unresolved" as const,
+									target: null,
+									message: error.code === "CHECKOUT_TOTAL_MISMATCH" ? "Review the updated checkout total and submit again." : error.message,
+									code: error.code,
+									source: null,
+									sourcePath: [],
+									registeredFields: [],
+								},
+							]
 			state.set({
 				...state.get(),
 				error,
@@ -196,7 +205,9 @@ export function projectCheckoutErrors(
 			const name = checkoutFormName(path)
 			const editable =
 				groups.some((key) => fields[key].some((field) => field.name === name && !field.hidden)) ||
-				(path.length === 1 && ["paymentMethod", "customerNote", "createAccount"].includes(path[0] ?? ""))
+				(path.length === 1 &&
+					(["paymentMethod", "customerNote", "createAccount"].includes(path[0] ?? "") ||
+						(path[0] === "useShippingAsBilling" && canShareCheckoutAddress(sources))))
 			if (editable) {
 				result.associations.set(issue.id, name)
 				const messages = inputs.get(name) ?? []
