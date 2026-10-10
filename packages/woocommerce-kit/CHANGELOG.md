@@ -1,5 +1,11 @@
 # @kizlo/woocommerce-kit
 
+## 0.11.0
+
+### Minor Changes
+
+- [#41](https://github.com/kizlo-io/kit/pull/41) [`81b6bb0`](https://github.com/kizlo-io/kit/commit/81b6bb04e2229d2ffbcb8083f9ea10c709b948e4) Thanks [@IDJGILL](https://github.com/IDJGILL)! - Prepare validated checkout requests with reviewed totals, typed field availability, and explicit total-mismatch recovery.
+
 ## 0.10.0
 
 ### Minor Changes
