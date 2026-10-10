@@ -62,3 +62,30 @@ const missingClear: CheckoutFieldsOptions = { setErrors: () => {} }
 // @ts-expect-error The return shape is section.fields, replacing the old fields.section shape.
 declare const legacyFields: CheckoutFieldsApi["fields"]
 void [missingClear, legacyFields]
+
+expectTypeOf<ReturnType<CheckoutFieldsApi["toCheckout"]>>().toEqualTypeOf<ConfirmCheckoutInput>()
+const prepared: ConfirmCheckoutInput = fields.toCheckout({
+	values: formValues,
+	input: { paymentData: [{ key: "token", value: false }], expectedTotal: undefined },
+})
+// @ts-expect-error Provider payload values follow the registered SDK contract.
+fields.toCheckout({ input: { paymentData: [{ key: "token", value: 1 }] } })
+// @ts-expect-error An availability guard is required for native validators.
+const unguardedSchema: FormSchema = fields.schema
+// @ts-expect-error An availability guard is required for child defaults.
+const unguardedDefaults: CheckoutFormValues = fields.defaultValues
+if (fields.isReady) {
+	const ready: import("./types").ReadyCheckoutFieldsApi = fields
+	const validator: FormSchema = fields.schema
+	const defaults: CheckoutFormValues = fields.defaultValues
+	const session: string = fields.session
+	const callback = () => {
+		const schema: FormSchema = fields.schema
+		return schema
+	}
+	void [ready, validator, defaults, session, callback]
+} else {
+	expectTypeOf(fields.schema).toEqualTypeOf<null>()
+	expectTypeOf(fields.reason).toEqualTypeOf<import("./types").CheckoutFieldsUnavailableReason>()
+}
+void [prepared, unguardedSchema, unguardedDefaults]

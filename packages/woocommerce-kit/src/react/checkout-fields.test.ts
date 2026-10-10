@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { cartQueryKey } from "../cart"
 import { checkoutQueryKey } from "../checkout"
 import { checkoutFormEncode } from "../checkout-form"
+import { CheckoutPreparationError } from "../checkout-preparation"
 import { field, fixtures } from "../test/checkout-fields-fixture"
 import type { Cart, Checkout, CheckoutFieldUpdate, CheckoutFieldValues, CheckoutFormFieldName, CheckoutFormValues } from "../types"
 import { useCart, useCartAddress, useCartShippingRates } from "./cart"
@@ -180,7 +181,7 @@ describe("useCheckoutFields shared sources", () => {
 		const error = Object.assign(new Error("Fetch refused"), { code: "FETCH_FAILED" })
 		procedures[subject].get.call.mockRejectedValue(error)
 		const { result, client } = mount(() => useCheckoutFields())
-		await waitFor(() => expect(result.current.error).toBe(error))
+		await waitFor(() => expect(result.current.error?.cause).toBe(error))
 		expect(result.current.schema).toBeNull()
 		expect(result.current.isLoading).toBe(false)
 		procedures[subject].get.call.mockResolvedValue(subject === "checkout" ? source.checkout : source.storefront)
@@ -197,7 +198,7 @@ describe("useCheckoutFields shared sources", () => {
 		const { result, client } = mount(() => useCheckoutFields())
 		expect(procedures.cart.get.call).not.toHaveBeenCalled()
 		await act(async () => checkout.resolve({ ...source.checkout, cart: null }))
-		await waitFor(() => expect(result.current.error).toBe(error))
+		await waitFor(() => expect(result.current.error?.cause).toBe(error))
 		expect(result.current.schema).toBeNull()
 		expect(result.current.defaultValues).toBeNull()
 		procedures.cart.get.call.mockResolvedValue(source.cart)
@@ -766,7 +767,7 @@ describe("validated automatic checkout address syncing", () => {
 		procedures.cart.update.call.mockRejectedValueOnce(error)
 		await env.edit("billingAddress.address1", "Retry this")
 		await env.tick()
-		expect(env.result.current.fields.error).toBe(error)
+		expect(env.result.current.fields.syncError).toBe(error)
 		await env.tick(4000)
 		expect(procedures.cart.update.call).toHaveBeenCalledTimes(1)
 		act(() => env.result.current.fields.handleFieldBlur("billingAddress.address1"))
@@ -780,10 +781,10 @@ describe("validated automatic checkout address syncing", () => {
 		procedures.cart.update.call.mockRejectedValueOnce(error)
 		await env.edit("billingAddress.address1", "Failed edit")
 		await env.tick()
-		expect(env.result.current.fields.error).toBe(error)
+		expect(env.result.current.fields.syncError).toBe(error)
 		await env.edit("billingAddress.address1", "Road")
 		await env.tick(20)
-		expect(env.result.current.fields.error).toBeNull()
+		expect(env.result.current.fields.syncError).toBeNull()
 		expect(procedures.cart.update.call).toHaveBeenCalledTimes(1)
 	})
 	it("retains a failed save's checkout hold through invalid edits and clears it only on acknowledgement", async () => {
@@ -795,14 +796,14 @@ describe("validated automatic checkout address syncing", () => {
 		expect(env.result.current.checkout.isLocked).toBe(true)
 		await env.edit("billingAddress.postcode", "INVALID")
 		await env.tick()
-		expect(env.result.current.fields.error).toBe(error)
+		expect(env.result.current.fields.syncError).toBe(error)
 		expect(env.result.current.checkout.isLocked).toBe(true)
 		expect(procedures.cart.update.call).toHaveBeenCalledTimes(1)
 		await env.edit("billingAddress.address1", "Road")
 		expect(env.result.current.checkout.isLocked).toBe(true)
 		await env.edit("billingAddress.postcode", env.source.cart.billingAddress.postcode)
 		await env.tick(20)
-		expect(env.result.current.fields.error).toBeNull()
+		expect(env.result.current.fields.syncError).toBeNull()
 		expect(env.result.current.checkout.isLocked).toBe(false)
 		expect(procedures.cart.update.call).toHaveBeenCalledTimes(1)
 	})
@@ -817,5 +818,134 @@ describe("validated automatic checkout address syncing", () => {
 		await env.tick()
 		expect(procedures.cart.update.call).not.toHaveBeenCalled()
 		expect(env.client.getQueryData<string[]>(addressQueueKey)).toEqual([])
+	})
+})
+
+describe("fields availability and preparation", () => {
+	it("distinguishes initial loading, paid checkout and missing data", async () => {
+		const source = fixtures()
+		const gate = deferred<Checkout>()
+		procedures.checkout.get.call.mockReturnValue(gate.promise)
+		const { result, client } = mount(() => useCheckoutFields(), { cartEnabled: false })
+		expect(result.current).toMatchObject({ isReady: false, reason: "loading", isLoading: true })
+		await act(async () => gate.resolve(source.checkout))
+		await waitFor(() => expect(result.current.isReady).toBe(true))
+		expect(result.current.session).toBe(JSON.stringify([source.checkout.orderId, source.checkout.orderKey]))
+		act(() => client.setQueryData(cartQueryKey, null))
+		await waitFor(() => expect(result.current.reason).toBe("missing-data"))
+		expect(result.current.schema).toBeNull()
+		act(() => client.setQueryData(cartQueryKey, source.cart))
+		act(() => client.setQueryData(checkoutQueryKey, { ...source.checkout, isPaid: true }))
+		await waitFor(() => expect(result.current.reason).toBe("paid"))
+		expect(result.current.isReady).toBe(false)
+	})
+	it("retains concurrent failed-source evidence and retries checkout-owned bootstrap once", async () => {
+		const source = fixtures()
+		const storefrontError = Object.assign(new Error("Settings unavailable"), { code: "SERVICE_UNAVAILABLE", data: { settings: true } })
+		const checkoutError = Object.assign(new Error("Checkout unavailable"), { code: "FORBIDDEN", data: { checkout: true } })
+		procedures.storefront.get.call.mockRejectedValue(storefrontError)
+		procedures.checkout.get.call.mockRejectedValue(checkoutError)
+		const { result } = mount(() => useCheckoutFields())
+		await waitFor(() => expect(result.current.error?.failures).toHaveLength(2))
+		expect(result.current).toMatchObject({ isReady: false, reason: "fetch-failed", isLoading: false })
+		expect(result.current.error?.failures).toEqual([
+			{ source: "storefront", error: storefrontError },
+			{ source: "checkout", error: checkoutError },
+		])
+		expect(result.current.error).toMatchObject({ source: "storefront", code: storefrontError.code, data: storefrontError.data })
+		procedures.storefront.get.call.mockResolvedValue(source.storefront)
+		procedures.checkout.get.call.mockResolvedValue(source.checkout)
+		await act(async () => result.current.refresh())
+		await waitFor(() => expect(result.current.isReady).toBe(true))
+		expect(result.current.error).toBeNull()
+		expect(procedures.checkout.get.call).toHaveBeenCalledTimes(2)
+		expect(procedures.storefront.get.call).toHaveBeenCalledTimes(2)
+		expect(procedures.cart.get.call).not.toHaveBeenCalled()
+	})
+	it.each([true, false])("keeps cached sources ready through a refresh failure (cart enabled: %s)", async (cartEnabled) => {
+		const source = fixtures()
+		let values = checkoutFormEncode(source.values)
+		const { result } = mount(() => useCheckoutFields({ getValues: () => values }), { cartEnabled })
+		await waitFor(() => expect(result.current.isReady).toBe(true))
+		const defaults = result.current.defaultValues
+		values = { ...values, customerNote: "unsaved edit" }
+		const gate = deferred<Checkout>()
+		procedures.checkout.get.call.mockReturnValueOnce(gate.promise)
+		let refreshing!: Promise<void>
+		act(() => {
+			refreshing = result.current.refresh()
+		})
+		await waitFor(() => expect(result.current.isFetching).toBe(true))
+		expect(result.current).toMatchObject({ isReady: true, isLoading: false, reason: null })
+		await act(async () => gate.reject(Object.assign(new Error("Offline"), { code: "SERVICE_UNAVAILABLE", data: {} })))
+		await refreshing
+		await waitFor(() => expect(result.current.error?.source).toBe("checkout"))
+		expect(result.current.isReady).toBe(true)
+		expect(result.current.defaultValues).toBe(defaults)
+		expect(result.current.toCheckout().customerNote).toBe("unsaved edit")
+		expect(result.current.syncError).toBeNull()
+		expect(procedures.cart.get.call).not.toHaveBeenCalled()
+	})
+	it("reads current adapter edits, supports explicit candidates, and performs no remote operation", async () => {
+		const source = fixtures()
+		let values = checkoutFormEncode(source.values)
+		const { result, client } = mount(() => useCheckoutFields({ getValues: () => values }), { cartEnabled: false })
+		await waitFor(() => expect(result.current.isReady).toBe(true))
+		const captured = result.current.toCheckout
+		values = { ...values, customerNote: "latest" }
+		const request = captured({ input: { successPath: "/thanks" } })
+		expect(request).toMatchObject({ customerNote: "latest", successPath: "/thanks", expectedTotal: "12345" })
+		expect(result.current.toCheckout({ values: { ...values, customerNote: "explicit" } }).customerNote).toBe("explicit")
+		act(() => client.setQueryData(cartQueryKey, { ...source.cart, totals: { ...source.cart.totals, total: 54321 } }))
+		await waitFor(() => expect(result.current.toCheckout().expectedTotal).toBe("54321"))
+		expect(request.expectedTotal).toBe("12345")
+		expect(procedures.checkout.get.call).toHaveBeenCalledTimes(1)
+		expect(procedures.cart.get.call).not.toHaveBeenCalled()
+		expect(procedures.cart.update.call).not.toHaveBeenCalled()
+		expect(procedures.checkout.confirm.call).not.toHaveBeenCalled()
+	})
+	it("supports metadata-only candidates and exposes missing-candidate failure as a general issue", async () => {
+		const source = fixtures()
+		const { result } = mount(() => useCheckoutFields())
+		await waitFor(() => expect(result.current.isReady).toBe(true))
+		expect(result.current.toCheckout({ values: checkoutFormEncode(source.values) }).billingAddress.email).toBe("ada@example.com")
+		act(() => expect(() => result.current.toCheckout()).toThrow(CheckoutPreparationError))
+		await waitFor(() => expect(result.current.errors[0]?.errorCode).toBe("CHECKOUT_PREPARATION_FAILED"))
+	})
+	it("routes local preparation errors through the existing field bridge with encoded visible names", async () => {
+		const source = fixtures([field("plugin/answer", { required: true })])
+		procedures.storefront.get.call.mockResolvedValue(source.storefront)
+		const values = checkoutFormEncode({ ...source.values, additionalFields: {} })
+		const setErrors = vi.fn(),
+			clearErrors = vi.fn()
+		const { result } = mount(() => ({
+			fields: useCheckoutFields({ getValues: () => values, setErrors, clearErrors }),
+			checkout: useCheckout(),
+		}))
+		await waitFor(() => expect(result.current.fields.isReady).toBe(true))
+		act(() => expect(() => result.current.fields.toCheckout()).toThrow(CheckoutPreparationError))
+		await waitFor(() =>
+			expect(setErrors).toHaveBeenCalledWith(
+				expect.arrayContaining([expect.objectContaining({ name: "additionalFields.plugin%2Fanswer" })]),
+			),
+		)
+		expect(result.current.checkout.error?.code).toBe("CHECKOUT_PREPARATION_FAILED")
+		expect(procedures.checkout.confirm.call).not.toHaveBeenCalled()
+		act(() => result.current.fields.handleFieldChange("additionalFields.plugin%2Fanswer", "fixed"))
+		await waitFor(() => expect(clearErrors).toHaveBeenCalledWith(["additionalFields.plugin%2Fanswer"]))
+	})
+	it("keeps an accepted confirmation current when another preparation fails locally", async () => {
+		const source = fixtures()
+		const gate = deferred<Checkout>()
+		procedures.checkout.confirm.call.mockReturnValue(gate.promise)
+		const { result } = mount(() => ({ fields: useCheckoutFields(), checkout: useCheckout() }))
+		await waitFor(() => expect(result.current.fields.isReady).toBe(true))
+		act(() => result.current.checkout.confirm(result.current.fields.toCheckout({ values: checkoutFormEncode(source.values) })))
+		await waitFor(() => expect(procedures.checkout.confirm.call).toHaveBeenCalledTimes(1))
+		act(() => expect(() => result.current.fields.toCheckout()).toThrow(CheckoutPreparationError))
+		expect(result.current.checkout.error?.code).toBe("CHECKOUT_PREPARATION_FAILED")
+		await act(async () => gate.resolve({ ...source.checkout, isPaid: true }))
+		await waitFor(() => expect(result.current.checkout.error).toBeNull())
+		expect(result.current.fields.errors).toEqual([])
 	})
 })

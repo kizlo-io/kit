@@ -1,4 +1,44 @@
-# Migrating checkout fields from the `{ values }` API
+# Validated checkout preparation and availability
+
+Upgrade the registered SDK to `@kizlo/woocommerce@^0.15.0` and the browser client to `kizlo@^0.26.1` together.
+Guard `fields.isReady` once in the parent. Pass the narrowed `ReadyCheckoutFieldsApi` to a child keyed by `fields.session`,
+then initialize the native form directly with its required `defaultValues` and `schema`. Bind the optional native adapter
+in that child. The complete [TanStack](../types/checkout-fields.example.tsx) and
+[RHF](../types/checkout-fields-rhf.example.tsx) examples follow this pattern without empty defaults or reset effects.
+
+Replace application confirmation projection and completeness casts with:
+
+```tsx
+await checkout.confirmAsync(fields.toCheckout({ input: { paymentData: providerData } }))
+// Or supply the submit callback's exact candidate:
+await checkout.confirmAsync(fields.toCheckout({ values: formValues, input: { successPath: "/thanks" } }))
+```
+
+Preparation decodes field IDs, replaces top-level properties with raw `input`, projects effective addresses, and validates
+merchant conditions and SDK request structure. Supplied nested objects/arrays replace the property completely. Provider
+payloads and return paths are retained; response extensions are not copied. Missing sources, missing current values or
+invalid final input throw `CheckoutPreparationError` with field-path issues and populate the existing form error channels.
+The form retains its dirty/touched state. Key codecs remain lossless and manual request assembly remains supported.
+
+`expectedTotal` defaults to the minor-unit digit string represented by the committed cart sources. Explicit
+`input.expectedTotal` overrides it; an explicit `undefined` omits protection. An already prepared request never adopts a
+later fetched amount. Preparation performs no request, address save, refresh or tokenization.
+
+Use `fields.isLoading` for initial acquisition and `fields.isFetching` for background progress. `fields.error` now wraps
+all failed sources in `failures`, retaining their original SDK errors; `cause`, `source`, `code` and `data` describe the first
+failure. Move address-save error reads to `fields.syncError`. Use `fields.refresh()` for aggregate retry. Cached usable
+sources remain ready after background failure. Unavailable reasons distinguish loading, failed acquisition, paid checkout
+and missing data. Availability stays separate from `checkout.isLocked`, form validity and gateway eligibility.
+
+On `CHECKOUT_TOTAL_MISMATCH`, render the checkout-level review message and updated shared-cart total. Kit publishes
+current evidence or reconciles it safely, keeps the draft, and performs no automatic confirmation retry. A new explicit
+submit gesture prepares the newly displayed total. Clear settled submission errors with `checkout.reset()` before native
+validation of that attempt. Historical additional-field keys stay available for server sanitization; numeric request
+answers are rejected because the supported SDK scalar structure is string/boolean.
+
+## Earlier accessor migration
+
+### Migrating checkout fields from the `{ values }` API
 
 The next minor replaces `useCheckoutFields({ values })` with form accessors and explicit events. Keep your existing
 `QueryClientProvider`, `KizloProvider` and `WooCommerceProvider`. Your form library remains the only editable values store.
@@ -26,13 +66,13 @@ The next minor replaces `useCheckoutFields({ values })` with form accessors and 
    select options from metadata, and render your own label/error markup. Remove local country/state widgets and native
    normalization. `errorId` associates errors with the generated control. Hidden fields keep their stored values.
 7. Use the optional `useShippingAsBilling` boolean in this same form only when `fields.canUseShippingAsBilling` is true.
-   Keep request assembly outside the fields converter. Kit copies common native members only; billing email/Tax ID and
+   Use `toCheckout()` for validated preparation, or retain explicit manual assembly. Kit copies common native members only; billing email/Tax ID and
    billing/shipping additional fields remain separate. Sharing is disabled for shipping-free and forced-billing cases.
 8. Pass `fields.schema` to the form library's Standard Schema integration. Its input and output are the same encoded
    `CheckoutFormValues`; validation returns the supplied candidate and maps issues to safe form paths. Call
    `fields.decode(values)` to restore original field IDs before passing values to your application submit callback. The
-   result is the decoded schema shape, including the sharing control. The application owns confirmation request assembly,
-   effective address projection, removal of form-only controls and payment/provider data.
+   result is the decoded draft, including the sharing control. Use `toCheckout({ values, input })` when you want Kit to prepare
+   confirmation; manual assembly remains available.
 9. After a silent reset or prefill, call `fields.reevaluate()`. This reevaluates fields without clearing a coherent prefilled
    country/state/postcode set. Keep the form library's reset defaults when refreshing its options; the TanStack example shows this.
 
@@ -50,9 +90,9 @@ await onSubmit(fields.decode(formValues))
 
 The complete [TanStack Form](../types/checkout-fields.example.tsx) and
 [React Hook Form](../types/checkout-fields-rhf.example.tsx) examples render contact, shipping, billing and order fields plus
-checkout controls in one form. They preserve the setter contract, wire a single event route and pass decoded values to
-application-owned submit callbacks. The examples now bind fresh named validation and input blur to automatic address syncing; cart transport owns scheduling and
-requests, and checkout submission remains application-owned. Metadata-only fields consumers do not initiate saves.
+checkout controls in one form. They preserve the setter contract, wire a single event route and prepare requests for
+direct confirmation. The examples bind named validation and input blur to automatic address syncing; cart transport
+owns scheduling and requests, and the application still invokes confirmation explicitly. Metadata-only fields consumers do not initiate saves.
 
 ## Migrating key conversions
 
@@ -61,8 +101,8 @@ getters are removed. Both new methods are synchronous, source-independent key tr
 shape and values, including empty registered selects, omitted native members, independent addresses and form controls.
 Initialize from `fields.defaultValues` when you want the checkout's saved values; encoding itself adds no defaults.
 
-The decoder no longer projects billing/shipping addresses, omits digital shipping or filters members. Move those decisions to
-the application checkout integration. A decoded draft remains a draft rather than a complete `ConfirmCheckoutInput`; the
+The decoder no longer projects billing/shipping addresses, omits digital shipping or filters members. Use `toCheckout()` for those decisions, or retain
+your manual checkout integration. A decoded draft remains a draft rather than a complete `ConfirmCheckoutInput`; the
 converter neither rejects missing confirmation members nor performs field validation. Key collisions still throw to prevent
 silent data loss. Runtime rules remain in `fields.schema`, which the form library executes.
 

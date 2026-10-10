@@ -41,6 +41,7 @@ export type StorefrontApi = {
 	/** The last fetch failure. */
 	error: StorefrontError | null
 	isLoading: boolean
+	isFetching: boolean
 	refresh: () => Promise<void>
 }
 
@@ -81,5 +82,5 @@ export function useStorefront(): StorefrontApi {
 		await queryClient.refetchQueries({ queryKey: storefrontQueryKey })
 	}, [queryClient])
 
-	return { error: query.error, isLoading: query.isPending, refresh, storefront: query.data ?? null }
+	return { error: query.error, isLoading: query.isPending, isFetching: query.isFetching, refresh, storefront: query.data ?? null }
 }

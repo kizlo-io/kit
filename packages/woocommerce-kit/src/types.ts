@@ -13,7 +13,9 @@
  */
 
 import type { ActiveKizloClient, InferClientData, InferClientError, InferClientInput } from "kizlo"
+import type { CheckoutFieldsAcquisitionError } from "./checkout-fields-availability"
 import type { CheckoutLockedError } from "./checkout-locks"
+import type { CheckoutPreparationError } from "./checkout-preparation"
 
 type Procedures = ActiveKizloClient["woocommerce"]
 type CartProcedures = Procedures["cart"]
@@ -92,6 +94,7 @@ export type CheckoutError =
 	| InferClientError<CheckoutProcedures["get"]>
 	| InferClientError<CheckoutProcedures["confirm"]>
 	| CheckoutLockedError
+	| CheckoutPreparationError
 export type CheckoutValidationIssue = Extract<CheckoutError, { code: "CHECKOUT_VALIDATION_FAILED" }>["data"]["issues"][number]
 export type CheckoutRegisteredFieldReference = CheckoutValidationIssue["registeredFields"][number]
 /** SDK evidence plus stable identities assigned to this submission and each individual message. */
@@ -298,15 +301,19 @@ export type CheckoutFormField = ResolvedField & {
 	getProps: (binding: CheckoutFieldBinding) => CheckoutNativeControl
 }
 export type CheckoutFieldsSection = { fields: CheckoutFormField[]; errors: readonly CheckoutServerIssue[] }
-export type CheckoutFieldsApi = Omit<CheckoutFieldsModel, "fields" | "defaultValues"> & {
+export type CheckoutPreparationOptions = { values?: CheckoutFormValues; input?: Partial<ConfirmCheckoutInput> }
+export type CheckoutFieldsFetchFailure =
+	| { source: "storefront"; error: StorefrontError }
+	| { source: "checkout"; error: CheckoutError }
+	| { source: "cart"; error: CartError }
+export type CheckoutFieldsUnavailableReason = "loading" | "fetch-failed" | "paid" | "missing-data"
+type CheckoutFieldsBase = Omit<CheckoutFieldsModel, "fields" | "defaultValues"> & {
 	billing: CheckoutFieldsSection
 	shipping: CheckoutFieldsSection
 	contact: CheckoutFieldsSection
 	order: CheckoutFieldsSection
 	/** General, unresolved or otherwise unplaceable submission failures. */
 	errors: readonly CheckoutServerIssue[]
-	defaultValues: CheckoutFormValues | null
-	schema: StandardFieldSchema<CheckoutFormValues> | null
 	canUseShippingAsBilling: boolean
 	handleFieldChange: (name: CheckoutFormFieldName, value: CheckoutFieldValue | undefined) => void
 	/** Validate the latest address edits and flush their pending save without waiting for typing to pause. */
@@ -318,7 +325,29 @@ export type CheckoutFieldsApi = Omit<CheckoutFieldsModel, "fields" | "defaultVal
 	encode: (values: CheckoutFieldValues) => CheckoutFormValues
 	/** Decode additional-field keys without validation, address projection or submission preparation. */
 	decode: (values: CheckoutFormValues) => CheckoutFieldValues
+	/** Prepare the current adapter draft or an explicit candidate; throws CheckoutPreparationError on local failure. */
+	toCheckout: (options?: CheckoutPreparationOptions) => ConfirmCheckoutInput
+	/** Stable checkout identity for mounting a child form after an availability guard. */
+	session: string | null
 	isLoading: boolean
+	isFetching: boolean
 	isRepricing: boolean
-	error: StorefrontError | CheckoutError | CartError | null
+	error: CheckoutFieldsAcquisitionError | null
+	syncError: CartError | null
+	refresh: () => Promise<void>
 }
+export type ReadyCheckoutFieldsApi = CheckoutFieldsBase & {
+	isReady: true
+	reason: null
+	session: string
+	defaultValues: CheckoutFormValues
+	schema: StandardFieldSchema<CheckoutFormValues>
+}
+export type UnavailableCheckoutFieldsApi = CheckoutFieldsBase & {
+	isReady: false
+	reason: CheckoutFieldsUnavailableReason
+	defaultValues: CheckoutFormValues | null
+	schema: null
+}
+/** Availability only; form validity, payment eligibility and checkout locks remain independent. */
+export type CheckoutFieldsApi = ReadyCheckoutFieldsApi | UnavailableCheckoutFieldsApi

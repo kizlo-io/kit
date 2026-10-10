@@ -19,7 +19,15 @@ import {
 import type { Cart, Checkout } from "../types"
 import { createCheckoutWatch } from "./checkout-watch"
 
-export type CheckoutRequestToken = Readonly<{ scope: object; generation: number; epoch: number; session: string | null }>
+export type CheckoutRequestToken = Readonly<{
+	scope: object
+	generation: number
+	epoch: number
+	session: string | null
+	revision: number
+	cartVersion: number
+	checkoutVersion: number
+}>
 export type CheckoutRequest<T> = { payload: T; token: CheckoutRequestToken; reservation?: CheckoutConfirmationToken }
 const roots = [cartQueryKey, checkoutQueryKey] as const
 const mutationRoots = [cartMutationKey, checkoutMutationKey] as const
@@ -74,6 +82,16 @@ function createBinding(store: CheckoutLockStore, cache: QueryClient, client: Act
 		token.generation === store.generation &&
 		token.epoch === epoch &&
 		(token.session === store.session || token.session === null)
+	const requestToken = (): CheckoutRequestToken =>
+		Object.freeze({
+			scope,
+			generation,
+			epoch,
+			session: store.session,
+			revision: store.revision,
+			cartVersion: cache.getQueryState(cartQueryKey)?.dataUpdateCount ?? 0,
+			checkoutVersion: cache.getQueryState(checkoutQueryKey)?.dataUpdateCount ?? 0,
+		})
 	const syncGeneration = () => {
 		store.syncSession(checkoutSession(cache.getQueryData<Checkout>(checkoutQueryKey)))
 		if (generation !== store.generation) {
@@ -277,6 +295,13 @@ function createBinding(store: CheckoutLockStore, cache: QueryClient, client: Act
 		sync,
 		readCart,
 		readCheckout,
+		async refreshFields() {
+			cancelReads()
+			// Checkout owns bootstrap and seeds the acknowledged cart before any cart retry can run.
+			await cache.refetchQueries({ queryKey: checkoutQueryKey, exact: true, type: "active" })
+			if (cartEnabled && cache.getQueryData(checkoutQueryKey) && !cache.getQueryData(cartQueryKey))
+				await cache.refetchQueries({ queryKey: cartQueryKey, exact: true, type: "active" })
+		},
 		dispatch<T>(scopeKey: readonly unknown[], action: () => T) {
 			return dispatch(`${scopeKey[2]}.${String(scopeKey[4] ?? "action")}`, action)
 		},
@@ -309,11 +334,10 @@ function createBinding(store: CheckoutLockStore, cache: QueryClient, client: Act
 		},
 		admit<T>(payload: T): CheckoutRequest<T> {
 			assertWritable()
-			const token = Object.freeze({ scope, generation, epoch, session: store.session })
 			const bootstrap = checkoutEnabled && !cache.getQueryData(checkoutQueryKey)
 			cancelReads()
 			if (bootstrap) needsReconciliation = true
-			return { payload, token }
+			return { payload, token: requestToken() }
 		},
 		assertCurrent(token: CheckoutRequestToken) {
 			sync()
@@ -332,13 +356,38 @@ function createBinding(store: CheckoutLockStore, cache: QueryClient, client: Act
 			cache.setQueryData(checkoutQueryKey, checkout)
 			cache.setQueryData(cartQueryKey, checkout.cart)
 		},
+		reviewTotal(request: CheckoutRequest<unknown>, cart: Cart | null | undefined) {
+			sync()
+			const { token, reservation } = request
+			if (!current(token) || !reservation || !store.isConfirmation(reservation)) return
+			// A newer read/write in this same session must not be replaced by evidence from the old POST.
+			if (
+				token.revision === store.revision &&
+				token.cartVersion === (cache.getQueryState(cartQueryKey)?.dataUpdateCount ?? 0) &&
+				token.checkoutVersion === (cache.getQueryState(checkoutQueryKey)?.dataUpdateCount ?? 0) &&
+				cart &&
+				Number.isSafeInteger(cart.totals?.total) &&
+				cart.totals.total >= 0 &&
+				Array.isArray(cart.items) &&
+				Array.isArray(cart.coupons) &&
+				Array.isArray(cart.shippingPackages)
+			) {
+				cancelReads()
+				cache.setQueryData(cartQueryKey, cart)
+			} else {
+				cancelReads()
+				needsReconciliation = true
+				sync()
+				// Reconciliation waits until confirmation settles, and uses checkout when standalone cart reads are disabled.
+				reconcile()
+			}
+		},
 		reserve<T>(payload: T): CheckoutRequest<T> {
 			checkoutEnabled = true
 			sync()
-			const token = Object.freeze({ scope, generation, epoch, session: store.session })
 			const reservation = store.reserveConfirmation()
 			cancelReads()
-			return { payload, token, reservation }
+			return { payload, token: requestToken(), reservation }
 		},
 		discard(request: CheckoutRequest<unknown>) {
 			if (

@@ -73,3 +73,24 @@ fields.encode({ additionalFields: { "optional/quantity": "2" } })
 // @ts-expect-error Generated address enums remain typed in their encoded location.
 fields.encode({ shippingAddress: { additionalFields: { "required/address": "green" } } })
 void [billingChoice, shippingChoice, orderChoice, encodedChoice, sharing, wrongDraft, confirmation]
+
+const prepared: ConfirmCheckoutInput = fields.toCheckout({ values: draft, input: { expectedTotal: "12345" } })
+const requiredAddress: "home" | "office" = prepared.billingAddress.additionalFields["required/address"]
+const requiredOrder: "red" | "blue" | undefined = prepared.additionalFields?.["required/choice"]
+// @ts-expect-error Top-level raw replacements retain the registered required address answer.
+fields.toCheckout({ input: { billingAddress: { ...prepared.billingAddress, additionalFields: {} } } })
+// @ts-expect-error Raw input overrides retain registered enums.
+fields.toCheckout({ input: { additionalFields: { "required/choice": "green" } } })
+// @ts-expect-error Provider token values cannot become numbers.
+fields.toCheckout({ input: { paymentData: [{ key: "token", value: 3 }] } })
+if (fields.isReady) {
+	const child: import("../src/types").ReadyCheckoutFieldsApi = fields
+	const defaults: CheckoutFormValues = fields.defaultValues
+	const schema: NonNullable<CheckoutFieldsApi["schema"]> = fields.schema
+	const callback = () => {
+		const readySchema: NonNullable<CheckoutFieldsApi["schema"]> = fields.schema
+		return readySchema
+	}
+	void [child, defaults, schema, callback]
+}
+void [prepared, requiredAddress, requiredOrder]

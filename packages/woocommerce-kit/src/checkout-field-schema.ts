@@ -107,10 +107,10 @@ export function checkoutSchemaKind(schema: FieldSchema): string | undefined {
 }
 
 /** Each cached compiler owns only schema resources, never a shopper document. */
-export function compileCheckoutSchema(schema: FieldSchema): ValidateFunction {
+export function compileCheckoutSchema<T = unknown>(schema: FieldSchema): ValidateFunction<T> {
 	const key = JSON.stringify(schema)
 	const cached = compiled.get(key)
-	if (cached) return cached
+	if (cached) return cached as ValidateFunction<T>
 	const ajv = new Ajv({ allErrors: true, $data: true, strict: false, strictSchema: true, validateFormats: true, ownProperties: true })
 	addFormats(ajv, { mode: "fast", formats: ["date", "time", "uri"], keywords: true })
 	// Woo's frontend uses PHP-compatible email validation rather than AJV's default format.
@@ -132,7 +132,7 @@ export function compileCheckoutSchema(schema: FieldSchema): ValidateFunction {
 		children(node).forEach(check)
 	}
 	check(copy)
-	const validate = ajv.compile(copy)
+	const validate = ajv.compile<T>(copy)
 	if (compiled.size >= 128) compiled.delete(compiled.keys().next().value as string)
 	compiled.set(key, validate)
 	return validate

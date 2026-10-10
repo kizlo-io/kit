@@ -394,7 +394,7 @@ describe("automatic checkout error integration", () => {
 		await act(async () => {
 			await second.client.refetchQueries({ queryKey: storefrontQueryKey })
 		})
-		await waitFor(() => expect(b.result.current.fields.error).toBe(error))
+		await waitFor(() => expect(b.result.current.fields.error?.cause).toBe(error))
 		expect(b.result.current.fields.errors).toEqual([])
 	})
 	it("permits read-only consumers and requires paired form callbacks", () => {

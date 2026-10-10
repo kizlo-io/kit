@@ -12,16 +12,15 @@ import { ReactHookFormCheckout as ReactHookFieldsForm } from "../../types/checko
 import { reactHookFormErrorMessages, reactHookFormServerErrors, tanStackValidateField } from "../../types/checkout-server-errors.example"
 import { cartQueryKey } from "../cart"
 import { checkoutQueryKey } from "../checkout"
-import { projectCheckoutAddresses } from "../checkout-address"
 import { checkoutFormEncode } from "../checkout-form"
 import { validationFailure, validationIssue } from "../test/checkout-errors-fixture"
 import { field, fixtures } from "../test/checkout-fields-fixture"
-import type { Cart, CheckoutFieldsApi, CheckoutFieldUpdate, CheckoutFieldValues, CheckoutFormValues, ConfirmCheckoutInput } from "../types"
+import type { Cart, CheckoutFieldsApi, CheckoutFieldUpdate, CheckoutFormValues } from "../types"
 import { useCartAddress } from "./cart"
 import { useCheckout } from "./checkout"
 import { useCheckoutFields } from "./checkout-fields"
 import { WooCommerceProvider } from "./provider"
-import { storefrontQueryKey, useStorefront } from "./storefront"
+import { storefrontQueryKey } from "./storefront"
 
 const { procedures } = vi.hoisted(() => {
 	const procedure = () => ({ call: vi.fn() })
@@ -37,24 +36,11 @@ vi.mock("kizlo/react", () => {
 	const client = { woocommerce: procedures }
 	return { useKizloContext: () => ({ client }) }
 })
-// The host application owns confirmation assembly; the form examples only decode fields.
-function ApplicationCheckoutForm({ Component }: { Component: typeof TanStackFieldsForm | typeof ReactHookFieldsForm }) {
-	const checkout = useCheckout()
-	const { storefront } = useStorefront()
-	return createElement(Component, {
-		onSubmit: async (values: CheckoutFieldValues) => {
-			const projected = projectCheckoutAddresses({ storefront, cart: checkout.checkout?.cart ?? null }, values, values.useShippingAsBilling)
-			const { useShippingAsBilling: _sharing, ...input } = projected
-			// These integration fixtures initialize every native submission member.
-			await checkout.confirmAsync(input as ConfirmCheckoutInput).catch(() => {})
-		},
-	})
-}
 function TanStackCheckoutForm() {
-	return createElement(ApplicationCheckoutForm, { Component: TanStackFieldsForm })
+	return createElement(TanStackFieldsForm)
 }
 function ReactHookFormCheckout() {
-	return createElement(ApplicationCheckoutForm, { Component: ReactHookFieldsForm })
+	return createElement(ReactHookFieldsForm)
 }
 
 const clients: QueryClient[] = []
@@ -65,7 +51,7 @@ function source() {
 		field("country", { location: "address", bindings: { billing: ["country"], shipping: ["country"] } }),
 		field("state", { location: "address", bindings: { billing: ["state"], shipping: ["state"] } }),
 		field(id, { required: true, label: "Reference" }),
-		field("consumer/quantity.a[0]'%%", { type: "number", label: "Quantity", schema: { type: "number", minimum: 1 } }),
+		field("consumer/quantity.a[0]'%%", { type: "text", label: "Quantity", schema: { type: "string", pattern: "^[1-9][0-9]*$" } }),
 	])
 	source.checkout.shippingAddress.country = "IN"
 	source.checkout.shippingAddress.state = "KA"
@@ -610,34 +596,37 @@ describe("real form libraries", () => {
 	it.each([
 		["TanStack", TanStackCheckoutForm],
 		["React Hook Form", ReactHookFormCheckout],
-	] as const)("renders and submits the complete %s example with encoded names and native number values", async (_name, Component) => {
-		const { wrapper } = setup()
-		render(createElement(Component), { wrapper })
-		const reference = await screen.findByLabelText("Reference")
-		expect(reference.getAttribute("name")).toBe(safeName)
-		fireEvent.change(reference, { target: { value: "NEW" } })
-		const quantity = screen.getByLabelText("Quantity")
-		fireEvent.change(quantity, { target: { value: "12" } })
-		const sharing = screen.getByLabelText<HTMLInputElement>("Use shipping address for billing")
-		expect(sharing.checked).toBe(true)
-		fireEvent.click(sharing)
-		await waitFor(() => expect(document.querySelector('select[name="billingAddress.country"]')).not.toBeNull())
-		const billingCountry = document.querySelector<HTMLSelectElement>('select[name="billingAddress.country"]')
-		if (!billingCountry) throw new Error("Missing billing country")
-		fireEvent.change(billingCountry, { target: { value: "GB" } })
-		await waitFor(() => expect(document.querySelector('input[name="billingAddress.state"]')).not.toBeNull())
-		expect(document.querySelector<HTMLInputElement>('input[name="billingAddress.state"]')?.value).toBe("")
-		await waitFor(() => expect(procedures.cart.update.call).toHaveBeenCalledTimes(1))
-		await waitFor(() => expect(screen.getByRole("button", { name: "Place order" }).hasAttribute("disabled")).toBe(false))
-		expect(procedures.checkout.confirm.call).not.toHaveBeenCalled()
-		fireEvent.click(screen.getByRole("button", { name: "Place order" }))
-		await waitFor(() => expect(procedures.checkout.confirm.call).toHaveBeenCalledTimes(1))
-		expect(procedures.checkout.confirm.call.mock.calls[0]?.[0].body).toMatchObject({
-			billingAddress: { country: "GB", state: "" },
-			additionalFields: { [id]: "NEW", "consumer/quantity.a[0]'%%": 12 },
-		})
-		expect(procedures.checkout.confirm.call.mock.calls[0]?.[0].body).not.toHaveProperty("useShippingAsBilling")
-	})
+	] as const)(
+		"renders and submits the complete %s example with encoded names and SDK-compatible scalar answers",
+		async (_name, Component) => {
+			const { wrapper } = setup()
+			render(createElement(Component), { wrapper })
+			const reference = await screen.findByLabelText("Reference")
+			expect(reference.getAttribute("name")).toBe(safeName)
+			fireEvent.change(reference, { target: { value: "NEW" } })
+			const quantity = screen.getByLabelText("Quantity")
+			fireEvent.change(quantity, { target: { value: "12" } })
+			const sharing = screen.getByLabelText<HTMLInputElement>("Use shipping address for billing")
+			expect(sharing.checked).toBe(true)
+			fireEvent.click(sharing)
+			await waitFor(() => expect(document.querySelector('select[name="billingAddress.country"]')).not.toBeNull())
+			const billingCountry = document.querySelector<HTMLSelectElement>('select[name="billingAddress.country"]')
+			if (!billingCountry) throw new Error("Missing billing country")
+			fireEvent.change(billingCountry, { target: { value: "GB" } })
+			await waitFor(() => expect(document.querySelector('input[name="billingAddress.state"]')).not.toBeNull())
+			expect(document.querySelector<HTMLInputElement>('input[name="billingAddress.state"]')?.value).toBe("")
+			await waitFor(() => expect(procedures.cart.update.call).toHaveBeenCalledTimes(1))
+			await waitFor(() => expect(screen.getByRole("button", { name: "Place order" }).hasAttribute("disabled")).toBe(false))
+			expect(procedures.checkout.confirm.call).not.toHaveBeenCalled()
+			fireEvent.click(screen.getByRole("button", { name: "Place order" }))
+			await waitFor(() => expect(procedures.checkout.confirm.call).toHaveBeenCalledTimes(1))
+			expect(procedures.checkout.confirm.call.mock.calls[0]?.[0].body).toMatchObject({
+				billingAddress: { country: "GB", state: "" },
+				additionalFields: { [id]: "NEW", "consumer/quantity.a[0]'%%": "12" },
+			})
+			expect(procedures.checkout.confirm.call.mock.calls[0]?.[0].body).not.toHaveProperty("useShippingAsBilling")
+		},
+	)
 })
 
 describe("real form server channels", () => {
@@ -983,11 +972,11 @@ it("React Hook Form cannot resurrect server messages when reset occurs during re
 	expect(result.current.fields.errors).toEqual([])
 })
 
-// The host application assembles the request, including the empty method of a payment-free order.
+// Preparation supplies the empty method of a payment-free order and omits digital shipping.
 it.each([
 	["TanStack", TanStackCheckoutForm],
 	["React Hook Form", ReactHookFormCheckout],
-] as const)("%s hands decoded values to the host for a payment-free digital confirmation", async (_name, Component) => {
+] as const)("%s prepares a payment-free digital confirmation directly", async (_name, Component) => {
 	const { sources, wrapper } = setup()
 	sources.cart.needsShipping = false
 	sources.cart.needsPayment = false
@@ -1080,21 +1069,68 @@ it("editing and repricing an incomplete form use draft projection without requir
 it.each([
 	["TanStack", TanStackFieldsForm],
 	["React Hook Form", ReactHookFieldsForm],
-] as const)("%s example submits the decoded schema shape to its application callback", async (_name, Component) => {
+] as const)("%s example prepares a validated request with caller provider input", async (_name, Component) => {
 	const { sources, wrapper } = setup()
 	sources.cart.needsShipping = false
-	const submit = vi.fn(async (_values: CheckoutFieldValues) => {})
-	render(createElement(Component, { onSubmit: submit }), { wrapper })
+	render(createElement(Component, { input: { paymentData: [{ key: "token", value: "caller-token" }] } }), { wrapper })
 	await screen.findByLabelText("Reference")
 	fireEvent.change(screen.getByLabelText("Quantity"), { target: { value: "2" } })
 	fireEvent.click(screen.getByRole("button", { name: "Place order" }))
-	await waitFor(() => expect(submit).toHaveBeenCalledTimes(1))
-	const decoded = submit.mock.calls[0]?.[0]
-	expect(decoded).toMatchObject({
-		additionalFields: { [id]: "OLD", "consumer/quantity.a[0]'%%": 2 },
-		useShippingAsBilling: false,
+	await waitFor(() => expect(procedures.checkout.confirm.call).toHaveBeenCalledTimes(1))
+	const request = procedures.checkout.confirm.call.mock.calls[0]?.[0].body
+	expect(request).toMatchObject({
+		additionalFields: { [id]: "OLD", "consumer/quantity.a[0]'%%": "2" },
 		billingAddress: { country: "IN" },
-		shippingAddress: { country: "IN" },
+		paymentData: [{ key: "token", value: "caller-token" }],
+		expectedTotal: "12345",
 	})
+	expect(request).not.toHaveProperty("shippingAddress")
+	expect(request).not.toHaveProperty("useShippingAsBilling")
+})
+
+it.each([
+	["TanStack", TanStackFieldsForm],
+	["React Hook Form", ReactHookFieldsForm],
+] as const)("%s retains native number controls but reports SDK-incompatible request answers locally", async (_name, Component) => {
+	const { sources, wrapper } = setup()
+	const quantity = sources.storefront.address.fields.find((definition) => definition.label === "Quantity")
+	if (!quantity) throw new Error("Expected the quantity fixture")
+	quantity.type = "number"
+	quantity.schema = { type: "number", minimum: 1 }
+	render(createElement(Component), { wrapper })
+	const control = await screen.findByLabelText("Quantity")
+	fireEvent.change(control, { target: { value: "2" } })
+	fireEvent.click(screen.getByRole("button", { name: "Place order" }))
+	await waitFor(() => expect(control.getAttribute("aria-invalid")).toBe("true"))
 	expect(procedures.checkout.confirm.call).not.toHaveBeenCalled()
+})
+
+it.each([
+	["TanStack", TanStackFieldsForm],
+	["React Hook Form", ReactHookFieldsForm],
+] as const)("%s displays a mismatched total, preserves the draft and requires an explicit retry", async (_name, Component) => {
+	const { sources, wrapper } = setup()
+	const updated = { ...sources.cart, totals: { ...sources.cart.totals, total: 22222 } }
+	procedures.checkout.confirm.call.mockRejectedValueOnce(
+		Object.assign(new Error("Total increased"), {
+			code: "CHECKOUT_TOTAL_MISMATCH",
+			data: { cart: updated, expectedTotal: "12345", actualTotal: "22222" },
+		}),
+	)
+	render(createElement(Component), { wrapper })
+	const note = (await screen.findByLabelText("Order note")) as HTMLTextAreaElement
+	fireEvent.change(note, { target: { value: "keep this draft" } })
+	fireEvent.change(screen.getByLabelText("Quantity"), { target: { value: "12" } })
+	fireEvent.click(screen.getByRole("button", { name: "Place order" }))
+	await screen.findByText("Review the updated checkout total and submit again.")
+	expect(screen.getByText(/Total:.*222\.22/)).toBeTruthy()
+	expect(note.value).toBe("keep this draft")
+	expect(procedures.checkout.confirm.call).toHaveBeenCalledTimes(1)
+	expect(procedures.checkout.confirm.call.mock.calls[0]?.[0].body.expectedTotal).toBe("12345")
+	fireEvent.click(screen.getByRole("button", { name: "Place order" }))
+	await waitFor(() => expect(procedures.checkout.confirm.call).toHaveBeenCalledTimes(2))
+	expect(procedures.checkout.confirm.call.mock.calls[1]?.[0].body).toMatchObject({
+		expectedTotal: "22222",
+		customerNote: "keep this draft",
+	})
 })

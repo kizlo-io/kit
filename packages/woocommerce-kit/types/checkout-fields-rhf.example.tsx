@@ -1,40 +1,55 @@
 "use client"
 
 import { standardSchemaResolver } from "@hookform/resolvers/standard-schema"
+import type { ConfirmCheckoutInput } from "@kizlo/woocommerce-kit"
+import { useCart } from "@kizlo/woocommerce-kit/react/cart"
 import { useCheckout } from "@kizlo/woocommerce-kit/react/checkout"
-import { type CheckoutFieldsApi, type CheckoutFormFieldName, useCheckoutFields } from "@kizlo/woocommerce-kit/react/checkout-fields"
 import {
-	type CheckoutFieldValues,
+	type CheckoutFieldsApi,
+	type CheckoutFormFieldName,
+	type ReadyCheckoutFieldsApi,
+	useCheckoutFields,
+} from "@kizlo/woocommerce-kit/react/checkout-fields"
+import {
 	type CheckoutFormValues,
 	checkoutErrorMessages,
 	reactHookFormAdapter,
 } from "@kizlo/woocommerce-kit/react/checkout-fields/react-hook-form"
 import { Controller, type UseFormReturn, useForm } from "react-hook-form"
 import { CheckoutFieldControl } from "./checkout-field-control.example"
-import { useReactHookFormCheckoutDefaults } from "./checkout-form-rhf.example"
 
-export function ReactHookFormCheckout({ onSubmit }: { onSubmit: (values: CheckoutFieldValues) => Promise<void> }) {
+export function ReactHookFormCheckout({ input }: { input?: Partial<ConfirmCheckoutInput> }) {
+	const fields = useCheckoutFields()
+	if (!fields.isReady)
+		return (
+			<p>
+				{fields.reason === "paid" ? "This checkout is already paid." : (fields.error?.message ?? "Loading checkout…")}
+				{fields.error ? (
+					<button type="button" onClick={() => void fields.refresh()}>
+						Try again
+					</button>
+				) : null}
+			</p>
+		)
+	return <ReactHookFormCheckoutSession key={fields.session} ready={fields} input={input} />
+}
+
+function ReactHookFormCheckoutSession({ ready, input }: { ready: ReadyCheckoutFieldsApi; input?: Partial<ConfirmCheckoutInput> }) {
 	const checkout = useCheckout()
+	const cart = useCart()
 	const form: UseFormReturn<CheckoutFormValues> = useForm<CheckoutFormValues>({
 		mode: "onSubmit",
 		reValidateMode: "onBlur",
-		defaultValues: {},
-		resolver: (values, context, options) =>
-			adapter.withResolver(async (input, ctx, native) =>
-				fields.schema
-					? standardSchemaResolver(fields.schema)(input, ctx, native)
-					: { values: {}, errors: { root: { type: "kitSchema", message: "Checkout fields are not ready" } } },
-			)(values, context, options),
+		defaultValues: ready.defaultValues,
+		resolver: (values, context, options) => adapter.withResolver(standardSchemaResolver(ready.schema))(values, context, options),
 	})
 	const adapter = reactHookFormAdapter(form)
-	const fields: CheckoutFieldsApi = useCheckoutFields(adapter)
-	useReactHookFormCheckoutDefaults(form, fields)
+	const fields: CheckoutFieldsApi = useCheckoutFields(reactHookFormAdapter(form))
 	const register = (name: CheckoutFormFieldName) =>
 		form.register(name, {
 			onChange: () => fields.handleFieldChange(name, adapter.getFieldValue(name)),
 			onBlur: () => fields.handleFieldBlur(name),
 		})
-	if (!fields.schema) return <p>{fields.error?.message ?? "Loading checkout…"}</p>
 	return (
 		<form
 			noValidate
@@ -43,7 +58,12 @@ export function ReactHookFormCheckout({ onSubmit }: { onSubmit: (values: Checkou
 				if (checkout.isLocked || fields.unsupported.length) return
 				checkout.reset()
 				void form.handleSubmit(async (values) => {
-					if (!checkout.isLocked && fields.schema && !fields.unsupported.length) await onSubmit(fields.decode(values))
+					if (checkout.isLocked || fields.unsupported.length) return
+					try {
+						await checkout.confirmAsync(fields.toCheckout({ values, input }))
+					} catch {
+						// Kit publishes local and server failures through the form and checkout error channels.
+					}
 				})(event)
 			}}
 		>
@@ -154,7 +174,17 @@ export function ReactHookFormCheckout({ onSubmit }: { onSubmit: (values: Checkou
 					{issue.message}
 				</p>
 			))}
-			{fields.error ? <p role="alert">{fields.error.message}</p> : null}
+			{cart.cart ? <p>Total: {cart.format(cart.cart.totals.total)}</p> : null}
+			{fields.isFetching ? <p role="status">Refreshing checkout…</p> : null}
+			{fields.error ? (
+				<p role="alert">
+					{fields.error.message}
+					<button type="button" onClick={() => void fields.refresh()}>
+						Refresh checkout
+					</button>
+				</p>
+			) : null}
+			{fields.syncError ? <p role="alert">{fields.syncError.message}</p> : null}
 			{fields.unsupported.length ? <p>Some fields require application integration.</p> : null}
 			<button type="submit" disabled={checkout.isLocked || fields.unsupported.length > 0}>
 				Place order

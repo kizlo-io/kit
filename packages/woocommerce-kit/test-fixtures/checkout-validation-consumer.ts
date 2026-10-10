@@ -16,12 +16,13 @@ type ValidationIssue = Evidence &
 type ValidationData = { issues: ValidationIssue[] }
 type Base = RootProcedures<[ReturnType<typeof woocommerce>]>
 type CheckoutProcedures = Base["woocommerce"]["checkout"]
+type ConfirmErrors = CheckoutProcedures["confirm"] extends Procedure<"api", infer _Input, infer _Data, infer Errors> ? Errors : never
 // A consumer can register its own error schema; Kit must retain it without importing an SDK payload type.
 type Confirm = Procedure<
 	"api",
 	InferProcedureInput<CheckoutProcedures["confirm"]>,
 	Checkout,
-	{
+	Omit<ConfirmErrors, "CHECKOUT_VALIDATION_FAILED"> & {
 		CHECKOUT_VALIDATION_FAILED: { status: 400; data: ReturnType<typeof schemaType<ValidationData>> }
 	}
 >

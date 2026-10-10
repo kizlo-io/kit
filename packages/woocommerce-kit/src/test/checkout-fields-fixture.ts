@@ -60,6 +60,17 @@ export function fixtures(
 		itemCount: 2.25,
 		itemsWeight: 1.7,
 		needsShipping: true,
+		needsPayment: true,
+		paymentMethods: [{ id: "bacs", title: "Bank transfer", description: "", order: 0, enabled: true }],
+		currencyFormat: {
+			currencyCode: "INR",
+			currencySymbol: "₹",
+			currencyPrefix: "₹",
+			currencySuffix: "",
+			currencyMinorUnit: 2,
+			currencyDecimalSeparator: ".",
+			currencyThousandSeparator: ",",
+		},
 		items: [
 			{ productId: 42, variationId: null, quantity: 1.25, type: "simple" },
 			{ productId: 88, variationId: 91, quantity: 0.5, type: "variation" },
@@ -72,7 +83,15 @@ export function fixtures(
 		totals: { total: 12345, taxTotal: 321 },
 		extensions: evidence.cartExtensions,
 	} as unknown as Cart
-	const checkout = { ...values, cart, customerId: null, orderId: 12, orderKey: "key", paymentResult: null } as unknown as Checkout
+	const checkout = {
+		...values,
+		cart,
+		customerId: null,
+		orderId: 12,
+		orderKey: "key",
+		isPaid: false,
+		paymentResult: null,
+	} as unknown as Checkout
 	const storefront = {
 		address: {
 			fields,

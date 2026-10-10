@@ -571,3 +571,76 @@ it("counts both pending scoped mutations while only the first has started HTTP",
 	await drain()
 	expect(env.store.state.get().isLocked).toBe(false)
 })
+
+describe("total conflict publication", () => {
+	it.each([
+		[true, "pending"],
+		[false, "pending"],
+		[true, "completed"],
+		[false, "completed"],
+	] as const)("reconciles a read started during confirmation (cartEnabled: %s, read: %s)", async (cartEnabled, readState) => {
+		const env = setup(cartEnabled),
+			binding = env.bind(),
+			oldRead = deferred<Cart | Checkout>(),
+			freshRead = deferred<Cart | Checkout>(),
+			post = deferred<Checkout>(),
+			confirm = vi.fn(() => post.promise)
+		binding.enableCheckout()
+		const updated = { ...env.source.cart, totals: { ...env.source.cart.totals, total: 54321 } }
+		const procedure = cartEnabled ? env.procedures.cart.get.call : env.procedures.checkout.get.call
+		procedure.mockReturnValueOnce(oldRead.promise).mockReturnValueOnce(freshRead.promise)
+		const request = binding.reserve({ expectedTotal: "12345" })
+		const mutation = env.cache.getMutationCache().build(env.cache, {
+			mutationKey: checkoutMutationKey,
+			meta: { kitCheckoutRole: "confirmation" },
+			retry: 0,
+			mutationFn: confirm,
+			onError: () => binding.reviewTotal(request, readState === "pending" ? null : updated),
+		})
+		const pending = mutation.execute(request).catch(() => {})
+		await vi.waitFor(() => expect(confirm).toHaveBeenCalledTimes(1))
+		const read = env.cache
+			.fetchQuery<Cart | Checkout>({
+				queryKey: cartEnabled ? cartQueryKey : checkoutQueryKey,
+				staleTime: 0,
+				queryFn: ({ signal }) => (cartEnabled ? binding.readCart(signal) : binding.readCheckout(signal)),
+			})
+			.catch(() => {})
+		await vi.waitFor(() => expect(procedure).toHaveBeenCalledTimes(1))
+		if (readState === "completed") {
+			oldRead.resolve(cartEnabled ? env.source.cart : env.source.checkout)
+			await read
+		}
+		post.reject(new Error("Total mismatch"))
+		await pending
+		await vi.waitFor(() => expect(procedure).toHaveBeenCalledTimes(2))
+		expect(env.store.state.get().isLocked).toBe(true)
+		expect(env.cache.getQueryData<Cart>(cartQueryKey)?.totals.total).toBe(12345)
+		freshRead.resolve(cartEnabled ? updated : { ...env.source.checkout, cart: updated })
+		await vi.waitFor(() => expect(env.store.state.get().isLocked).toBe(false))
+		oldRead.resolve(cartEnabled ? env.source.cart : env.source.checkout)
+		await read
+		await drain()
+		expect(env.cache.getQueryData<Cart>(cartQueryKey)?.totals.total).toBe(54321)
+		expect(request.payload.expectedTotal).toBe("12345")
+		expect(confirm).toHaveBeenCalledTimes(1)
+		expect(procedure).toHaveBeenCalledTimes(2)
+		expect(cartEnabled ? env.procedures.checkout.get.call : env.procedures.cart.get.call).not.toHaveBeenCalled()
+		binding.dispose()
+	})
+	it.each(["current", "session", "revision", "cart"] as const)("accepts only current confirmation evidence (%s)", (change) => {
+		const env = setup(false),
+			binding = env.bind()
+		binding.enableCheckout()
+		const request = binding.reserve({ expectedTotal: "12345" })
+		const newer = { ...env.source.cart, totals: { ...env.source.cart.totals, total: 99999 } }
+		if (change === "session") env.cache.setQueryData(checkoutQueryKey, { ...env.source.checkout, orderId: 99, orderKey: "new" })
+		if (change === "revision") env.store.invalidateReads()
+		if (change === "cart") env.cache.setQueryData(cartQueryKey, newer)
+		const evidence = { ...env.source.cart, totals: { ...env.source.cart.totals, total: 54321 } }
+		binding.reviewTotal(request, evidence)
+		expect(env.cache.getQueryData(cartQueryKey)).toEqual(change === "current" ? evidence : change === "cart" ? newer : env.source.cart)
+		expect(env.procedures.cart.get.call).not.toHaveBeenCalled()
+		binding.discard(request)
+	})
+})

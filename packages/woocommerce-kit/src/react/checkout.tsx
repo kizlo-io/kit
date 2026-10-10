@@ -161,8 +161,11 @@ export function useCheckout(options?: CheckoutHookOptions): CheckoutApi {
 			}
 			notify(() => options?.onSuccess?.(checkoutSuccessEvent(checkout, input)))
 		},
-		onError: (error, { payload: input }, attempt) => {
+		onError: (error, request, attempt) => {
+			const { payload: input } = request
 			errors.syncSession(checkoutSession(queryClient.getQueryData<Checkout>(checkoutQueryKey)))
+			if (attempt !== undefined && errors.isCurrent(attempt) && error.code === "CHECKOUT_TOTAL_MISMATCH")
+				binding.reviewTotal(request, error.data.cart)
 			if (attempt !== undefined) errors.fail(attempt, error)
 			notify(() => options?.onError?.({ error, input, status: "error", type: "confirm_checkout" }))
 		},

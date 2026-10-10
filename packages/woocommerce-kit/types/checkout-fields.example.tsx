@@ -1,34 +1,45 @@
 "use client"
 
+import type { ConfirmCheckoutInput } from "@kizlo/woocommerce-kit"
+import { useCart } from "@kizlo/woocommerce-kit/react/cart"
 import { useCheckout } from "@kizlo/woocommerce-kit/react/checkout"
-import { type CheckoutFieldsApi, useCheckoutFields } from "@kizlo/woocommerce-kit/react/checkout-fields"
-import {
-	type CheckoutFieldValues,
-	type CheckoutFormValues,
-	checkoutFormErrorMessages,
-	tanstackFormAdapter,
-} from "@kizlo/woocommerce-kit/react/checkout-fields/tanstack-form"
+import { type CheckoutFieldsApi, type ReadyCheckoutFieldsApi, useCheckoutFields } from "@kizlo/woocommerce-kit/react/checkout-fields"
+import { checkoutFormErrorMessages, tanstackFormAdapter } from "@kizlo/woocommerce-kit/react/checkout-fields/tanstack-form"
 import { useForm } from "@tanstack/react-form"
-import { useState } from "react"
 import { CheckoutFieldControl } from "./checkout-field-control.example"
-import { useTanStackCheckoutDefaults, validateCheckoutForm } from "./checkout-form-tanstack.example"
 
-export function TanStackCheckoutForm({ onSubmit }: { onSubmit: (values: CheckoutFieldValues) => Promise<void> }) {
+export function TanStackCheckoutForm({ input }: { input?: Partial<ConfirmCheckoutInput> }) {
+	const fields = useCheckoutFields()
+	if (!fields.isReady)
+		return (
+			<p>
+				{fields.reason === "paid" ? "This checkout is already paid." : (fields.error?.message ?? "Loading checkout…")}
+				{fields.error ? (
+					<button type="button" onClick={() => void fields.refresh()}>
+						Try again
+					</button>
+				) : null}
+			</p>
+		)
+	return <TanStackCheckoutSession key={fields.session} ready={fields} input={input} />
+}
+
+function TanStackCheckoutSession({ ready, input }: { ready: ReadyCheckoutFieldsApi; input?: Partial<ConfirmCheckoutInput> }) {
 	const checkout = useCheckout()
-	const [defaults, setDefaults] = useState<CheckoutFormValues>({})
+	const cart = useCart()
 	const form = useForm({
-		defaultValues: defaults,
-		validators: {
-			onChange: ({ value }) => validateCheckoutForm(fields, value),
-			onSubmit: ({ value }) => validateCheckoutForm(fields, value),
-		},
-		onSubmit: async ({ value }) => {
-			if (fields.schema && !fields.unsupported.length && !checkout.isLocked) await onSubmit(fields.decode(value))
+		defaultValues: ready.defaultValues,
+		validators: { onChange: ready.schema, onSubmit: ready.schema },
+		onSubmit: async () => {
+			if (fields.unsupported.length || checkout.isLocked) return
+			try {
+				await checkout.confirmAsync(fields.toCheckout({ input }))
+			} catch {
+				// Kit publishes local and server failures through the form and checkout error channels.
+			}
 		},
 	})
 	const fields: CheckoutFieldsApi = useCheckoutFields(tanstackFormAdapter(form))
-	useTanStackCheckoutDefaults(form, fields, setDefaults)
-	if (!fields.schema) return <p>{fields.error?.message ?? "Loading checkout…"}</p>
 	return (
 		<form
 			noValidate
@@ -200,7 +211,17 @@ export function TanStackCheckoutForm({ onSubmit }: { onSubmit: (values: Checkout
 					{issue.message}
 				</p>
 			))}
-			{fields.error ? <p role="alert">{fields.error.message}</p> : null}
+			{cart.cart ? <p>Total: {cart.format(cart.cart.totals.total)}</p> : null}
+			{fields.isFetching ? <p role="status">Refreshing checkout…</p> : null}
+			{fields.error ? (
+				<p role="alert">
+					{fields.error.message}
+					<button type="button" onClick={() => void fields.refresh()}>
+						Refresh checkout
+					</button>
+				</p>
+			) : null}
+			{fields.syncError ? <p role="alert">{fields.syncError.message}</p> : null}
 			{fields.unsupported.length ? <p>Some fields require application integration.</p> : null}
 			<button type="submit" disabled={checkout.isLocked || fields.unsupported.length > 0}>
 				Place order
