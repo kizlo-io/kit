@@ -13,12 +13,11 @@ import { useWooCommerceContext } from "./context"
 import { addressMutationKey, addressQueueKey } from "./session-queries"
 import { storefrontQueryKey, useStorefront } from "./storefront"
 
-function matchesSavedAddresses(input: CartAddressSnapshotInput, cart: Cart | null, failedInput: UpdateCartInput): boolean {
+function matchesSavedAddresses(input: CartAddressSnapshotInput, cart: Cart | null): boolean {
 	if (!cart || (!input.shippingAddress && !input.billingAddress)) return false
 	return (["shippingAddress", "billingAddress"] as const).every((key) => {
 		const address = input[key]
-		if (!address) return !failedInput[key]
-		if (!Object.keys(failedInput[key] ?? {}).every((field) => field in address)) return false
+		if (!address) return true
 		const saved = cart[key]
 		if (!address.country.trim() || !saved || shippingQuoteSignature(address) !== shippingQuoteSignature(saved)) return false
 		return Object.entries(address).every(
@@ -40,7 +39,7 @@ export function useCartAddressTransport(
 } {
 	useStorefront()
 	const scope = useMemo(() => addressMutationKey, [])
-	const { error, failedAddressInput, isPending, mutate, mutateAsync, reset, cancelFailures, rejectAdmission } = useCartAction(
+	const { error, isPending, mutate, mutateAsync, reset, cancelFailures, rejectAdmission } = useCartAction(
 		scope,
 		options,
 		true,
@@ -92,12 +91,12 @@ export function useCartAddressTransport(
 
 	const clearSavedFailure = useCallback(
 		(input: CartAddressSnapshotInput, cart: Cart | null) => {
-			if (matchesSavedAddresses(input, cart, failedAddressInput ?? {})) {
-				cancelFailures()
+			if (matchesSavedAddresses(input, cart)) {
+				cancelFailures({ type: "update_customer", input })
 				reset()
 			}
 		},
-		[cancelFailures, failedAddressInput, reset],
+		[cancelFailures, reset],
 	)
 
 	const push = useDebouncedCallback(() => {

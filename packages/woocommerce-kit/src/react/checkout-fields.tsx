@@ -168,7 +168,8 @@ export function useCheckoutFields(options: CheckoutFieldsOptions = {}): Checkout
 		committedState.current = next
 		setState(next)
 		rememberDependencies(values)
-		if (active) sync.refresh()
+		// Recovery may refresh the sources, but only a new edit or explicit retry may resend a refused draft.
+		if (active && !transportRef.current.error) sync.refresh()
 	}, [sources, defaults, rememberDependencies, active, sync])
 	useLayoutEffect(() => {
 		sessionRef.current = session

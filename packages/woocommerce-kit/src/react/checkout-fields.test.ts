@@ -592,6 +592,8 @@ async function syncingForm(validate = vi.fn<(name: CheckoutFormFieldName) => boo
 	client.setQueryData(cartQueryKey, source.cart)
 	client.setQueryData(checkoutQueryKey, source.checkout)
 	client.setQueryData(storefrontQueryKey, source.storefront)
+	procedures.cart.get.call.mockResolvedValue(source.cart)
+	procedures.checkout.get.call.mockResolvedValue(source.checkout)
 	procedures.cart.update.call.mockImplementation(async ({ body }) => ({ ...client.getQueryData<Cart>(cartQueryKey), ...body }))
 	const setValues = (updates: readonly CheckoutFieldUpdate[]) => {
 		for (const { name, value } of updates) {
@@ -769,6 +771,7 @@ describe("validated automatic checkout address syncing", () => {
 		await env.tick()
 		expect(env.result.current.fields.syncError).toBe(error)
 		await env.tick(4000)
+		expect(procedures.cart.get.call).toHaveBeenCalledTimes(1)
 		expect(procedures.cart.update.call).toHaveBeenCalledTimes(1)
 		act(() => env.result.current.fields.handleFieldBlur("billingAddress.address1"))
 		await env.tick(20)

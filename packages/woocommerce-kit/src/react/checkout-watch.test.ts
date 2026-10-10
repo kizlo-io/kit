@@ -49,6 +49,49 @@ afterEach(() => {
 })
 
 describe("application checkout registrations", () => {
+	it("does not resurrect recovered mutation history after a drained selector is deleted", async () => {
+		const env = setup()
+		env.watch.register(env.owner, [{ keys: ["save"], type: "mutation" }])
+		await env
+			.mutation(["save"], async () => {
+				throw new Error("old")
+			})
+			.execute(undefined)
+			.catch(() => {})
+		env.watch.unregister(env.owner)
+		expect(env.watch.reasons().size).toBe(1)
+		await env.mutation(["save"], async () => 1).execute(undefined)
+		expect(env.watch.reasons().size).toBe(0)
+		env.watch.register(env.owner, [{ keys: ["save"], type: "mutation" }])
+		expect(env.watch.reasons().size).toBe(0)
+	})
+	it("keeps cold recovery history specific to its prefix", async () => {
+		const env = setup()
+		env.watch.register(env.owner, [{ keys: ["save"], type: "mutation" }])
+		await env
+			.mutation(["save", "a"], async () => {
+				throw new Error("a failed")
+			})
+			.execute(undefined)
+			.catch(() => {})
+		await env.mutation(["save", "b"], async () => 1).execute(undefined)
+		env.watch.unregister(env.owner)
+		env.watch.register(env.owner, [{ keys: ["save", "a"], type: "mutation" }])
+		expect(env.watch.reasons().size).toBe(1)
+	})
+	it("stops matching withdrawn idle prefixes", () => {
+		const env = setup()
+		for (let index = 0; index < 1000; index++) {
+			env.watch.register(env.owner, [{ keys: ["unused", index], type: "query" }])
+			env.watch.unregister(env.owner)
+		}
+		const query = env.cache.getQueryCache().build(env.cache, { queryKey: ["unrelated"] })
+		const queryKey = query.queryKey,
+			access = vi.fn(() => queryKey)
+		Object.defineProperty(query, "queryKey", { get: access })
+		query.setData(1)
+		expect(access).not.toHaveBeenCalled()
+	})
 	const policies: CheckoutDependency["block"][] = [
 		undefined,
 		{},

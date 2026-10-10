@@ -292,20 +292,35 @@ export type CartShippingRatesApi = {
  */
 export function useCartShippingRates(options?: CartHookOptions): CartShippingRatesApi {
 	const scope = useMemo(() => [...cartMutationKey, "shippingRate"], [])
-	const { cart, error, isPending, mutate, mutateAsync, reset, cancelFailures } = useCartAction(scope, options, true)
+	const { cart, error, isPending, mutate, mutateAsync, reset, cancelFailures, restore } = useCartAction(scope, options, true)
 	const cancel = useCallback(() => {
 		cancelFailures()
 		reset()
 	}, [cancelFailures, reset])
 
-	const selectShippingRate = useCallback(
-		(rateId: string, packageId?: string | number | null) => mutate({ packageId, rateId, type: "select_shipping_rate" }),
-		[mutate],
+	const restoreSelection = useCallback(
+		(rateId: string, packageId?: string | number | null) => {
+			const pkg = cart?.shippingPackages.find((pkg, index) => (packageId == null ? index === 0 : String(pkg.id) === String(packageId)))
+			const selected = pkg?.rates.filter((rate) => rate.selected)
+			return (
+				!isPending && selected?.length === 1 && selected[0]?.id === rateId && restore({ packageId, rateId, type: "select_shipping_rate" })
+			)
+		},
+		[cart, isPending, restore],
 	)
-
+	const selectShippingRate = useCallback(
+		(rateId: string, packageId?: string | number | null) => {
+			if (restoreSelection(rateId, packageId)) return
+			mutate({ packageId, rateId, type: "select_shipping_rate" })
+		},
+		[mutate, restoreSelection],
+	)
 	const selectShippingRateAsync = useCallback(
-		(rateId: string, packageId?: string | number | null) => mutateAsync({ packageId, rateId, type: "select_shipping_rate" }),
-		[mutateAsync],
+		async (rateId: string, packageId?: string | number | null) => {
+			if (cart && restoreSelection(rateId, packageId)) return cart
+			return mutateAsync({ packageId, rateId, type: "select_shipping_rate" })
+		},
+		[cart, mutateAsync, restoreSelection],
 	)
 
 	return {
@@ -391,6 +406,7 @@ type QuantityFieldOptions = {
 	limits: CartItemLimits
 	/** Writes one quantity to the store, or skips a missing line. */
 	write: (quantity: number) => Promise<Cart | undefined>
+	restored: (quantity: number) => void
 }
 
 /**
@@ -400,7 +416,7 @@ type QuantityFieldOptions = {
  * Module-private on purpose. This was a second exported hook, which left every consumer wiring the two together by hand and
  * getting the clamping wrong; `useCartItem` is the whole control now.
  */
-function useQuantityField({ autoCommit, committed, debounceMs, itemKey, limits, write }: QuantityFieldOptions): CartItemQuantity {
+function useQuantityField({ autoCommit, committed, debounceMs, itemKey, limits, write, restored }: QuantityFieldOptions): CartItemQuantity {
 	const keyed = itemKey !== undefined
 	const keyedRef = useRef(keyed)
 	keyedRef.current = keyed
@@ -425,6 +441,7 @@ function useQuantityField({ autoCommit, committed, debounceMs, itemKey, limits, 
 	// The quantity last handed to the store, so the unmount flush does not send a second copy of a save already in flight.
 	const sentRef = useRef<number | null>(null)
 	const writeLatest = useLatest(write)
+	const restoredLatest = useLatest(restored)
 	const autoCommitLatest = useLatest(autoCommit)
 
 	const setPendingQuantity = useCallback(
@@ -439,6 +456,7 @@ function useQuantityField({ autoCommit, committed, debounceMs, itemKey, limits, 
 	const saveAsync = useCallback(
 		async (quantity: number) => {
 			sentRef.current = quantity
+			const restore = restoredLatest.current
 			try {
 				const request = writeLatest.current(quantity)
 				markQueued(false)
@@ -446,9 +464,10 @@ function useQuantityField({ autoCommit, committed, debounceMs, itemKey, limits, 
 			} finally {
 				// Both APIs drop a refused edit and fall back to the acknowledged line quantity.
 				if (pendingRef.current === quantity) setPendingQuantity(null)
+				if (pendingRef.current === null) restore(quantity)
 			}
 		},
-		[setPendingQuantity, writeLatest, markQueued],
+		[setPendingQuantity, writeLatest, markQueued, restoredLatest],
 	)
 
 	const save = useCallback((quantity: number) => saveAsync(quantity).then(noop, noop), [saveAsync])
@@ -500,10 +519,10 @@ function useQuantityField({ autoCommit, committed, debounceMs, itemKey, limits, 
 	useEffect(
 		() => () => {
 			const quantity = pendingRef.current
-			if (quantity !== null && quantity !== sentRef.current && autoCommitLatest.current) void writeLatest.current(quantity).then(noop, noop)
+			if (quantity !== null && quantity !== sentRef.current && autoCommitLatest.current) void save(quantity)
 			markQueued(false)
 		},
-		[autoCommitLatest, writeLatest, markQueued],
+		[autoCommitLatest, save, markQueued],
 	)
 
 	const apply = useCallback(
@@ -747,7 +766,7 @@ export function useCartItem(first?: string | CartItemOptions, second?: CartItemO
 	const { autoCommit = true, debounceMs = 400, defaultQuantity = 1, limits: draftLimits } = options ?? {}
 
 	const scope = useMemo(() => [...cartMutationKey, "item", key ?? "add"], [key])
-	const { cart, error, format, isPending, mutate, mutateAsync, reset } = useCartAction(scope, options)
+	const { cart, error, format, isPending, mutate, mutateAsync, reset, restore } = useCartAction(scope, options)
 	const item = key === undefined ? null : (cart?.items.find((candidate) => candidate.key === key) ?? null)
 
 	const writeQuantity = useCallback(
@@ -775,6 +794,9 @@ export function useCartItem(first?: string | CartItemOptions, second?: CartItemO
 		itemKey: key,
 		limits,
 		write: writeQuantity,
+		restored: (quantity) => {
+			if (key !== undefined) restore({ type: "update_cart_item", key, quantity, previousQuantity: item?.quantity ?? 0 })
+		},
 	})
 
 	const draft = quantity.value

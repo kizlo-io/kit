@@ -125,7 +125,7 @@ describe("awaitable checkout", () => {
 	it.each([false, true])("awaits submission settlement (failure: %s) and retries", async (fails) => {
 		const fetched = storeCheckout(null, 2)
 		const confirmed = storeCheckout(42, 0)
-		const error = storeError("PAYMENT_DECLINED")
+		const error = storeError("CHECKOUT_PAYMENT_FAILED")
 		procedures.get.call.mockResolvedValue(fetched)
 		let answer!: (checkout: Checkout) => void
 		let refuse!: (error: unknown) => void

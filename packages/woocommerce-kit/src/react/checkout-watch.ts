@@ -21,6 +21,7 @@ type Selector = {
 	pending: Map<object, { generation: number; promise?: Promise<unknown> }>
 	failures: Map<string, unknown>
 	seen: WeakSet<object>
+	failureMutation: Mutation | null
 }
 const queryRoots = [cartQueryKey, checkoutQueryKey]
 const mutationRoots = [cartMutationKey, checkoutMutationKey]
@@ -75,6 +76,21 @@ export function checkoutWatchSignature(dependencies?: readonly CheckoutDependenc
 /** Registrations belong to consumers; observed work belongs to the cache until successful recovery. */
 export function createCheckoutWatch(cache: QueryClient, changed: () => void, generation: () => number) {
 	const selectors = new Map<string, Selector>()
+	const prune = (selector: Selector) => {
+		pruneRetired(selector)
+		if (!selector.owners.size && !selector.retired.size && !selector.pending.size && !selector.failures.size) selectors.delete(selector.id)
+	}
+	const recoveredMutations = new WeakMap<Mutation, Set<string>>()
+	const recoverMutation = (selector: Selector) => {
+		if (!selector.failureMutation) return
+		let prefixes = recoveredMutations.get(selector.failureMutation)
+		if (!prefixes) {
+			prefixes = new Set()
+			recoveredMutations.set(selector.failureMutation, prefixes)
+		}
+		prefixes.add(selector.id)
+		selector.failureMutation = null
+	}
 	const canceledQueries = new WeakSet<Query>()
 	const queryGenerations = new WeakMap<Query, number>()
 	// A retry can retain a previous error with cached data; its start generation does not own that error.
@@ -118,7 +134,7 @@ export function createCheckoutWatch(cache: QueryClient, changed: () => void, gen
 					if (error instanceof CancelledError && selector.pending.get(query) === entry && (!query.promise || query.promise === promise)) {
 						selector.pending.delete(query)
 						canceledQueries.add(query)
-						pruneRetired(selector)
+						prune(selector)
 						changed()
 					}
 				})
@@ -139,7 +155,7 @@ export function createCheckoutWatch(cache: QueryClient, changed: () => void, gen
 			selector.seen.add(query)
 			if (query.state.status === "error" && !refusal(query.state.error)) selector.failures.set(query.queryHash, query.state.error)
 		}
-		pruneRetired(selector)
+		prune(selector)
 	}
 	const observeMutation = (selector: Selector, mutation: Mutation, cold = false) => {
 		if (!matchesMutation(selector, mutation) || !applicable(selector)) return
@@ -150,18 +166,25 @@ export function createCheckoutWatch(cache: QueryClient, changed: () => void, gen
 		} else if (pending !== undefined) {
 			selector.pending.delete(mutation)
 			if (pending?.generation === generation() && !refusal(mutation.state.error)) {
-				if (mutation.state.status === "error") selector.failures.set(selector.id, mutation.state.error)
-				else if (mutation.state.status === "success") selector.failures.clear()
+				if (mutation.state.status === "error") {
+					selector.failures.set(selector.id, mutation.state.error)
+					recoverMutation(selector)
+					selector.failureMutation = mutation
+				} else if (mutation.state.status === "success") {
+					selector.failures.clear()
+					recoverMutation(selector)
+					selector.failureMutation = null
+				}
 			}
 		} else if (cold && !selector.seen.has(mutation) && (mutationGenerations.get(mutation) ?? generation()) === generation()) {
 			selector.seen.add(mutation)
-			if (mutation.state.status === "error" && !refusal(mutation.state.error)) selector.failures.set(selector.id, mutation.state.error)
+			if (mutation.state.status === "error" && !refusal(mutation.state.error) && !recoveredMutations.get(mutation)?.has(selector.id)) {
+				selector.failures.set(selector.id, mutation.state.error)
+				recoverMutation(selector)
+				selector.failureMutation = mutation
+			}
 		}
-		pruneRetired(selector)
-	}
-	const scan = (selector: Selector) => {
-		if (selector.kind === "query") for (const query of cache.getQueryCache().getAll()) observeQuery(selector, query)
-		else for (const mutation of cache.getMutationCache().getAll()) observeMutation(selector, mutation, true)
+		prune(selector)
 	}
 	const unsubscribeQueries = cache.getQueryCache().subscribe((event) => {
 		if (event.type === "updated" && event.action.type === "fetch") queryGenerations.set(event.query, generation())
@@ -194,52 +217,67 @@ export function createCheckoutWatch(cache: QueryClient, changed: () => void, gen
 		if (relevant) changed()
 	})
 	return {
-		refresh() {
+		refresh(queries = cache.getQueryCache().getAll(), mutations = cache.getMutationCache().getAll()) {
 			for (const selector of selectors.values()) {
 				if (!applicable(selector)) continue
-				if (selector.kind === "query") for (const query of cache.getQueryCache().getAll()) observeQuery(selector, query)
-				else for (const mutation of cache.getMutationCache().getAll()) observeMutation(selector, mutation)
+				if (selector.kind === "query") for (const query of queries) observeQuery(selector, query)
+				else for (const mutation of mutations) observeMutation(selector, mutation)
 			}
 		},
 		register(owner: object, dependencies?: readonly CheckoutDependency[]) {
 			const current = normalizeDependencies(dependencies)
+			const queries = cache.getQueryCache().getAll(),
+				mutations = cache.getMutationCache().getAll()
 			for (const { id, kind, key, policy } of current.values()) {
 				let selector = selectors.get(id)
 				if (!selector) {
-					selector = { id, kind, key, owners: new Map(), retired: new Map(), pending: new Map(), failures: new Map(), seen: new WeakSet() }
+					selector = {
+						id,
+						kind,
+						key,
+						owners: new Map(),
+						retired: new Map(),
+						pending: new Map(),
+						failures: new Map(),
+						seen: new WeakSet(),
+						failureMutation: null,
+					}
 					selectors.set(id, selector)
 				}
 				selector.retired.delete(owner)
 				selector.owners.set(owner, policy)
-				scan(selector)
+				if (selector.kind === "query") for (const query of queries) observeQuery(selector, query)
+				else for (const mutation of mutations) observeMutation(selector, mutation, true)
 			}
 			for (const selector of selectors.values()) {
 				if (!current.has(selector.id)) retire(selector, owner)
-				pruneRetired(selector)
+				prune(selector)
 			}
 			changed()
 		},
 		unregister(owner: object) {
 			for (const selector of selectors.values()) {
 				retire(selector, owner)
-				pruneRetired(selector)
+				prune(selector)
 			}
 			changed()
 		},
 		replaceSession() {
+			const queries = cache.getQueryCache().getAll(),
+				mutations = cache.getMutationCache().getAll()
 			// Tag even currently unregistered history so a later registration cannot adopt old-session errors/work.
-			for (const query of cache.getQueryCache().getAll()) {
+			for (const query of queries) {
 				if (!queryGenerations.has(query)) queryGenerations.set(query, generation() - 1)
 				if (!queryOutcomes.has(query)) queryOutcomes.set(query, generation() - 1)
 			}
-			for (const mutation of cache.getMutationCache().getAll())
-				if (!mutationGenerations.has(mutation)) mutationGenerations.set(mutation, generation() - 1)
+			for (const mutation of mutations) if (!mutationGenerations.has(mutation)) mutationGenerations.set(mutation, generation() - 1)
 			for (const selector of selectors.values()) {
 				selector.failures.clear()
-				pruneRetired(selector)
+				selector.failureMutation = null
+				prune(selector)
 				// Settled cache history predates replacement; only new activity can latch a new-session failure.
-				for (const query of cache.getQueryCache().getAll()) selector.seen.add(query)
-				for (const mutation of cache.getMutationCache().getAll()) selector.seen.add(mutation)
+				for (const query of queries) selector.seen.add(query)
+				for (const mutation of mutations) selector.seen.add(mutation)
 			}
 		},
 		get pending() {

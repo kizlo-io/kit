@@ -18,7 +18,7 @@ import { checkoutMutationKey } from "../session-keys"
 import type { Checkout, CheckoutError, ConfirmCheckoutInput } from "../types"
 import { useCheckoutErrorState, useCheckoutErrorStore } from "./checkout-error-store"
 import type { CheckoutRequest } from "./checkout-lock-cache"
-import { useCheckoutLockState, useCheckoutLockStore, useCheckoutReadiness } from "./checkout-lock-store"
+import { useCheckoutLockState, useCheckoutLockStore } from "./checkout-lock-store"
 import { type CheckoutDependency, checkoutWatchSignature } from "./checkout-watch"
 import { useWooCommerceContext } from "./context"
 import { notify } from "./notify"
@@ -126,7 +126,6 @@ export function useCheckout(options?: CheckoutHookOptions): CheckoutApi {
 	useLayoutEffect(() => binding.watch.register(owner, watchOptions), [binding, owner, watchOptions])
 	useLayoutEffect(() => () => binding.watch.unregister(owner), [binding, owner])
 	const lockState = useCheckoutLockState(locks)
-	useCheckoutReadiness(binding)
 	useLayoutEffect(() => binding.enableCheckout(), [binding])
 	const errors = useCheckoutErrorStore()
 	const errorState = useCheckoutErrorState(errors)
@@ -246,7 +245,7 @@ export function useCheckout(options?: CheckoutHookOptions): CheckoutApi {
 		checkout: checkoutQuery.data ?? null,
 		confirm,
 		confirmAsync,
-		error: errorState.error ?? checkoutQuery.error,
+		error: binding.confirmationError ?? errorState.error ?? checkoutQuery.error,
 		isLoading: checkoutQuery.isPending,
 		isPending,
 		isLocked: lockState.isLocked,
