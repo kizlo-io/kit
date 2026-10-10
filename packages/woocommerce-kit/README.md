@@ -263,7 +263,7 @@ controls resolve `undefined`. A failure rejects and discards that edit, leaving 
 set the desired quantity again to retry. The existing `quantity.commit(): Promise<void>` and automatic saves still swallow
 request failures and report them on the hook. `refresh()` still resolves after refetching.
 
-Item/coupon errors stay on their acting observer until reset or another action. Address/shipping errors report the latest completed failure across observers. Checkout retains a feature failure through retries and cache eviction until a same-feature success or explicit abandonment. Item/coupon `reset()` dismisses only the settled failure it reports; address/shipping `reset()` dismisses presentation while `cancel()` abandons the failed feature draft. Pending requests remain protected.
+Item/coupon errors stay on their acting observer until reset or another action. Address/shipping errors report the latest completed failure across observers. Checkout retains unresolved changes separately from displayed errors; an unrelated action cannot clear them. Item/coupon `reset()` dismisses only the settled failure it reports; address/shipping `reset()` dismisses presentation while `cancel()` abandons the failed feature draft. Pending requests remain protected.
 
 Direct calls are independent requests, including concurrent calls on one hook. Async handlers do not prevent duplicate
 submissions or add an idempotency guarantee. Address coalescing is the existing exception. A form library should return the
@@ -343,8 +343,8 @@ and any form validation it needs; the hook does not combine it with the default 
 
 `useCart().isRepricing` is shared across components and covers queued snapshots and actual address requests. Use it to
 show “Updating…” beside totals while leaving fields editable. `isMutating` and the address hook's `isPending` describe
-requests only. Checkout readiness is shared separately: `useCheckout().isLocked` covers address and keyed quantity queues, all pending/paused writes, retained
-feature failures, required data/refetches, shipping prerequisites and confirmation. A failed required save keeps checkout locked through `reset()`. Retry it,
+requests only. Checkout readiness is shared separately: `useCheckout().isLocked` covers address and keyed quantity queues, all pending/paused writes, unresolved
+required changes, required loading/recovery, shipping prerequisites and confirmation. A failed required save keeps checkout locked through `reset()`. Retry it,
 return to the acknowledged address, or call `useCartAddress().cancel()` and restore the form from the cart. Cancellation
 abandons queued edits and settled failed drafts; dispatched requests retain protection until settlement. Unmount cancels queued edits; dispatched requests and retained failures remain protected.
 
@@ -511,23 +511,46 @@ The controller matches the cart/checkout namespaces by inclusive prefixes, so it
 need no separate registration. A feature contributes one automatic entry, such as `cart.address`, `cart.item` or `cart.coupon`.
 It watches reads as well as writes; storefront and product-search requests remain outside checkout readiness.
 
-All pending requests count, including paused requests and older calls whose observers moved on. Each mutation feature retains
-its latest **completed** outcome: if B succeeds and A later fails, the feature stays locked; if B fails and A later succeeds,
-the feature clears. Starting a retry does not clear the failure. A success in another feature cannot clear it, and cache GC or
-unmount cannot resolve it. Address/shipping hooks read that same shared error; item/coupon hooks keep entity-local errors.
-Their `reset()` can dismiss the settled failure they report, without clearing a newer failure from another entity.
+All pending writes count, including paused requests and older calls whose observers moved on. Errors remain visible
+independently of blocking. Known contract rejections of coupons and additions release their blocker after settlement;
+checkout can proceed with the acknowledged coupons and totals without clearing input or dismissing the error. Quantity
+controls restore the acknowledged quantity after a refused save, and refused removal leaves the acknowledged line visible.
+These restored item errors do not keep checkout locked.
 
-Address/shipping `reset()` dismisses presentation; `cancel()` or a safe return to the acknowledged address abandons the failed
-draft. Both queued address edits and keyed quantity edits block before HTTP, including `autoCommit: false` edits awaiting
+| Internal work | When it blocks checkout |
+| -- | -- |
+| Coupons and additions | While pending; uncertain outcomes require recovery |
+| Address, item changes and shipping selection | While pending/queued or an intended change remains unresolved |
+| Cart and checkout reads | While required data is missing/untrusted or required recovery has not succeeded |
+| Shipping requirements | While any physical package lacks exactly one valid selected rate; digital carts need none |
+| Reconciliation | Until an authoritative read establishes safe acknowledged state |
+| Confirmation | Through settlement; uncertain outcomes also prevent another submission |
+
+Requests and failures retain their operation/entity identity while contributing one public entry per feature. Completion
+order determines the outcome for the same task; success or optional failure in another task cannot erase an unsaved address,
+item or shipping choice. Starting a retry, cache eviction and unmount do not resolve required work. Unknown internal features
+keep conservative pending/error protection. Item/coupon hooks keep entity-local errors; address/shipping hooks share the
+latest completed error. `reset()` dismisses presentation without resolving a mismatch. Address/shipping `cancel()` or a safe
+return to acknowledged values abandons settled drafts; uncertain writes still need authoritative recovery first.
+Address restoration clears failures only for fields supplied in the saved snapshot. Shipping acknowledgment follows the
+failed package's identity, including when its ID was omitted.
+
+Both queued address edits and keyed quantity edits block before HTTP, including `autoCommit: false` edits awaiting
 `quantity.commit()`. Use `quantity.revert()` to discard an unsent edit. Keyless product quantity drafts do not change the cart
 and do not block checkout. Queue-to-request handoff and autosave unmount flush stay protected.
+An autosave flushed on unmount restores refused quantities through the same recovery policy as a mounted save.
 
-Cart and checkout snapshots are required, including in `cartEnabled: false` mode. Background/paused refetches and failed
-refetches with old data block until a successful refresh; idle disabled optional queries and unused historical parameters do
-not. Shipping requires exactly one selected rate in every physical package, even when the shipping hook is absent. Digital
-carts need none. Overlapping full-cart writes stay protected through an authoritative reconciliation read after work drains;
-seeded mode refreshes checkout instead of launching a separate cart bootstrap. A failed reconciliation needs a successful
-refresh. Form validity remains an additional application concern.
+Cart and checkout snapshots are required, including in `cartEnabled: false` mode. Routine background fetches, pauses and
+failures leave a trustworthy acknowledged checkout usable, while their hook errors remain visible. Cached presence alone
+does not establish trust after a failed bootstrap, eviction, mismatched session replacement or unresolved write. An idle
+optional query or unused historical parameter does not block.
+Manually republishing cached data after an untrusted required-read failure cannot replace successful recovery; a current
+Kit cart response can establish a new acknowledged cart snapshot.
+
+Overlapping full-cart writes and uncertain outcomes (timeouts or unknown error codes, including coupon writes) trigger an
+authoritative recovery read after pending/queued work drains. Seeded mode refreshes checkout instead of launching a separate
+cart read. Failed recovery remains blocking until a successful refresh; dismissing errors or manually republishing cached
+data does not bypass it. Writes are never replayed automatically. Form validity remains an additional application concern.
 
 Register application work with inclusive prefixes in `useCheckout({ dependencies })`. Use the same app QueryClient and give
 every watched mutation a `mutationKey`; query keys already identify queries. No manual acquire/release lifecycle is needed.
@@ -610,8 +633,12 @@ reentrant attempts issue no HTTP. `confirmAsync` rejects with `CheckoutLockedErr
 reports it through `error`, `onError` and `onSettled`, without `onStart`. Confirmation stays reserved through cache publication
 and settled callbacks. Conflicting Kit cart actions and queued edits fail with `CHECKOUT_CONFIRMING`. A session
 replaced before an admitted request starts fails with `CHECKOUT_SESSION_CHANGED`; SDK failures retain their original error.
-A failed confirmation preserves its error/server-field issues while allowing another attempt after settlement. This retry
-exception applies only to confirmation, so other watched checkout features still retain failures.
+A known unsuccessful confirmation preserves its error/server-field issues while permitting correction and explicit retry
+after settlement. A timeout or unknown confirmation error remains visible and blocks another POST, including after `reset()`
+or refresh. Recovery reads checkout and, when the original order identity is available, reads that order. A paid order is
+reported as already placed and remains protected against duplicate submission. Draft/unpaid snapshots cannot prove that the
+original POST failed; when the available contracts cannot establish its outcome, checkout remains blocked. No confirmation
+is replayed automatically.
 
 Session replacement clears old settled outcomes and invalidates old Kit result publication; cache absence alone does not
 resolve a failure or cancel a dispatched mutation. Already dispatched writes keep the replacement protected until settlement,

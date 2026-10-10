@@ -33,6 +33,18 @@ function deferred<T = Cart>() {
 	return { promise, resolve, reject }
 }
 const drain = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
+
+it("avoids per-prefix cache scans on a routine cart publication", () => {
+	const env = setup(),
+		binding = env.bind()
+	binding.watch.register(
+		{},
+		["a", "b", "c"].map((key) => ({ keys: [key], type: "query" as const })),
+	)
+	const scans = vi.spyOn(env.cache.getQueryCache(), "getAll")
+	env.cache.setQueryData(cartQueryKey, { ...env.source.cart, itemCount: 7 })
+	expect(scans).toHaveBeenCalledTimes(1)
+})
 afterEach(() => {
 	onlineManager.setOnline(true)
 	caches.splice(0).forEach((cache) => {
@@ -42,6 +54,41 @@ afterEach(() => {
 })
 
 describe("cache-derived readiness", () => {
+	it("does not turn a cold definitive coupon rejection back into a blocker", async () => {
+		const env = setup(),
+			previous = env.bind(),
+			error = { code: "CART_COUPON_INVALID", message: "Invalid code" }
+		const mutation = env.cache.getMutationCache().build(env.cache, {
+			mutationKey: [...cartMutationKey, "coupon"],
+			mutationFn: async () => {
+				throw error
+			},
+			retry: 0,
+		})
+		await mutation.execute(previous.admit({ type: "apply_coupon", code: "INVALID" })).catch(() => {})
+		previous.dispose()
+		const binding = env.bind()
+		binding.enableCheckout()
+		expect(env.store.state.get().isLocked).toBe(false)
+		expect(binding.readiness.failure("cart.coupon")?.error).toBe(error)
+	})
+	it.each([{ type: "update_customer" }, { type: "add_to_cart", input: null }, { type: "unknown" }])(
+		"protects malformed or unknown internal operations (%j)",
+		async (payload) => {
+			const env = setup(),
+				binding = env.bind()
+			const mutation = env.cache.getMutationCache().build(env.cache, {
+				mutationKey: addressMutationKey,
+				mutationFn: async () => {
+					throw { code: "UNKNOWN", message: "Invalid coupon" }
+				},
+				retry: 0,
+			})
+			await mutation.execute(binding.admit(payload)).catch(() => {})
+			expect(() => binding.reserve("order")).toThrow()
+			expect(env.procedures.cart.get.call).not.toHaveBeenCalled()
+		},
+	)
 	it.each([true, false])(
 		"uses the latest completed feature outcome, retaining all pending identities (late error: %s)",
 		async (lateError) => {
@@ -287,30 +334,261 @@ describe("cache-derived readiness", () => {
 })
 
 describe("query readiness and publication", () => {
-	it("blocks background fetches, manual publication during fetch, and errors until successful retry", async () => {
+	it("requires acknowledgement when a replacement checkout does not match the retained cart", async () => {
+		const env = setup(),
+			binding = env.bind()
+		binding.enableCheckout()
+		env.cache.setQueryData(checkoutQueryKey, {
+			...env.source.checkout,
+			orderKey: "replacement",
+			cart: { ...env.source.cart, itemCount: 7 },
+		})
+		expect(env.cache.getQueryData(cartQueryKey)).toBeTruthy()
+		expect(env.store.state.get().entries.some(({ name }) => name === "cart.read")).toBe(true)
+		env.procedures.checkout.get.call.mockResolvedValue({
+			...env.source.checkout,
+			orderKey: "replacement",
+			cart: { ...env.source.cart, itemCount: 7 },
+		})
+		await env.cache.fetchQuery({ queryKey: checkoutQueryKey, staleTime: 0, queryFn: ({ signal }) => binding.readCheckout(signal) })
+		expect(env.store.state.get().isLocked).toBe(false)
+	})
+	it("retains a cold uncertain confirmation without replaying it", async () => {
+		const env = setup(true, false),
+			post = vi.fn(async () => {
+				throw { code: "TIMEOUT" }
+			})
+		const mutation = env.cache
+			.getMutationCache()
+			.build(env.cache, { mutationKey: checkoutMutationKey, meta: { kitCheckoutRole: "confirmation" }, mutationFn: post, retry: 0 })
+		await mutation.execute(undefined).catch(() => {})
+		const binding = env.bind()
+		binding.enableCheckout()
+		await drain()
+		expect(binding.isPending).toBe(false)
+		expect(() => binding.reserve("order")).toThrow()
+		expect(post).toHaveBeenCalledTimes(1)
+	})
+	it("does not trust cached presence after a cold failed read, or manual publication during recovery", async () => {
+		const env = setup(true, false),
+			gate = deferred<Checkout>()
+		await env.cache
+			.fetchQuery({
+				queryKey: checkoutQueryKey,
+				staleTime: 0,
+				queryFn: async () => {
+					throw new Error("offline")
+				},
+			})
+			.catch(() => {})
+		const binding = env.bind()
+		binding.enableCheckout()
+		expect(env.cache.getQueryData(checkoutQueryKey)).toBeTruthy()
+		expect(() => binding.reserve("order")).toThrow()
+		env.cache.setQueryData(checkoutQueryKey, env.source.checkout)
+		expect(env.store.state.get().isLocked).toBe(true)
+		const request = env.cache.fetchQuery({ queryKey: checkoutQueryKey, staleTime: 0, queryFn: () => gate.promise })
+		env.cache.setQueryData(checkoutQueryKey, env.source.checkout)
+		expect(env.store.state.get().isLocked).toBe(true)
+		gate.resolve(env.source.checkout)
+		await request
+		expect(env.store.state.get().isLocked).toBe(false)
+	})
+	it("accepts a current Kit cart response after an untrusted read failure", async () => {
+		const env = setup(true, false)
+		await env.cache
+			.fetchQuery({
+				queryKey: cartQueryKey,
+				staleTime: 0,
+				queryFn: async () => {
+					throw new Error("offline")
+				},
+			})
+			.catch(() => {})
+		const binding = env.bind()
+		binding.enableCheckout()
+		env.cache.setQueryData(cartQueryKey, env.source.cart)
+		expect(env.store.state.get().isLocked).toBe(true)
+		const request = binding.admit({ type: "apply_coupon", code: "SAVE" })
+		binding.publishCart(request.token, { ...env.source.cart, itemCount: 9 })
+		expect(env.store.state.get().isLocked).toBe(false)
+		expect(env.cache.getQueryData<Cart>(cartQueryKey)?.itemCount).toBe(9)
+	})
+	it.each([undefined, null, 0, "0"])("acknowledges only the failed shipping package (package: %s)", async (packageId) => {
+		const env = setup(),
+			binding = env.bind()
+		const cart = {
+			...env.source.cart,
+			shippingPackages: [
+				{
+					id: 0,
+					rates: [
+						{ id: "ground", selected: true },
+						{ id: "express", selected: false },
+					],
+				},
+				{ id: 1, rates: [{ id: "express", selected: true }] },
+			],
+		} as Cart
+		env.cache.setQueryData(cartQueryKey, cart)
+		env.cache.setQueryData(checkoutQueryKey, { ...env.source.checkout, cart })
+		binding.enableCheckout()
+		const mutation = env.cache.getMutationCache().build(env.cache, {
+			mutationKey: [...cartMutationKey, "shippingRate"],
+			mutationFn: async () => {
+				throw { code: "CART_SHIPPING_RATE_NOT_FOUND" }
+			},
+			retry: 0,
+		})
+		await mutation.execute(binding.admit({ type: "select_shipping_rate", rateId: "express", packageId })).catch(() => {})
+		expect(env.store.state.get().isLocked).toBe(true)
+		env.cache.setQueryData(cartQueryKey, { ...cart, shippingPackages: [...cart.shippingPackages].reverse() })
+		expect(env.store.state.get().isLocked).toBe(true)
+		env.cache.setQueryData(cartQueryKey, {
+			...cart,
+			shippingPackages: cart.shippingPackages.map((pkg) => ({
+				...pkg,
+				rates: pkg.rates.map((rate) => ({ ...rate, selected: rate.id === "express" })),
+			})),
+		})
+		expect(env.store.state.get().isLocked).toBe(false)
+	})
+	it.each([true, false])("recovers uncertain coupons through authoritative reads without replay (cartEnabled: %s)", async (cartEnabled) => {
+		const env = setup(cartEnabled),
+			binding = env.bind(),
+			recovery = deferred<Cart | Checkout>()
+		binding.enableCheckout()
+		const procedure = cartEnabled ? env.procedures.cart.get.call : env.procedures.checkout.get.call
+		procedure.mockReturnValue(recovery.promise)
+		const error = { code: "TIMEOUT", message: "The write may have succeeded" }
+		const write = vi.fn(async () => {
+			throw error
+		})
+		const mutation = env.cache
+			.getMutationCache()
+			.build(env.cache, { mutationKey: [...cartMutationKey, "coupon"], mutationFn: write, retry: 0 })
+		await mutation.execute(binding.admit({ type: "apply_coupon", code: "UNKNOWN" })).catch(() => {})
+		expect(env.store.state.get().entries.some(({ name }) => name === "cart.reconciliation")).toBe(true)
+		binding.restore("cart.coupon")
+		expect(() => binding.reserve("order")).toThrow()
+		recovery.resolve(cartEnabled ? env.source.cart : env.source.checkout)
+		await drain()
+		expect(env.store.state.get().isLocked).toBe(false)
+		expect(binding.readiness.failure("cart.coupon")?.error).toBe(error)
+		expect(write).toHaveBeenCalledTimes(1)
+		expect(procedure).toHaveBeenCalledTimes(1)
+	})
+	it("retains uncertain recovery after failure, dismissal and manual cache publication until an authoritative retry", async () => {
+		const env = setup(),
+			binding = env.bind()
+		binding.enableCheckout()
+		env.procedures.cart.get.call.mockRejectedValue(new Error("offline"))
+		const mutation = env.cache.getMutationCache().build(env.cache, {
+			mutationKey: [...cartMutationKey, "coupon"],
+			mutationFn: async () => {
+				throw { code: "UNRECOGNIZED", message: "Invalid coupon" }
+			},
+			retry: 0,
+		})
+		await mutation.execute(binding.admit({ type: "apply_coupon", code: "MAYBE" })).catch(() => {})
+		await drain()
+		binding.readiness.dismiss("cart.coupon")
+		env.cache.setQueryData(cartQueryKey, env.source.cart)
+		expect(() => binding.reserve("order")).toThrow()
+		expect(env.procedures.cart.get.call).toHaveBeenCalledTimes(1)
+		env.procedures.cart.get.call.mockResolvedValue(env.source.cart)
+		await env.cache.fetchQuery({ queryKey: cartQueryKey, staleTime: 0, queryFn: ({ signal }) => binding.readCart(signal) })
+		expect(env.store.state.get().isLocked).toBe(false)
+	})
+	it.each([true, false])("recovers address fields across full and partial corrections (full failure: %s)", async (fullFailure) => {
+		const env = setup(),
+			binding = env.bind()
+		const failed = env.cache.getMutationCache().build(env.cache, {
+			mutationKey: addressMutationKey,
+			mutationFn: async () => {
+				throw { code: "CART_ADDRESS_INVALID" }
+			},
+			retry: 0,
+		})
+		await failed
+			.execute(
+				binding.admit({
+					type: "update_customer",
+					input: { shippingAddress: fullFailure ? { ...env.source.cart.shippingAddress, city: "unsaved" } : { city: "unsaved" } },
+				}),
+			)
+			.catch(() => {})
+		expect(env.store.state.get().isLocked).toBe(true)
+		// An acknowledged snapshot resolves unchanged siblings without hiding the refused city.
+		env.cache.setQueryData(cartQueryKey, { ...env.source.cart })
+		expect(binding.readiness.state.get().unresolved).toHaveLength(1)
+		const success = env.cache.getMutationCache().build(env.cache, {
+			mutationKey: addressMutationKey,
+			mutationFn: async () => env.source.cart,
+		})
+		await success.execute(
+			binding.admit({
+				type: "update_customer",
+				input: { shippingAddress: fullFailure ? { city: env.source.cart.shippingAddress.city } : env.source.cart.shippingAddress },
+			}),
+		)
+		expect(env.store.state.get().isLocked).toBe(false)
+	})
+	it("keeps separate address intents through unrelated success and optional failure", async () => {
+		const env = setup(),
+			binding = env.bind(),
+			error = { code: "CART_ADDRESS_INVALID", message: "unsaved city" }
+		const failed = env.cache.getMutationCache().build(env.cache, {
+			mutationKey: addressMutationKey,
+			mutationFn: async () => {
+				throw error
+			},
+			retry: 0,
+		})
+		await failed.execute(binding.admit({ type: "update_customer", input: { shippingAddress: { city: "unsaved" } } })).catch(() => {})
+		const success = env.cache
+			.getMutationCache()
+			.build(env.cache, { mutationKey: addressMutationKey, mutationFn: async () => env.source.cart })
+		await success.execute(binding.admit({ type: "update_customer", input: { shippingAddress: { postcode: "560001" } } }))
+		const optional = env.cache.getMutationCache().build(env.cache, {
+			mutationKey: [...cartMutationKey, "item"],
+			mutationFn: async () => {
+				throw { code: "CART_ITEM_OUT_OF_STOCK" }
+			},
+			retry: 0,
+		})
+		await optional.execute(binding.admit({ type: "add_to_cart", input: { productId: 99 } })).catch(() => {})
+		expect(binding.readiness.failure("cart.address")?.error).toBe(error)
+		expect(env.store.state.get().isLocked).toBe(true)
+		binding.readiness.dismiss("cart.address")
+		expect(() => binding.reserve("order")).toThrow()
+		binding.restore("cart.address")
+		expect(env.store.state.get().isLocked).toBe(false)
+	})
+	it("allows trustworthy background fetches and their errors", async () => {
 		const env = setup(),
 			binding = env.bind(),
 			gate = deferred<Checkout>(),
 			error = new Error("refresh failed")
 		binding.enableCheckout()
 		const request = env.cache.fetchQuery({ queryKey: checkoutQueryKey, staleTime: 0, queryFn: () => gate.promise }).catch(() => {})
-		expect(env.store.state.get().isLocked).toBe(true)
+		expect(env.store.state.get().isLocked).toBe(false)
 		env.cache.setQueryData(checkoutQueryKey, env.source.checkout)
-		expect(env.store.state.get().isLocked).toBe(true)
+		expect(env.store.state.get().isLocked).toBe(false)
 		gate.reject(error)
 		await request
-		expect(env.store.state.get().isLocked).toBe(true)
+		expect(env.store.state.get().isLocked).toBe(false)
 		expect(env.cache.getQueryData(checkoutQueryKey)).toBeTruthy()
 		await env.cache.fetchQuery({ queryKey: checkoutQueryKey, staleTime: 0, queryFn: async () => env.source.checkout })
 		expect(env.store.state.get().isLocked).toBe(false)
 	})
-	it("blocks paused reads with cached data", async () => {
+	it("allows paused background reads with trustworthy data", async () => {
 		const env = setup()
 		env.cache.mount()
 		onlineManager.setOnline(false)
 		const request = env.cache.fetchQuery({ queryKey: cartQueryKey, staleTime: 0, queryFn: async () => env.source.cart })
 		expect(env.cache.getQueryState(cartQueryKey)?.fetchStatus).toBe("paused")
-		expect(env.store.state.get().isLocked).toBe(true)
+		expect(env.store.state.get().isLocked).toBe(false)
 		onlineManager.setOnline(true)
 		await request
 		expect(env.store.state.get().isLocked).toBe(false)
@@ -355,7 +633,9 @@ describe("query readiness and publication", () => {
 		binding.enableCheckout()
 		expect(env.store.state.get().isLocked).toBe(true)
 		expect(env.cache.getQueryData(cartQueryKey)).toBeUndefined()
-		await env.cache.fetchQuery({ queryKey: cartQueryKey, queryFn: async () => env.source.cart })
+		env.cache.setQueryData(cartQueryKey, env.source.cart)
+		expect(env.store.state.get().isLocked).toBe(true)
+		await env.cache.fetchQuery({ queryKey: cartQueryKey, staleTime: 0, queryFn: async () => env.source.cart })
 		expect(env.store.state.get().isLocked).toBe(false)
 		const cold = setup(false, false)
 		cold.cache.removeQueries({ queryKey: cartQueryKey })
@@ -611,7 +891,7 @@ describe("total conflict publication", () => {
 			oldRead.resolve(cartEnabled ? env.source.cart : env.source.checkout)
 			await read
 		}
-		post.reject(new Error("Total mismatch"))
+		post.reject({ code: "CHECKOUT_TOTAL_MISMATCH", message: "Total mismatch" })
 		await pending
 		await vi.waitFor(() => expect(procedure).toHaveBeenCalledTimes(2))
 		expect(env.store.state.get().isLocked).toBe(true)

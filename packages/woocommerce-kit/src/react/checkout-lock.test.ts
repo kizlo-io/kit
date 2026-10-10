@@ -30,6 +30,7 @@ function setup(seed = true) {
 			coupons: { apply: procedure(), remove: procedure() },
 		},
 		storefront: { get: procedure() },
+		orders: { get: procedure() },
 	}
 	procedures.checkout.get.call.mockResolvedValue(source.checkout)
 	procedures.cart.get.call.mockResolvedValue(source.cart)
@@ -131,6 +132,8 @@ describe("checkout admission", () => {
 			result.current.b.confirm(input)
 		})
 		expect(env.store.state.get().isLocked).toBe(true)
+		expect(result.current.a.isPending).toBe(true)
+		expect(result.current.b.isPending).toBe(true)
 		await act(async () => {
 			await expect(result.current.b.confirmAsync(input)).rejects.toMatchObject({ code: "CHECKOUT_LOCKED" })
 			await expect(result.current.address.updateAsync({ shippingAddress: { postcode: "NEW" } })).rejects.toMatchObject({
@@ -147,7 +150,7 @@ describe("checkout admission", () => {
 		expect(env.procedures.cart.coupons.apply.call).not.toHaveBeenCalled()
 		await act(async () => {
 			if (fails) {
-				request.reject(new Error("declined"))
+				request.reject({ code: "CHECKOUT_PAYMENT_FAILED", message: "declined" })
 				await promise.catch(() => {})
 			} else {
 				request.resolve(env.source.checkout)
@@ -156,6 +159,8 @@ describe("checkout admission", () => {
 		})
 		expect(phases).toEqual([true])
 		expect(result.current.a.isLocked).toBe(false)
+		expect(result.current.a.isPending).toBe(false)
+		expect(result.current.b.isPending).toBe(false)
 		env.procedures.checkout.confirm.call.mockResolvedValue(env.source.checkout)
 		await act(async () => result.current.a.confirmAsync(input))
 		expect(env.procedures.checkout.confirm.call).toHaveBeenCalledTimes(2)
@@ -236,7 +241,7 @@ describe("address and shipping holds", () => {
 	it("retains required failure across reset, then releases on retry, revert or explicit cancellation", async () => {
 		vi.useFakeTimers()
 		const env = setup()
-		env.procedures.cart.update.call.mockRejectedValue(new Error("address refused"))
+		env.procedures.cart.update.call.mockRejectedValue({ code: "CART_ADDRESS_INVALID", message: "address refused" })
 		const { result } = renderHook(() => useCartAddress({ addressDebounceMs: 50 }), { wrapper: env.wrapper })
 		const snapshot = (city: string) => ({ shippingAddress: { ...env.source.cart.shippingAddress, city }, useShippingAsBilling: false })
 		act(() => result.current.onAddressChange(snapshot("new")))
@@ -249,7 +254,7 @@ describe("address and shipping holds", () => {
 		act(() => result.current.onAddressChange(snapshot("corrected")))
 		await tick(50)
 		expect(env.store.state.get().isLocked).toBe(false)
-		env.procedures.cart.update.call.mockRejectedValue(new Error("address refused"))
+		env.procedures.cart.update.call.mockRejectedValue({ code: "CART_ADDRESS_INVALID", message: "address refused" })
 		act(() => result.current.onAddressChange(snapshot("another")))
 		await tick(50)
 		act(() => result.current.onAddressChange(snapshot("corrected")))
@@ -288,7 +293,7 @@ describe("address and shipping holds", () => {
 		env.cache.setQueryData(cartQueryKey, missing)
 		const { result } = renderHook(() => ({ rates: useCartShippingRates(), checkout: useCheckout() }), { wrapper: env.wrapper })
 		expect(result.current.checkout.isLocked).toBe(true)
-		env.procedures.cart.selectShippingRate.call.mockRejectedValue(new Error("choice refused"))
+		env.procedures.cart.selectShippingRate.call.mockRejectedValue({ code: "CART_SHIPPING_RATE_NOT_FOUND", message: "choice refused" })
 		await act(async () => {
 			await result.current.rates.selectShippingRateAsync("new", 1).catch(() => {})
 		})
@@ -296,7 +301,7 @@ describe("address and shipping holds", () => {
 		env.procedures.cart.selectShippingRate.call.mockResolvedValue(env.source.cart)
 		await act(async () => result.current.rates.selectShippingRateAsync("new", 1))
 		expect(result.current.checkout.isLocked).toBe(false)
-		env.procedures.cart.selectShippingRate.call.mockRejectedValue(new Error("choice refused"))
+		env.procedures.cart.selectShippingRate.call.mockRejectedValue({ code: "CART_SHIPPING_RATE_NOT_FOUND", message: "choice refused" })
 		await act(async () => {
 			await result.current.rates.selectShippingRateAsync("another", 1).catch(() => {})
 		})
@@ -306,7 +311,7 @@ describe("address and shipping holds", () => {
 		act(() => env.cache.setQueryData(cartQueryKey, { ...missing, needsShipping: false }))
 		expect(result.current.checkout.isLocked).toBe(false)
 	})
-	it("retains coupon failure until its explicit reset", async () => {
+	it("keeps a definitive coupon error visible while allowing checkout without reset", async () => {
 		const env = setup(),
 			request = deferred<Cart>()
 		env.procedures.cart.coupons.apply.call.mockReturnValue(request.promise)
@@ -318,11 +323,15 @@ describe("address and shipping holds", () => {
 		})
 		expect(env.store.state.get().isLocked).toBe(true)
 		await act(async () => {
-			request.reject(new Error("coupon refused"))
+			request.reject({ code: "CART_COUPON_INVALID", message: "coupon refused" })
 			await promise.catch(() => {})
 		})
-		expect(result.current.checkout.isLocked).toBe(true)
-		act(() => result.current.coupon.reset())
+		expect(result.current.checkout.isLocked).toBe(false)
+		expect(result.current.coupon.error).toMatchObject({ code: "CART_COUPON_INVALID" })
+		env.procedures.checkout.confirm.call.mockResolvedValue(env.source.checkout)
+		await act(async () => result.current.checkout.confirmAsync(input))
+		expect(env.procedures.checkout.confirm.call).toHaveBeenCalledTimes(1)
+		expect(result.current.coupon.error).toMatchObject({ code: "CART_COUPON_INVALID" })
 		expect(result.current.checkout.isLocked).toBe(false)
 	})
 })
@@ -463,6 +472,146 @@ describe("session ownership", () => {
 })
 
 describe("automatic feature readiness", () => {
+	it.each([true, false])(
+		"clears only address failures covered by the restored snapshot (includes shipping: %s)",
+		async (includeShipping) => {
+			const env = setup()
+			env.procedures.cart.update.call.mockRejectedValue({ code: "CART_ADDRESS_INVALID", message: "Address refused" })
+			const { result } = renderHook(() => ({ address: useCartAddress(), checkout: useCheckout() }), { wrapper: env.wrapper })
+			await act(async () => {
+				await result.current.address.updateAsync({ shippingAddress: { city: "unsaved shipping" } }).catch(() => {})
+			})
+			await act(async () => {
+				await result.current.address.updateAsync({ billingAddress: { postcode: "560002" }, useShippingAsBilling: false }).catch(() => {})
+			})
+			expect(result.current.checkout.isLocked).toBe(true)
+			act(() =>
+				result.current.address.onAddressChange({
+					billingAddress: env.source.cart.billingAddress,
+					...(includeShipping ? { shippingAddress: env.source.cart.shippingAddress } : {}),
+					useShippingAsBilling: false,
+				}),
+			)
+			expect(result.current.checkout.isLocked).toBe(!includeShipping)
+			if (!includeShipping) {
+				act(() => result.current.address.onAddressChange({ shippingAddress: env.source.cart.shippingAddress, useShippingAsBilling: false }))
+				expect(result.current.checkout.isLocked).toBe(false)
+			}
+			expect(env.procedures.cart.update.call).toHaveBeenCalledTimes(2)
+		},
+	)
+	it("keeps a refused addition visible without blocking the existing cart", async () => {
+		const env = setup(),
+			error = { code: "CART_ITEM_OUT_OF_STOCK", message: "Sold out" },
+			gate = deferred<Cart>()
+		env.procedures.cart.items.add.call.mockReturnValue(gate.promise)
+		const { result } = renderHook(() => ({ item: useCartItem(), checkout: useCheckout() }), { wrapper: env.wrapper })
+		let request!: Promise<Cart>
+		act(() => {
+			request = result.current.item.addItemAsync({ productId: 99 })
+			void request.catch(() => {})
+		})
+		expect(result.current.checkout.isLocked).toBe(true)
+		await act(async () => {
+			gate.reject(error)
+			await request.catch(() => {})
+		})
+		expect(result.current.item.error).toBe(error)
+		expect(result.current.checkout.isLocked).toBe(false)
+		expect(result.current.checkout.checkout?.cart).toBe(env.source.cart)
+	})
+	it.each([false, true])(
+		"releases restored quantity errors after definitive rejection or authoritative recovery (uncertain: %s)",
+		async (uncertain) => {
+			const env = setup(),
+				cart = seedItem(env),
+				recovery = deferred<Checkout>()
+			const error = { code: uncertain ? "TIMEOUT" : "CART_ITEM_INVALID_QUANTITY", message: "Refused quantity" }
+			env.procedures.cart.items.update.call.mockRejectedValue(error)
+			env.procedures.checkout.get.call.mockReturnValue(recovery.promise)
+			const { result } = renderHook(() => ({ item: useCartItem("sku", { autoCommit: false }), checkout: useCheckout() }), {
+				wrapper: env.wrapper,
+			})
+			act(() => result.current.item.quantity.set(2))
+			await act(async () => result.current.item.quantity.commitAsync().catch(() => {}))
+			expect(result.current.item.quantity.value).toBe(1)
+			expect(result.current.item.error).toBe(error)
+			expect(result.current.checkout.isLocked).toBe(uncertain)
+			if (uncertain) {
+				await act(async () => recovery.resolve({ ...env.source.checkout, cart }))
+				await waitFor(() => expect(result.current.checkout.isLocked).toBe(false))
+			}
+			expect(result.current.item.error).toBe(error)
+			expect(env.procedures.cart.items.update.call).toHaveBeenCalledTimes(1)
+		},
+	)
+	it.each([0, "0", undefined])("restores an acknowledged shipping selection without replay (package: %s)", async (packageId) => {
+		const env = setup(),
+			error = { code: "CART_SHIPPING_RATE_NOT_FOUND", message: "No such rate" }
+		env.procedures.cart.selectShippingRate.call.mockRejectedValue(error)
+		const { result } = renderHook(() => ({ rates: useCartShippingRates(), checkout: useCheckout() }), { wrapper: env.wrapper })
+		await act(async () => result.current.rates.selectShippingRateAsync("unavailable", 0).catch(() => {}))
+		expect(result.current.checkout.isLocked).toBe(true)
+		act(() => result.current.rates.reset())
+		expect(result.current.checkout.isLocked).toBe(true)
+		const rate = env.source.cart.shippingPackages[0]?.rates[0]
+		if (!rate) throw new Error("Missing acknowledged rate")
+		await act(async () => result.current.rates.selectShippingRateAsync(rate.id, packageId))
+		expect(result.current.checkout.isLocked).toBe(false)
+		expect(env.procedures.cart.selectShippingRate.call).toHaveBeenCalledTimes(1)
+	})
+	it("keeps uncertain confirmation visible through reset, refresh and order lookup without issuing another POST", async () => {
+		const env = setup(),
+			error = { code: "TIMEOUT", message: "Unknown order outcome" }
+		env.procedures.checkout.confirm.call.mockRejectedValue(error)
+		env.procedures.orders.get.call.mockResolvedValue({ id: 12, isPaid: false, status: "pending" })
+		const { result } = renderHook(() => useCheckout(), { wrapper: env.wrapper })
+		await act(async () => result.current.confirmAsync(input).catch(() => {}))
+		expect(result.current.isPending).toBe(false)
+		expect(result.current.isLocked).toBe(true)
+		expect(result.current.error).toBe(error)
+		act(() => result.current.reset())
+		await act(async () => result.current.refresh())
+		expect(result.current.error).toBe(error)
+		await act(async () => expect(result.current.confirmAsync(input)).rejects.toMatchObject({ code: "CHECKOUT_LOCKED" }))
+		expect(env.procedures.orders.get.call).toHaveBeenCalledWith({ params: { orderId: 12 }, query: { key: "key" } })
+		env.procedures.orders.get.call.mockResolvedValue({ id: 12, isPaid: true, status: "completed" })
+		await act(async () => result.current.refresh())
+		await waitFor(() =>
+			expect(result.current.locks.find(({ name }) => name === "checkout.confirmation")?.message).toContain("order was placed"),
+		)
+		expect(result.current.isLocked).toBe(true)
+		expect(env.procedures.checkout.confirm.call).toHaveBeenCalledTimes(1)
+	})
+	it("updates shared pending activity while another request keeps the same lock category", async () => {
+		const env = setup(),
+			first = deferred<Cart>(),
+			second = deferred<Cart>()
+		env.procedures.cart.items.add.call.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise)
+		const { result } = renderHook(() => ({ a: useCartItem(), b: useCartItem(), checkout: useCheckout() }), { wrapper: env.wrapper })
+		let a!: Promise<Cart>, b!: Promise<Cart>
+		act(() => {
+			a = result.current.a.addItemAsync({ productId: 1 })
+			b = result.current.b.addItemAsync({ productId: 2 })
+			void a.catch(() => {})
+			void b.catch(() => {})
+		})
+		expect(result.current.a.isPending).toBe(true)
+		expect(result.current.b.isPending).toBe(true)
+		await act(async () => {
+			first.reject({ code: "CART_ITEM_OUT_OF_STOCK", message: "first" })
+			await a.catch(() => {})
+		})
+		expect(result.current.a.error?.message).toBe("first")
+		expect(result.current.b.isPending).toBe(true)
+		expect(result.current.checkout.isLocked).toBe(true)
+		await act(async () => {
+			second.resolve(env.source.cart)
+			await b
+		})
+		await waitFor(() => expect(result.current.b.isPending).toBe(false))
+		expect(result.current.a.error?.message).toBe("first")
+	})
 	function seedItem(env: ReturnType<typeof setup>) {
 		const base = env.source.cart.items[0]
 		if (!base) throw new Error("Missing item fixture")
@@ -481,6 +630,41 @@ describe("automatic feature readiness", () => {
 		env.cache.setQueryData(checkoutQueryKey, { ...env.source.checkout, cart })
 		return cart
 	}
+	it.each([
+		{ alreadyDispatched: false, uncertain: false },
+		{ alreadyDispatched: true, uncertain: false },
+		{ alreadyDispatched: false, uncertain: true },
+		{ alreadyDispatched: true, uncertain: true },
+	])("restores refused quantities after unmount (%j)", async ({ alreadyDispatched, uncertain }) => {
+		const env = setup(),
+			gate = deferred<Cart>(),
+			recovery = deferred<Checkout>()
+		const cart = seedItem(env)
+		env.procedures.cart.items.update.call.mockReturnValue(gate.promise)
+		env.procedures.checkout.get.call.mockReturnValue(recovery.promise)
+		const checkout = renderHook(() => useCheckout(), { wrapper: env.wrapper })
+		const item = renderHook(() => useCartItem("sku", { debounceMs: 10000 }), { wrapper: env.wrapper })
+		act(() => item.result.current.quantity.set(2))
+		if (alreadyDispatched)
+			act(() => {
+				void item.result.current.quantity.commitAsync().catch(() => {})
+			})
+		item.unmount()
+		await waitFor(() => expect(env.procedures.cart.items.update.call).toHaveBeenCalledTimes(1))
+		expect(checkout.result.current.isLocked).toBe(true)
+		await act(async () => gate.reject({ code: uncertain ? "TIMEOUT" : "CART_ITEM_INVALID_QUANTITY", message: "Quantity refused" }))
+		await waitFor(() => expect(env.cache.isMutating()).toBe(0))
+		const remount = renderHook(() => useCartItem("sku"), { wrapper: env.wrapper })
+		expect(remount.result.current.quantity.value).toBe(1)
+		expect(remount.result.current.quantity.isDirty).toBe(false)
+		expect(env.cache.getQueryData<Cart>(cartQueryKey)?.items[0]?.quantity).toBe(1)
+		expect(checkout.result.current.isLocked).toBe(uncertain)
+		if (uncertain) {
+			await act(async () => recovery.resolve({ ...env.source.checkout, cart }))
+			await waitFor(() => expect(checkout.result.current.isLocked).toBe(false))
+		}
+		expect(env.procedures.cart.items.update.call).toHaveBeenCalledTimes(1)
+	})
 	it.each([true, false])("locks quantity edits before HTTP (autoCommit: %s)", async (autoCommit) => {
 		vi.useFakeTimers()
 		const env = setup(),
@@ -576,8 +760,8 @@ describe("automatic feature readiness", () => {
 	it("item reset cannot dismiss another entity's newer failure", async () => {
 		const env = setup(),
 			cart = seedItem(env),
-			a = new Error("a failed"),
-			b = new Error("b failed")
+			a = { code: "CART_ITEM_NOT_FOUND", message: "a failed" },
+			b = { code: "CART_ITEM_NOT_FOUND", message: "b failed" }
 		env.cache.setQueryData(cartQueryKey, { ...cart, items: cart.items.flatMap((item) => [item, { ...item, key: "other" }]) })
 		env.procedures.cart.items.remove.call.mockRejectedValueOnce(a).mockRejectedValueOnce(b)
 		const { result } = renderHook(() => ({ a: useCartItem("sku"), b: useCartItem("other"), checkout: useCheckout() }), {
@@ -590,17 +774,19 @@ describe("automatic feature readiness", () => {
 		expect(result.current.a.error).toBe(a)
 		expect(result.current.b.error).toBe(b)
 		act(() => result.current.a.reset())
-		expect(result.current.checkout.isLocked).toBe(true)
+		expect(result.current.b.error).toBe(b)
+		expect(result.current.checkout.isLocked).toBe(false)
 		act(() => result.current.b.reset())
 		expect(result.current.checkout.isLocked).toBe(false)
 	})
-	it("blocks failed refetches with cached data until refresh succeeds", async () => {
+	it("keeps trustworthy checkout usable after a failed background refresh", async () => {
 		const env = setup(),
 			{ result } = renderHook(() => useCheckout(), { wrapper: env.wrapper })
 		env.procedures.checkout.get.call.mockRejectedValueOnce(new Error("offline"))
 		await act(async () => result.current.refresh())
 		expect(result.current.checkout).not.toBeNull()
-		expect(result.current.isLocked).toBe(true)
+		expect(result.current.isLocked).toBe(false)
+		await waitFor(() => expect(result.current.error?.message).toBe("offline"))
 		await act(async () => result.current.refresh())
 		expect(result.current.isLocked).toBe(false)
 	})
@@ -676,7 +862,7 @@ it("cancels queued address and quantity drafts synchronously when the session ch
 	act(() => {
 		result.current.address.onAddressChange({ shippingAddress: { ...env.source.cart.shippingAddress, city: "old draft" } })
 		result.current.item.quantity.set(2)
-		env.cache.setQueryData(checkoutQueryKey, { ...env.source.checkout, orderKey: "replacement" })
+		env.cache.setQueryData(checkoutQueryKey, { ...env.source.checkout, cart, orderKey: "replacement" })
 	})
 	await tick(100)
 	expect(env.procedures.cart.update.call).not.toHaveBeenCalled()
@@ -856,7 +1042,7 @@ describe("checkout dependencies", () => {
 	it("keeps Kit writes, read failures, missing data and shipping enforced when custom flags are false", async () => {
 		const env = setup(),
 			gate = deferred<Cart>(),
-			error = new Error("cart write failed")
+			error = { code: "CART_ADDRESS_INVALID", message: "cart write failed" }
 		env.procedures.cart.update.call.mockReturnValue(gate.promise)
 		const hook = renderHook(
 			() => ({
@@ -893,6 +1079,7 @@ describe("checkout dependencies", () => {
 		expect(hook.result.current.checkout.isLocked).toBe(true)
 		act(() => env.cache.setQueryData(cartQueryKey, env.source.cart))
 		env.procedures.checkout.get.call.mockRejectedValue(new Error("required read failed"))
+		act(() => env.cache.removeQueries({ queryKey: checkoutQueryKey, exact: true }))
 		await act(async () => {
 			await hook.result.current.checkout.refresh().catch(() => {})
 		})

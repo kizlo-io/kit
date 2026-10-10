@@ -2,6 +2,25 @@ import { describe, expect, it } from "vitest"
 import { createCheckoutReadiness } from "./checkout-readiness"
 
 describe("feature readiness", () => {
+	it("reports optional errors independently of blocking and keeps unrelated required work", () => {
+		const store = createCheckoutReadiness(),
+			required = {},
+			optional = {},
+			error = new Error("refused")
+		store.start({ identity: optional, feature: "cart.item", generation: 0, confirmation: false })
+		expect(store.reasons().has("cart.item")).toBe(true)
+		store.finish(required, "cart.item", 0, 0, error, false, { tasks: ["item:a"] })
+		store.finish(optional, "cart.item", 0, 0, error, false, { tasks: ["item:add"], blocking: false })
+		expect(store.failure("cart.item")?.identity).toBe(optional)
+		store.finish({}, "cart.item", 0, 0, null, false, { tasks: ["item:b"] })
+		store.dismiss("cart.item", required)
+		expect(store.reasons().has("cart.item")).toBe(true)
+		store.resolve("item:a", optional)
+		expect(store.reasons().has("cart.item")).toBe(true)
+		store.resolve("item:a", required)
+		expect(store.reasons().size).toBe(0)
+		expect(store.failure("cart.item")?.error).toBe(error)
+	})
 	it.each([true, false])("counts all requests and uses completion order (late failure: %s)", (lateFails) => {
 		const store = createCheckoutReadiness(),
 			a = {},

@@ -90,6 +90,8 @@ export function useCartAction(scope: readonly string[], options: CartHookOptions
 		},
 		onError: (error, operation) => {
 			const variables = operation.payload
+			// Removal has no optimistic draft: the refused line remains visible in the acknowledged cart.
+			if (variables.type === "remove_from_cart") operation.restored = true
 			notify(() => options?.onError?.({ ...variables, error, status: "error" }))
 		},
 		// A narrowing rather than a branch: query-core passes `(cart, null, …)` on success and `(undefined, error, …)` on
@@ -159,15 +161,8 @@ export function useCartAction(scope: readonly string[], options: CartHookOptions
 		}
 	}, [binding, feature, isPending, mutation.variables, sharedError, reset])
 
-	const failure = binding.readiness.failure(feature)
-	const failedVariables = (
-		failure?.identity as { state: { variables?: CheckoutRequest<CartActionPayload> | CartActionPayload } } | undefined
-	)?.state.variables
-	const failedPayload = failedVariables && "payload" in failedVariables ? failedVariables.payload : failedVariables
-
 	return {
 		...data,
-		failedAddressInput: failedPayload?.type === "update_customer" ? failedPayload.input : null,
 		error:
 			admissionError ??
 			(sharedError
@@ -179,10 +174,17 @@ export function useCartAction(scope: readonly string[], options: CartHookOptions
 		mutate,
 		mutateAsync,
 		reset: clearSettled,
-		cancelFailures: useCallback(() => {
-			binding.readiness.dismiss(feature)
-			binding.sync()
-		}, [binding, feature]),
+		restore: useCallback((payload?: CartActionPayload) => binding.restore(feature, payload), [binding, feature]),
+		cancelFailures: useCallback(
+			(payload?: CartActionPayload) => {
+				binding.restore(feature, payload)
+				for (const failure of binding.readiness.state.get().failures)
+					if (failure.feature === feature && (!payload || binding.tasks(feature, payload).includes(failure.task)))
+						binding.readiness.dismiss(feature, failure.identity)
+				binding.sync()
+			},
+			[binding, feature],
+		),
 		rejectAdmission,
 	}
 }
