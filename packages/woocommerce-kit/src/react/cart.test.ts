@@ -69,17 +69,15 @@ function storeError(code: string) {
 	return Object.assign(new Error("Already in your cart."), { code }) as unknown as CartError
 }
 
-function mount<T>(hook: () => T, cart?: Cart, options?: { cartEnabled?: boolean; mutations?: { retry: number }; storefront?: Storefront }) {
-	const { cartEnabled = false, mutations } = options ?? {}
+function mount<T>(hook: () => T, cart: Cart | null = storeCart([]), options?: { mutations?: { retry: number }; storefront?: Storefront }) {
+	const { mutations } = options ?? {}
 	const queryClient = new QueryClient({ defaultOptions: { mutations, queries: { retry: false } } })
 	if (cart) queryClient.setQueryData(cartQueryKey, cart)
 	if (options?.storefront) queryClient.setQueryData(storefrontQueryKey, options.storefront)
 
-	// `cartEnabled: false` by default so the cart query makes no request: every cart these tests read is either seeded or
-	// answered by an action. The one case that needs the fetch itself to fail opts in. JSX is avoided because the suite only
-	// collects `src/**/*.test.ts`.
+	// Action tests start with an acknowledged cart; pass null to test a cold cart read.
 	const wrapper = ({ children }: { children: ReactNode }) =>
-		createElement(QueryClientProvider, { client: queryClient }, createElement(WooCommerceProvider, { cartEnabled, children }))
+		createElement(QueryClientProvider, { client: queryClient }, createElement(WooCommerceProvider, { children }))
 
 	return { queryClient, ...renderHook(hook, { wrapper }) }
 }
@@ -131,6 +129,28 @@ function captureUncaught() {
 afterEach(() => {
 	vi.clearAllMocks()
 	vi.useRealTimers()
+})
+
+describe("pending cart reads", () => {
+	it("shares automatic cart reads across concurrent hooks and Strict Mode remounts, then caches after unmount", async () => {
+		const request = deferredCart(),
+			cart = storeCart([{ key: "a", quantity: 1 }]),
+			queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } })
+		procedures.get.call.mockReturnValueOnce(request.promise)
+		const wrapper = ({ children }: { children: ReactNode }) =>
+			createElement(QueryClientProvider, { client: queryClient }, createElement(WooCommerceProvider, { children }))
+		const first = renderHook(() => ({ cart: useCart(), item: useCartItem("a") }), { wrapper, reactStrictMode: true })
+		expect(first.result.current.cart.isLoading).toBe(true)
+		expect(procedures.get.call).toHaveBeenCalledTimes(1)
+		first.unmount()
+		const second = renderHook(() => ({ cart: useCart(), item: useCartItem("a") }), { wrapper, reactStrictMode: true })
+		expect(procedures.get.call).toHaveBeenCalledTimes(1)
+		second.unmount()
+		request.resolve(cart)
+		await waitFor(() => expect(queryClient.getQueryData(cartQueryKey)).toEqual(cart))
+		expect(procedures.get.call).toHaveBeenCalledTimes(1)
+		queryClient.clear()
+	})
 })
 
 describe("useCartItem callbacks", () => {
@@ -216,7 +236,7 @@ describe("useCartItem callbacks", () => {
 			)
 			act(() => result.current.addItem({ productId: 7 }))
 
-			await waitFor(() => expect(queryClient.getQueryData(cartQueryKey)).toBe(cart))
+			await waitFor(() => expect(queryClient.getQueryData(cartQueryKey)).toStrictEqual(cart))
 			expect(result.current.error).toBeNull()
 			await waitFor(() => expect(uncaught).toContain(listenerFailure))
 		} finally {
@@ -450,7 +470,7 @@ describe("useCart", () => {
 		procedures.get.call.mockRejectedValue(storeError("CART_UNAVAILABLE"))
 		procedures.items.add.call.mockRejectedValue(storeError("CART_ITEM_EXISTS"))
 
-		const { result } = mount(() => ({ cart: useCart(), line: useCartItem() }), undefined, { cartEnabled: true })
+		const { result } = mount(() => ({ cart: useCart(), line: useCartItem() }), null)
 
 		await waitFor(() => expect(result.current.cart.error?.code).toBe("CART_UNAVAILABLE"))
 
@@ -861,7 +881,7 @@ describe("useCartAddress snapshots", () => {
 		const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 		queryClient.setQueryData(cartQueryKey, quoteCart())
 		const wrapper = ({ children }: { children: ReactNode }) =>
-			createElement(QueryClientProvider, { client: queryClient }, createElement(WooCommerceProvider, { cartEnabled: false, children }))
+			createElement(QueryClientProvider, { client: queryClient }, createElement(WooCommerceProvider, { children }))
 		const reader = renderHook(() => useCart(), { wrapper })
 		const one = renderHook(() => useCartAddress(), { wrapper })
 		const two = renderHook(() => useCartAddress(), { wrapper })
@@ -1400,7 +1420,7 @@ describe("awaitable address queue", () => {
 		const request = deferredCart()
 		procedures.update.call.mockReturnValueOnce(request.promise)
 		const { options, phases } = recorder()
-		const { result, unmount } = mount(() => useCartAddress(options), quoteCart())
+		const { result, queryClient, unmount } = mount(() => useCartAddress(options), quoteCart())
 		let pending!: Promise<Cart | undefined>
 		act(() => {
 			pending = result.current.onAddressChangeAsync(addressSnapshot({ shippingAddress: { city: "Oxford" } }))
@@ -1411,6 +1431,8 @@ describe("awaitable address queue", () => {
 		request.resolve(saved)
 		await expect(pending).resolves.toBe(saved)
 		expect(phases()).toEqual(["start", "success", "settled"])
+		expect(procedures.update.call).toHaveBeenCalledTimes(1)
+		expect(queryClient.getQueryData(cartQueryKey)).toEqual(saved)
 	})
 })
 

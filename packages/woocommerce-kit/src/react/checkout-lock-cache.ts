@@ -166,7 +166,7 @@ function addressMatches(feature: string, task: string, payload: Extract<CartActi
 	return hashKey([value]) === hashKey([saved])
 }
 
-function createBinding(store: CheckoutLockStore, cache: QueryClient, client: ActiveKizloClient, cartEnabled: boolean) {
+function createBinding(store: CheckoutLockStore, cache: QueryClient, client: ActiveKizloClient) {
 	const scope = {}
 	const tasksFor = (feature: string, payload: CartActionPayload | null) => tasksOf(feature, payload, cache.getQueryData<Cart>(cartQueryKey))
 	const dispatching = new Map<string, number>()
@@ -227,12 +227,8 @@ function createBinding(store: CheckoutLockStore, cache: QueryClient, client: Act
 			watch.replaceSession()
 			queryFailures.clear()
 			trustedReads.clear()
-			const checkout = cache.getQueryData<Checkout>(checkoutQueryKey)
-			for (const key of roots) {
-				const query = cache.getQueryCache().find({ queryKey: key, exact: true })
-				if (query?.state.status === "success" && (key === checkoutQueryKey || hashKey([query.state.data]) === hashKey([checkout?.cart])))
-					trustedReads.set(query.queryHash, { data: query.state.data, generation })
-			}
+			const query = cache.getQueryCache().find({ queryKey: checkoutQueryKey, exact: true })
+			if (query?.state.status === "success") trustedReads.set(query.queryHash, { data: query.state.data, generation })
 			cancelReads()
 			for (const key of queueKeys) if (cache.getQueryData(key)) cache.setQueryData(key, noQueuedWork)
 		}
@@ -323,23 +319,21 @@ function createBinding(store: CheckoutLockStore, cache: QueryClient, client: Act
 			sync()
 		}
 	}
-	const readCart = async (signal: AbortSignal) => {
+	const readCart = async () => {
 		const revision = store.revision,
 			readEpoch = epoch
 		const cart = await client.woocommerce.cart.get.call()
-		if (signal.aborted || revision !== store.revision || readEpoch !== epoch) throw new CancelledError({ revert: true })
+		if (disposed || revision !== store.revision || readEpoch !== epoch) throw new CancelledError({ revert: true })
 		return cart
 	}
-	const readCheckout = async (signal: AbortSignal) => {
+	const readCheckout = async () => {
 		const revision = store.revision,
 			readEpoch = epoch
 		const checkout = await client.woocommerce.checkout.get.call()
-		if (signal.aborted || revision !== store.revision || readEpoch !== epoch) throw new CancelledError({ revert: true })
-		cache.setQueryData(cartQueryKey, checkout.cart)
-		const query = cache.getQueryCache().find({ queryKey: cartQueryKey, exact: true })
-		if (query) trustedReads.set(query.queryHash, { data: query.state.data, generation })
+		if (disposed || revision !== store.revision || readEpoch !== epoch) throw new CancelledError({ revert: true })
 		return checkout
 	}
+	const refreshCart = () => cache.fetchQuery({ queryKey: cartQueryKey, queryFn: readCart, staleTime: 0, retry: false })
 	const reconcile = () => {
 		if (
 			!needsReconciliation ||
@@ -354,15 +348,11 @@ function createBinding(store: CheckoutLockStore, cache: QueryClient, client: Act
 		reconciling = true
 		const revision = store.revision,
 			readEpoch = epoch
-		const useCart = !uncertainConfirmation && cartEnabled && !(checkoutEnabled && !cache.getQueryData(checkoutQueryKey))
-		const queryKey = useCart ? cartQueryKey : checkoutQueryKey
-		void cache
-			.fetchQuery<Cart | Checkout>({
-				queryKey,
-				queryFn: ({ signal }) => (useCart ? readCart(signal) : readCheckout(signal)),
-				staleTime: 0,
-				retry: false,
-			})
+		const checkoutRequired = uncertainConfirmation || (checkoutEnabled && !cache.getQueryData(checkoutQueryKey))
+		const read = checkoutRequired
+			? cache.fetchQuery({ queryKey: checkoutQueryKey, queryFn: readCheckout, staleTime: 0, retry: false }).then(refreshCart)
+			: refreshCart()
+		void read
 			.then(
 				() => {
 					if (revision === store.revision && readEpoch === epoch) needsReconciliation = false
@@ -531,6 +521,7 @@ function createBinding(store: CheckoutLockStore, cache: QueryClient, client: Act
 		}
 		if (event.type === "updated" && event.action.type === "success") {
 			syncGeneration()
+			const root = roots.find((key) => matchQuery({ queryKey: key, exact: true }, event.query))
 			const authoritative =
 				!event.action.manual &&
 				event.query.state.fetchStatus === "idle" &&
@@ -541,20 +532,27 @@ function createBinding(store: CheckoutLockStore, cache: QueryClient, client: Act
 				queryFailures.has(event.query.queryHash) && trustedReads.get(event.query.queryHash)?.generation !== generation
 			if (
 				authoritative ||
-				(!needsReconciliation && !failedUntrustedRead && (event.query.state.fetchStatus === "idle" || trustworthy(event.query)))
+				((root === checkoutQueryKey || !needsReconciliation) &&
+					!failedUntrustedRead &&
+					(event.query.state.fetchStatus === "idle" || trustworthy(event.query)))
 			) {
 				trustedReads.set(event.query.queryHash, { data: event.query.state.data, generation })
 				queryFailures.delete(event.query.queryHash)
 			}
-			const root = roots.find((key) => matchQuery({ queryKey: key, exact: true }, event.query))
 			if (root) {
-				if (authoritative) {
+				if (root === cartQueryKey && authoritative) {
 					needsReconciliation = false
 					reconciliationFailed = false
 				}
-				const cart = root === cartQueryKey ? (event.query.state.data as Cart) : (event.query.state.data as Checkout).cart
-				if (cart) acknowledgeCart(cart, authoritative)
-				if (root === checkoutQueryKey && authoritative) checkOrder(event.query.state.data as Checkout)
+				if (root === cartQueryKey && event.query.state.data) acknowledgeCart(event.query.state.data as Cart, authoritative)
+				if (root === checkoutQueryKey) {
+					if (authoritative) checkOrder(event.query.state.data as Checkout)
+					if (!reconciling && (!event.action.manual || (checkoutEnabled && !trustedReads.has(hashKey(cartQueryKey))))) {
+						// A cart read started before checkout finished can belong to the previous session/revision.
+						void cache.cancelQueries({ queryKey: cartQueryKey, exact: true })
+						void refreshCart().catch(() => {})
+					}
+				}
 			}
 		}
 		sync()
@@ -578,16 +576,12 @@ function createBinding(store: CheckoutLockStore, cache: QueryClient, client: Act
 		readCheckout,
 		async refreshFields() {
 			cancelReads()
-			// Checkout owns bootstrap and seeds the acknowledged cart before any cart retry can run.
+			const cartVersion = cache.getQueryState(cartQueryKey)?.dataUpdateCount ?? 0
 			await cache.refetchQueries({ queryKey: checkoutQueryKey, exact: true, type: "active" })
-			if (cartEnabled && cache.getQueryData(checkoutQueryKey) && !cache.getQueryData(cartQueryKey))
-				await cache.refetchQueries({ queryKey: cartQueryKey, exact: true, type: "active" })
+			if ((cache.getQueryState(cartQueryKey)?.dataUpdateCount ?? 0) === cartVersion) await refreshCart().catch(() => {})
 		},
 		dispatch<T>(scopeKey: readonly unknown[], action: () => T) {
 			return dispatch(`${scopeKey[2]}.${String(scopeKey[4] ?? "action")}`, action)
-		},
-		configure(enabled: boolean) {
-			cartEnabled = enabled
 		},
 		get active() {
 			return (
@@ -658,9 +652,10 @@ function createBinding(store: CheckoutLockStore, cache: QueryClient, client: Act
 		publishCheckout(request: CheckoutRequest<unknown>, checkout: Checkout) {
 			if (!current(request.token) || !request.reservation || !store.isConfirmation(request.reservation)) return
 			cancelReads()
+			needsReconciliation = true
+			reconciliationFailed = false
 			store.acceptSession(checkoutSession(checkout))
 			cache.setQueryData(checkoutQueryKey, checkout)
-			cache.setQueryData(cartQueryKey, checkout.cart)
 		},
 		reviewTotal(request: CheckoutRequest<unknown>, cart: Cart | null | undefined) {
 			sync()
@@ -684,7 +679,7 @@ function createBinding(store: CheckoutLockStore, cache: QueryClient, client: Act
 				cancelReads()
 				needsReconciliation = true
 				sync()
-				// Reconciliation waits until confirmation settles, and uses checkout when standalone cart reads are disabled.
+				// Reconciliation waits until confirmation settles before reading the cart API.
 				reconcile()
 			}
 		},
@@ -713,9 +708,7 @@ function createBinding(store: CheckoutLockStore, cache: QueryClient, client: Act
 		},
 		enableCheckout() {
 			checkoutEnabled = true
-			// A hydrated checkout can be the initial cart snapshot, but cannot replace a newer acknowledged cart.
-			const checkout = cache.getQueryData<Checkout>(checkoutQueryKey)
-			if (checkout && !cache.getQueryData(cartQueryKey) && epoch === 0) cache.setQueryData(cartQueryKey, checkout.cart)
+			if (cache.getQueryData(checkoutQueryKey) && !cache.getQueryData(cartQueryKey)) void refreshCart().catch(() => {})
 			sync()
 		},
 		dispose() {
@@ -729,7 +722,7 @@ function createBinding(store: CheckoutLockStore, cache: QueryClient, client: Act
 }
 const bindings = new WeakMap<CheckoutLockStore, ReturnType<typeof createBinding>>()
 const owners = new WeakMap<QueryClient, { client: object; binding: ReturnType<typeof createBinding> }>()
-export function bindCheckoutLocks(store: CheckoutLockStore, cache: QueryClient, client: ActiveKizloClient, cartEnabled: boolean) {
+export function bindCheckoutLocks(store: CheckoutLockStore, cache: QueryClient, client: ActiveKizloClient) {
 	const owner = owners.get(cache)
 	if (owner && owner.client !== client) {
 		if (owner.binding.active || roots.some((queryKey) => cache.getQueryData(queryKey)))
@@ -740,10 +733,9 @@ export function bindCheckoutLocks(store: CheckoutLockStore, cache: QueryClient, 
 	}
 	let binding = bindings.get(store)
 	if (!binding) {
-		binding = createBinding(store, cache, client, cartEnabled)
+		binding = createBinding(store, cache, client)
 		owners.set(cache, { client, binding })
 		bindings.set(store, binding)
 	}
-	binding.configure(cartEnabled)
 	return binding
 }

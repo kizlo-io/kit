@@ -38,6 +38,7 @@ function setup() {
 	client.setQueryData(checkoutQueryKey, sources.checkout)
 	client.setQueryData(cartQueryKey, sources.cart)
 	client.setQueryData(storefrontQueryKey, sources.storefront)
+	procedures.cart.get.call.mockResolvedValue(sources.cart)
 	let contextRenders = 0
 	const ContextConsumer = memo(() => {
 		useWooCommerceContext()
@@ -304,6 +305,7 @@ describe("automatic checkout error integration", () => {
 			await next
 		})
 		expect(result.current.b.error).toBeNull()
+		await waitFor(() => expect(result.current.a.isLocked).toBe(false))
 		act(() => {
 			next = result.current.a.confirmAsync(input)
 			void next.catch(() => {})
@@ -333,6 +335,7 @@ describe("automatic checkout error integration", () => {
 		await waitFor(() => expect(procedures.checkout.confirm.call).toHaveBeenCalledTimes(1))
 		unmount()
 		const revived = { ...env.sources.checkout, orderKey: "revived", cart: { ...env.sources.cart, itemCount: 9 } }
+		procedures.cart.get.call.mockResolvedValue(revived.cart)
 		env.client.setQueryData(checkoutQueryKey, revived)
 		env.client.setQueryData(cartQueryKey, revived.cart)
 		await act(async () => {

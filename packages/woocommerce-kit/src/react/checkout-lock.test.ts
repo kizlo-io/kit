@@ -46,7 +46,7 @@ function setup(seed = true) {
 			QueryClientProvider,
 			{ client: cache },
 			// biome-ignore lint/correctness/noChildrenProp: createElement requires the provider's required children prop in this .ts test.
-			createElement(KizloProvider, { client, children: createElement(WooCommerceProvider, { cartEnabled: false, children }) }),
+			createElement(KizloProvider, { client, children: createElement(WooCommerceProvider, { children }) }),
 		)
 	const store = checkoutLockStore(client, cache)
 	return { source, procedures, cache, client, wrapper, store }
@@ -350,6 +350,7 @@ describe("session ownership", () => {
 			reloading = result.current.refresh()
 		})
 		const confirmed = { ...env.source.checkout, cart: { ...env.source.cart, itemCount: 0 } }
+		env.procedures.cart.get.call.mockResolvedValue(confirmed.cart)
 		await act(async () => {
 			request.resolve(confirmed)
 			await confirmation
@@ -387,6 +388,7 @@ describe("session ownership", () => {
 		})
 		await act(async () => {})
 		const replacement = { ...env.source.checkout, orderKey: "replacement", cart: { ...env.source.cart, itemCount: 9 } }
+		env.procedures.cart.get.call.mockResolvedValue(replacement.cart)
 		act(() => {
 			env.cache.setQueryData(checkoutQueryKey, replacement)
 			env.cache.setQueryData(cartQueryKey, replacement.cart)
@@ -417,6 +419,7 @@ describe("session ownership", () => {
 		const bootstrapped = { ...env.source.checkout, orderKey: "bootstrap" }
 		act(() => env.cache.setQueryData(checkoutQueryKey, bootstrapped))
 		const replacement = { ...env.source.checkout, orderKey: "replacement", cart: { ...env.source.cart, itemCount: 9 } }
+		env.procedures.cart.get.call.mockResolvedValue(replacement.cart)
 		act(() => {
 			env.cache.setQueryData(checkoutQueryKey, replacement)
 			env.cache.setQueryData(cartQueryKey, replacement.cart)
@@ -525,10 +528,10 @@ describe("automatic feature readiness", () => {
 		async (uncertain) => {
 			const env = setup(),
 				cart = seedItem(env),
-				recovery = deferred<Checkout>()
+				recovery = deferred<Cart>()
 			const error = { code: uncertain ? "TIMEOUT" : "CART_ITEM_INVALID_QUANTITY", message: "Refused quantity" }
 			env.procedures.cart.items.update.call.mockRejectedValue(error)
-			env.procedures.checkout.get.call.mockReturnValue(recovery.promise)
+			env.procedures.cart.get.call.mockReturnValue(recovery.promise)
 			const { result } = renderHook(() => ({ item: useCartItem("sku", { autoCommit: false }), checkout: useCheckout() }), {
 				wrapper: env.wrapper,
 			})
@@ -538,7 +541,7 @@ describe("automatic feature readiness", () => {
 			expect(result.current.item.error).toBe(error)
 			expect(result.current.checkout.isLocked).toBe(uncertain)
 			if (uncertain) {
-				await act(async () => recovery.resolve({ ...env.source.checkout, cart }))
+				await act(async () => recovery.resolve(cart))
 				await waitFor(() => expect(result.current.checkout.isLocked).toBe(false))
 			}
 			expect(result.current.item.error).toBe(error)
@@ -560,7 +563,7 @@ describe("automatic feature readiness", () => {
 		expect(result.current.checkout.isLocked).toBe(false)
 		expect(env.procedures.cart.selectShippingRate.call).toHaveBeenCalledTimes(1)
 	})
-	it("keeps uncertain confirmation visible through reset, refresh and order lookup without issuing another POST", async () => {
+	it("keeps uncertain confirmation protected after checkout, cart and order recovery", async () => {
 		const env = setup(),
 			error = { code: "TIMEOUT", message: "Unknown order outcome" }
 		env.procedures.checkout.confirm.call.mockRejectedValue(error)
@@ -581,6 +584,8 @@ describe("automatic feature readiness", () => {
 			expect(result.current.locks.find(({ name }) => name === "checkout.confirmation")?.message).toContain("order was placed"),
 		)
 		expect(result.current.isLocked).toBe(true)
+		expect(env.procedures.checkout.get.call).toHaveBeenCalled()
+		expect(env.procedures.cart.get.call).toHaveBeenCalled()
 		expect(env.procedures.checkout.confirm.call).toHaveBeenCalledTimes(1)
 	})
 	it("updates shared pending activity while another request keeps the same lock category", async () => {
@@ -638,10 +643,10 @@ describe("automatic feature readiness", () => {
 	])("restores refused quantities after unmount (%j)", async ({ alreadyDispatched, uncertain }) => {
 		const env = setup(),
 			gate = deferred<Cart>(),
-			recovery = deferred<Checkout>()
+			recovery = deferred<Cart>()
 		const cart = seedItem(env)
 		env.procedures.cart.items.update.call.mockReturnValue(gate.promise)
-		env.procedures.checkout.get.call.mockReturnValue(recovery.promise)
+		env.procedures.cart.get.call.mockReturnValue(recovery.promise)
 		const checkout = renderHook(() => useCheckout(), { wrapper: env.wrapper })
 		const item = renderHook(() => useCartItem("sku", { debounceMs: 10000 }), { wrapper: env.wrapper })
 		act(() => item.result.current.quantity.set(2))
@@ -660,7 +665,7 @@ describe("automatic feature readiness", () => {
 		expect(env.cache.getQueryData<Cart>(cartQueryKey)?.items[0]?.quantity).toBe(1)
 		expect(checkout.result.current.isLocked).toBe(uncertain)
 		if (uncertain) {
-			await act(async () => recovery.resolve({ ...env.source.checkout, cart }))
+			await act(async () => recovery.resolve(cart))
 			await waitFor(() => expect(checkout.result.current.isLocked).toBe(false))
 		}
 		expect(env.procedures.cart.items.update.call).toHaveBeenCalledTimes(1)

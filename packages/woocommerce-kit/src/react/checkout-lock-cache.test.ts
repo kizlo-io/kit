@@ -9,7 +9,7 @@ import type { Cart, Checkout } from "../types"
 import { bindCheckoutLocks, type CheckoutRequest } from "./checkout-lock-cache"
 
 const caches: QueryClient[] = []
-function setup(cartEnabled = true, attach = true) {
+function setup(attach = true) {
 	const source = fixtures([])
 	const procedures = {
 		cart: { get: { call: vi.fn().mockResolvedValue(source.cart) } },
@@ -21,7 +21,7 @@ function setup(cartEnabled = true, attach = true) {
 	cache.setQueryData(cartQueryKey, source.cart)
 	cache.setQueryData(checkoutQueryKey, source.checkout)
 	const store = checkoutLockStore(client, cache)
-	const bind = () => bindCheckoutLocks(store, cache, client, cartEnabled)
+	const bind = () => bindCheckoutLocks(store, cache, client)
 	return { source, procedures, client, cache, store, binding: attach ? bind() : undefined, bind }
 }
 function deferred<T = Cart>() {
@@ -50,6 +50,69 @@ afterEach(() => {
 	caches.splice(0).forEach((cache) => {
 		cache.unmount()
 		cache.clear()
+	})
+})
+
+describe("pending Kit reads", () => {
+	it.each([
+		["cart", false],
+		["cart", true],
+		["checkout", false],
+		["checkout", true],
+	] as const)("caches %s after detach (reattach: %s)", async (kind, reattach) => {
+		const env = setup(),
+			binding = env.bind(),
+			gate = deferred<Cart | Checkout>(),
+			queryKey = kind === "cart" ? cartQueryKey : checkoutQueryKey,
+			data = kind === "cart" ? env.source.cart : env.source.checkout,
+			call = env.procedures[kind].get.call
+		env.cache.removeQueries()
+		call.mockReturnValue(gate.promise)
+		const observer = new QueryObserver<Cart | Checkout>(env.cache, {
+			queryKey,
+			queryFn: () => (kind === "cart" ? binding.readCart() : binding.readCheckout()),
+		})
+		const detach = binding.attach(),
+			unsubscribe = observer.subscribe(() => {})
+		unsubscribe()
+		detach()
+		expect(env.cache.getQueryState(queryKey)?.fetchStatus).toBe("fetching")
+		const stop = reattach ? observer.subscribe(() => {}) : () => {}
+		expect(call).toHaveBeenCalledTimes(1)
+		gate.resolve(data)
+		await drain()
+		expect(env.cache.getQueryData(queryKey)).toBe(data)
+		if (kind === "checkout") expect(env.cache.getQueryData(cartQueryKey)).toBe(env.source.cart)
+		expect(call).toHaveBeenCalledTimes(1)
+		stop()
+	})
+
+	it.each(["session", "confirmation", "disposal", "client"] as const)("rejects checkout reads after %s replacement", async (change) => {
+		const env = setup(),
+			binding = env.bind(),
+			gate = deferred<Checkout>(),
+			cart = { ...env.source.cart, itemCount: 9 },
+			checkout = { ...env.source.checkout, cart, orderKey: "new-session" }
+		env.procedures.checkout.get.call.mockReturnValue(gate.promise)
+		const read = env.cache.fetchQuery({ queryKey: checkoutQueryKey, staleTime: 0, queryFn: () => binding.readCheckout() }).catch(() => {})
+		if (change === "confirmation") {
+			env.procedures.cart.get.call.mockResolvedValue(cart)
+			binding.publishCheckout(binding.reserve("order"), checkout)
+		} else {
+			if (change === "disposal") binding.dispose()
+			if (change === "client") {
+				env.cache.removeQueries()
+				const client = { woocommerce: env.procedures } as unknown as ActiveKizloClient
+				bindCheckoutLocks(checkoutLockStore(client, env.cache), env.cache, client)
+			}
+			env.cache.setQueryData(checkoutQueryKey, checkout)
+			env.cache.setQueryData(cartQueryKey, cart)
+		}
+		gate.resolve(env.source.checkout)
+		await read
+		await drain()
+		expect(env.cache.getQueryData(checkoutQueryKey)).toEqual(checkout)
+		expect(env.cache.getQueryData(cartQueryKey)).toEqual(cart)
 	})
 })
 
@@ -152,7 +215,7 @@ describe("cache-derived readiness", () => {
 		expect(env.store.state.get().isLocked).toBe(false)
 	})
 	it("cold attachment conservatively retains ambiguous historical errors until future recovery", async () => {
-		const env = setup(true, false),
+		const env = setup(false),
 			failure = new Error("history")
 		for (const fails of [true, false]) {
 			const mutation = env.cache.getMutationCache().build(env.cache, {
@@ -317,10 +380,10 @@ describe("cache-derived readiness", () => {
 		const detach = binding.attach(),
 			client = { woocommerce: env.procedures } as unknown as ActiveKizloClient,
 			store = checkoutLockStore(client, env.cache)
-		expect(() => bindCheckoutLocks(store, env.cache, client, true)).toThrow("separate QueryClients")
+		expect(() => bindCheckoutLocks(store, env.cache, client)).toThrow("separate QueryClients")
 		detach()
 		env.cache.clear()
-		const next = bindCheckoutLocks(store, env.cache, client, true)
+		const next = bindCheckoutLocks(store, env.cache, client)
 		const mutation = env.cache.getMutationCache().build(env.cache, {
 			mutationKey: [...cartMutationKey, "newFeature"],
 			mutationFn: async () => {
@@ -334,10 +397,12 @@ describe("cache-derived readiness", () => {
 })
 
 describe("query readiness and publication", () => {
-	it("requires acknowledgement when a replacement checkout does not match the retained cart", async () => {
+	it("requires a fresh cart API acknowledgement after checkout session replacement", async () => {
 		const env = setup(),
-			binding = env.bind()
+			binding = env.bind(),
+			cart = deferred<Cart>()
 		binding.enableCheckout()
+		env.procedures.cart.get.call.mockReturnValue(cart.promise)
 		env.cache.setQueryData(checkoutQueryKey, {
 			...env.source.checkout,
 			orderKey: "replacement",
@@ -350,11 +415,15 @@ describe("query readiness and publication", () => {
 			orderKey: "replacement",
 			cart: { ...env.source.cart, itemCount: 7 },
 		})
-		await env.cache.fetchQuery({ queryKey: checkoutQueryKey, staleTime: 0, queryFn: ({ signal }) => binding.readCheckout(signal) })
+		await env.cache.fetchQuery({ queryKey: checkoutQueryKey, staleTime: 0, queryFn: () => binding.readCheckout() })
+		expect(env.store.state.get().isLocked).toBe(true)
+		cart.resolve({ ...env.source.cart, itemCount: 9 })
+		await drain()
 		expect(env.store.state.get().isLocked).toBe(false)
+		expect(env.cache.getQueryData<Cart>(cartQueryKey)?.itemCount).toBe(9)
 	})
 	it("retains a cold uncertain confirmation without replaying it", async () => {
-		const env = setup(true, false),
+		const env = setup(false),
 			post = vi.fn(async () => {
 				throw { code: "TIMEOUT" }
 			})
@@ -370,7 +439,7 @@ describe("query readiness and publication", () => {
 		expect(post).toHaveBeenCalledTimes(1)
 	})
 	it("does not trust cached presence after a cold failed read, or manual publication during recovery", async () => {
-		const env = setup(true, false),
+		const env = setup(false),
 			gate = deferred<Checkout>()
 		await env.cache
 			.fetchQuery({
@@ -395,7 +464,7 @@ describe("query readiness and publication", () => {
 		expect(env.store.state.get().isLocked).toBe(false)
 	})
 	it("accepts a current Kit cart response after an untrusted read failure", async () => {
-		const env = setup(true, false)
+		const env = setup(false)
 		await env.cache
 			.fetchQuery({
 				queryKey: cartQueryKey,
@@ -453,12 +522,12 @@ describe("query readiness and publication", () => {
 		})
 		expect(env.store.state.get().isLocked).toBe(false)
 	})
-	it.each([true, false])("recovers uncertain coupons through authoritative reads without replay (cartEnabled: %s)", async (cartEnabled) => {
-		const env = setup(cartEnabled),
+	it("recovers uncertain coupons through authoritative cart reads without replay", async () => {
+		const env = setup(),
 			binding = env.bind(),
-			recovery = deferred<Cart | Checkout>()
+			recovery = deferred<Cart>()
 		binding.enableCheckout()
-		const procedure = cartEnabled ? env.procedures.cart.get.call : env.procedures.checkout.get.call
+		const procedure = env.procedures.cart.get.call
 		procedure.mockReturnValue(recovery.promise)
 		const error = { code: "TIMEOUT", message: "The write may have succeeded" }
 		const write = vi.fn(async () => {
@@ -471,7 +540,7 @@ describe("query readiness and publication", () => {
 		expect(env.store.state.get().entries.some(({ name }) => name === "cart.reconciliation")).toBe(true)
 		binding.restore("cart.coupon")
 		expect(() => binding.reserve("order")).toThrow()
-		recovery.resolve(cartEnabled ? env.source.cart : env.source.checkout)
+		recovery.resolve(env.source.cart)
 		await drain()
 		expect(env.store.state.get().isLocked).toBe(false)
 		expect(binding.readiness.failure("cart.coupon")?.error).toBe(error)
@@ -497,7 +566,7 @@ describe("query readiness and publication", () => {
 		expect(() => binding.reserve("order")).toThrow()
 		expect(env.procedures.cart.get.call).toHaveBeenCalledTimes(1)
 		env.procedures.cart.get.call.mockResolvedValue(env.source.cart)
-		await env.cache.fetchQuery({ queryKey: cartQueryKey, staleTime: 0, queryFn: ({ signal }) => binding.readCart(signal) })
+		await env.cache.fetchQuery({ queryKey: cartQueryKey, staleTime: 0, queryFn: () => binding.readCart() })
 		expect(env.store.state.get().isLocked).toBe(false)
 	})
 	it.each([true, false])("recovers address fields across full and partial corrections (full failure: %s)", async (fullFailure) => {
@@ -617,7 +686,7 @@ describe("query readiness and publication", () => {
 		unsubscribe()
 	})
 	it("retains required read failures through eviction and safely bootstraps cold hydrated checkout", async () => {
-		const env = setup(false),
+		const env = setup(),
 			binding = env.bind()
 		binding.enableCheckout()
 		await env.cache
@@ -637,18 +706,21 @@ describe("query readiness and publication", () => {
 		expect(env.store.state.get().isLocked).toBe(true)
 		await env.cache.fetchQuery({ queryKey: cartQueryKey, staleTime: 0, queryFn: async () => env.source.cart })
 		expect(env.store.state.get().isLocked).toBe(false)
-		const cold = setup(false, false)
+		const cold = setup(false)
 		cold.cache.removeQueries({ queryKey: cartQueryKey })
 		cold.bind().enableCheckout()
-		expect(cold.cache.getQueryData(cartQueryKey)).toBe(cold.source.cart)
+		expect(cold.cache.getQueryData(cartQueryKey)).toBeUndefined()
+		await drain()
+		expect(cold.cache.getQueryData(cartQueryKey)).toEqual(cold.source.cart)
+		expect(cold.procedures.cart.get.call).toHaveBeenCalledTimes(1)
 	})
-	it("checks cancellation before a late read can repopulate removed caches", async () => {
+	it("rejects a late read before it can repopulate removed caches", async () => {
 		const env = setup(),
 			binding = env.bind(),
 			gate = deferred<Checkout>()
 		env.procedures.checkout.get.call.mockReturnValue(gate.promise)
 		const request = env.cache
-			.fetchQuery({ queryKey: checkoutQueryKey, staleTime: 0, queryFn: ({ signal }) => binding.readCheckout(signal) })
+			.fetchQuery({ queryKey: checkoutQueryKey, staleTime: 0, queryFn: () => binding.readCheckout() })
 			.catch(() => {})
 		env.cache.removeQueries({ queryKey: checkoutQueryKey })
 		env.cache.setQueryData(cartQueryKey, { ...env.source.cart, itemCount: 9 })
@@ -663,9 +735,7 @@ describe("query readiness and publication", () => {
 			binding = env.bind(),
 			gate = deferred<Checkout>()
 		env.procedures.checkout.get.call.mockReturnValue(gate.promise)
-		const read = env.cache
-			.fetchQuery({ queryKey: checkoutQueryKey, staleTime: 0, queryFn: ({ signal }) => binding.readCheckout(signal) })
-			.catch(() => {})
+		const read = env.cache.fetchQuery({ queryKey: checkoutQueryKey, staleTime: 0, queryFn: () => binding.readCheckout() }).catch(() => {})
 		const write = binding.admit("update")
 		binding.publishCart(write.token, { ...env.source.cart, itemCount: 9 })
 		gate.resolve(env.source.checkout)
@@ -677,6 +747,40 @@ describe("query readiness and publication", () => {
 })
 
 describe("authoritative cart reconciliation", () => {
+	it("finishes cart reconciliation after the last observer leaves", async () => {
+		const env = setup(),
+			binding = env.bind(),
+			read = deferred<Cart>(),
+			a = deferred(),
+			b = deferred(),
+			queryKey = cartQueryKey,
+			call = env.procedures.cart.get.call,
+			cart = { ...env.source.cart, itemCount: 9 },
+			data = cart
+		binding.enableCheckout()
+		call.mockReturnValue(read.promise)
+		const run = (gate: ReturnType<typeof deferred<Cart>>) =>
+			env.cache
+				.getMutationCache()
+				.build(env.cache, { mutationKey: itemMutationKey, mutationFn: () => gate.promise })
+				.execute(binding.admit("write"))
+		const first = run(a),
+			second = run(b)
+		a.resolve(env.source.cart)
+		b.resolve(env.source.cart)
+		await Promise.all([first, second])
+		const observer = new QueryObserver(env.cache, { queryKey, staleTime: Infinity })
+		observer.subscribe(() => {})()
+		expect(env.cache.getQueryState(queryKey)?.fetchStatus).toBe("fetching")
+		expect(call).toHaveBeenCalledTimes(1)
+		read.resolve(data)
+		await drain()
+		expect(env.cache.getQueryData(queryKey)).toEqual(data)
+		expect(env.cache.getQueryData(cartQueryKey)).toEqual(cart)
+		expect(env.store.state.get().isLocked).toBe(false)
+		expect(call).toHaveBeenCalledTimes(1)
+	})
+
 	it.each([true, false])("reconciles overlapping full-cart responses without an unlock gap (B finishes first: %s)", async (bFirst) => {
 		const env = setup(),
 			binding = env.bind(),
@@ -760,14 +864,14 @@ describe("authoritative cart reconciliation", () => {
 		expect(env.cache.getQueryData<Cart>(cartQueryKey)?.itemCount).toBe(5)
 		expect(env.store.state.get().isLocked).toBe(false)
 	})
-	it.each([true, false])("retains a failed reconciliation until explicit read retry (cartEnabled: %s)", async (cartEnabled) => {
-		const env = setup(cartEnabled),
+	it("retains a failed reconciliation until explicit cart read retry", async () => {
+		const env = setup(),
 			binding = env.bind(),
 			a = deferred(),
 			b = deferred(),
 			error = new Error("reconciliation failed")
 		binding.enableCheckout()
-		const procedure = cartEnabled ? env.procedures.cart.get : env.procedures.checkout.get
+		const procedure = env.procedures.cart.get
 		procedure.call.mockRejectedValueOnce(error)
 		const run = (gate: ReturnType<typeof deferred<Cart>>) =>
 			env.cache
@@ -782,8 +886,7 @@ describe("authoritative cart reconciliation", () => {
 		await drain()
 		expect(env.store.state.get().isLocked).toBe(true)
 		expect(procedure.call).toHaveBeenCalledTimes(1)
-		if (cartEnabled) await env.cache.fetchQuery({ queryKey: cartQueryKey, staleTime: 0, queryFn: ({ signal }) => binding.readCart(signal) })
-		else await env.cache.fetchQuery({ queryKey: checkoutQueryKey, staleTime: 0, queryFn: ({ signal }) => binding.readCheckout(signal) })
+		await env.cache.fetchQuery({ queryKey: cartQueryKey, staleTime: 0, queryFn: () => binding.readCart() })
 		expect(env.store.state.get().isLocked).toBe(false)
 	})
 })
@@ -797,7 +900,7 @@ it("resumes missing checkout bootstrap after a write cancelled the initial read"
 	env.cache.removeQueries({ queryKey: checkoutQueryKey })
 	env.procedures.checkout.get.call.mockReturnValueOnce(firstRead.promise).mockReturnValueOnce(freshRead.promise)
 	binding.enableCheckout()
-	const read = env.cache.fetchQuery({ queryKey: checkoutQueryKey, queryFn: ({ signal }) => binding.readCheckout(signal) }).catch(() => {})
+	const read = env.cache.fetchQuery({ queryKey: checkoutQueryKey, queryFn: () => binding.readCheckout() }).catch(() => {})
 	const variables = binding.admit("cart write")
 	const mutation = env.cache.getMutationCache().build(env.cache, {
 		mutationKey: addressMutationKey,
@@ -853,21 +956,16 @@ it("counts both pending scoped mutations while only the first has started HTTP",
 })
 
 describe("total conflict publication", () => {
-	it.each([
-		[true, "pending"],
-		[false, "pending"],
-		[true, "completed"],
-		[false, "completed"],
-	] as const)("reconciles a read started during confirmation (cartEnabled: %s, read: %s)", async (cartEnabled, readState) => {
-		const env = setup(cartEnabled),
+	it.each(["pending", "completed"] as const)("reconciles a cart read started during confirmation (%s)", async (readState) => {
+		const env = setup(),
 			binding = env.bind(),
-			oldRead = deferred<Cart | Checkout>(),
-			freshRead = deferred<Cart | Checkout>(),
+			oldRead = deferred<Cart>(),
+			freshRead = deferred<Cart>(),
 			post = deferred<Checkout>(),
 			confirm = vi.fn(() => post.promise)
 		binding.enableCheckout()
 		const updated = { ...env.source.cart, totals: { ...env.source.cart.totals, total: 54321 } }
-		const procedure = cartEnabled ? env.procedures.cart.get.call : env.procedures.checkout.get.call
+		const procedure = env.procedures.cart.get.call
 		procedure.mockReturnValueOnce(oldRead.promise).mockReturnValueOnce(freshRead.promise)
 		const request = binding.reserve({ expectedTotal: "12345" })
 		const mutation = env.cache.getMutationCache().build(env.cache, {
@@ -880,15 +978,15 @@ describe("total conflict publication", () => {
 		const pending = mutation.execute(request).catch(() => {})
 		await vi.waitFor(() => expect(confirm).toHaveBeenCalledTimes(1))
 		const read = env.cache
-			.fetchQuery<Cart | Checkout>({
-				queryKey: cartEnabled ? cartQueryKey : checkoutQueryKey,
+			.fetchQuery<Cart>({
+				queryKey: cartQueryKey,
 				staleTime: 0,
-				queryFn: ({ signal }) => (cartEnabled ? binding.readCart(signal) : binding.readCheckout(signal)),
+				queryFn: () => binding.readCart(),
 			})
 			.catch(() => {})
 		await vi.waitFor(() => expect(procedure).toHaveBeenCalledTimes(1))
 		if (readState === "completed") {
-			oldRead.resolve(cartEnabled ? env.source.cart : env.source.checkout)
+			oldRead.resolve(env.source.cart)
 			await read
 		}
 		post.reject({ code: "CHECKOUT_TOTAL_MISMATCH", message: "Total mismatch" })
@@ -896,20 +994,20 @@ describe("total conflict publication", () => {
 		await vi.waitFor(() => expect(procedure).toHaveBeenCalledTimes(2))
 		expect(env.store.state.get().isLocked).toBe(true)
 		expect(env.cache.getQueryData<Cart>(cartQueryKey)?.totals.total).toBe(12345)
-		freshRead.resolve(cartEnabled ? updated : { ...env.source.checkout, cart: updated })
+		freshRead.resolve(updated)
 		await vi.waitFor(() => expect(env.store.state.get().isLocked).toBe(false))
-		oldRead.resolve(cartEnabled ? env.source.cart : env.source.checkout)
+		oldRead.resolve(env.source.cart)
 		await read
 		await drain()
 		expect(env.cache.getQueryData<Cart>(cartQueryKey)?.totals.total).toBe(54321)
 		expect(request.payload.expectedTotal).toBe("12345")
 		expect(confirm).toHaveBeenCalledTimes(1)
 		expect(procedure).toHaveBeenCalledTimes(2)
-		expect(cartEnabled ? env.procedures.checkout.get.call : env.procedures.cart.get.call).not.toHaveBeenCalled()
+		expect(env.procedures.checkout.get.call).not.toHaveBeenCalled()
 		binding.dispose()
 	})
 	it.each(["current", "session", "revision", "cart"] as const)("accepts only current confirmation evidence (%s)", (change) => {
-		const env = setup(false),
+		const env = setup(),
 			binding = env.bind()
 		binding.enableCheckout()
 		const request = binding.reserve({ expectedTotal: "12345" })
@@ -920,7 +1018,7 @@ describe("total conflict publication", () => {
 		const evidence = { ...env.source.cart, totals: { ...env.source.cart.totals, total: 54321 } }
 		binding.reviewTotal(request, evidence)
 		expect(env.cache.getQueryData(cartQueryKey)).toEqual(change === "current" ? evidence : change === "cart" ? newer : env.source.cart)
-		expect(env.procedures.cart.get.call).not.toHaveBeenCalled()
+		expect(env.procedures.cart.get.call).toHaveBeenCalledTimes(change === "current" ? 0 : 1)
 		binding.discard(request)
 	})
 })
