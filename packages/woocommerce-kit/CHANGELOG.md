@@ -1,5 +1,11 @@
 # @kizlo/woocommerce-kit
 
+## 0.12.0
+
+### Minor Changes
+
+- [#45](https://github.com/kizlo-io/kit/pull/45) [`2bfec23`](https://github.com/kizlo-io/kit/commit/2bfec23035984640b452c20493462e1cc9af9bd8) Thanks [@IDJGILL](https://github.com/IDJGILL)! - Let pending reads finish across unmounts, refresh cart independently of checkout responses, and remove the cartEnabled provider option.
+
 ## 0.11.1
 
 ### Patch Changes
