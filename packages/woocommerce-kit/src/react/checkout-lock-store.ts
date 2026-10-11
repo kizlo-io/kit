@@ -8,9 +8,9 @@ import { useWooCommerceContext } from "./context"
 
 export function useCheckoutLockStore() {
 	const { client } = useKizloContext()
-	const { queryClient, cartEnabled } = useWooCommerceContext()
+	const { queryClient } = useWooCommerceContext()
 	const store = checkoutLockStore(client, queryClient)
-	const binding = bindCheckoutLocks(store, queryClient, client, cartEnabled)
+	const binding = bindCheckoutLocks(store, queryClient, client)
 	useEffect(() => binding.attach(), [binding])
 	return binding
 }

@@ -65,15 +65,14 @@ export function shippingQuoteSignature(address: Partial<CartShippingAddress>): s
 }
 
 /**
- * The one cache entry the whole cart shares. Exported because an app that obtains a cart by another route — a checkout
- * snapshot does exactly this — has to be able to seed the same entry instead of racing a second fetch.
+ * The one cache entry the whole cart shares. Checkout refreshes this entry through the cart API, independently of its response.
  *
- * @example Seeding the cart from a checkout response, so the badge does not refetch
+ * @example Publishing an acknowledged cart mutation response
  * ```ts
  * import { cartQueryKey } from "@kizlo/woocommerce-kit"
  *
- * const snapshot = await client.woocommerce.checkout.get.call()
- * queryClient.setQueryData(cartQueryKey, snapshot.cart)
+ * const cart = await client.woocommerce.cart.items.add.call({ body: { productId: 42, quantity: 1 } })
+ * queryClient.setQueryData(cartQueryKey, cart)
  * ```
  */
 export { cartQueryKey } from "./session-keys"

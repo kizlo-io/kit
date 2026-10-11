@@ -4,8 +4,7 @@
  * React adapter for checkout: one query, one confirmation and no feature provider.
  *
  * The checkout snapshot is browser-session state. It runs on the app's query client from `WooCommerceProvider`, reads the
- * browser Kizlo client from `KizloProvider`, and seeds the cart's existing cache entry so checkout and every cart consumer see
- * one cart.
+ * browser Kizlo client from `KizloProvider`, and refreshes cart through its own API into the shared cart cache.
  */
 
 import { useMutation } from "@tanstack/react-query"
@@ -15,14 +14,14 @@ import { type CheckoutCallbacks, type CheckoutSuccessEvent, checkoutQueryKey, re
 import { checkoutSession } from "../checkout-errors"
 import { type CheckoutLockEntry, CheckoutLockedError } from "../checkout-locks"
 import { checkoutMutationKey } from "../session-keys"
-import type { Checkout, CheckoutError, ConfirmCheckoutInput } from "../types"
+import type { CartError, Checkout, CheckoutError, ConfirmCheckoutInput } from "../types"
 import { useCheckoutErrorState, useCheckoutErrorStore } from "./checkout-error-store"
 import type { CheckoutRequest } from "./checkout-lock-cache"
 import { useCheckoutLockState, useCheckoutLockStore } from "./checkout-lock-store"
 import { type CheckoutDependency, checkoutWatchSignature } from "./checkout-watch"
 import { useWooCommerceContext } from "./context"
 import { notify } from "./notify"
-import { useCheckoutQuery } from "./session-queries"
+import { useCartQuery, useCheckoutQuery } from "./session-queries"
 
 /** The core checkout types, available beside the hook that returns them. */
 export type {
@@ -44,8 +43,8 @@ export type { CheckoutDependency } from "./checkout-watch"
 export type CheckoutApi = {
 	/** The store's raw checkout snapshot, or `null` before it loads and when loading failed. */
 	checkout: Checkout | null
-	/** The last fetch or confirmation failure. */
-	error: CheckoutError | null
+	/** The last checkout/cart fetch or confirmation failure. */
+	error: CheckoutError | CartError | null
 	/** Places the order. Returns nothing: the order and where to send the browser next arrive on the success event. */
 	confirm: (input: ConfirmCheckoutInput) => void
 	/** Places the order and returns the acknowledged checkout; rejects with the original SDK error or a local CheckoutLockedError. */
@@ -117,6 +116,7 @@ export function useCheckout(options?: CheckoutHookOptions): CheckoutApi {
 	const { queryClient } = useWooCommerceContext()
 
 	const checkoutQuery = useCheckoutQuery()
+	const cartQuery = useCartQuery(checkoutQuery.data !== undefined)
 	const binding = useCheckoutLockStore()
 	const { store: locks } = binding
 	const owner = useMemo(() => ({}), [])
@@ -126,7 +126,6 @@ export function useCheckout(options?: CheckoutHookOptions): CheckoutApi {
 	useLayoutEffect(() => binding.watch.register(owner, watchOptions), [binding, owner, watchOptions])
 	useLayoutEffect(() => () => binding.watch.unregister(owner), [binding, owner])
 	const lockState = useCheckoutLockState(locks)
-	useLayoutEffect(() => binding.enableCheckout(), [binding])
 	const errors = useCheckoutErrorStore()
 	const errorState = useCheckoutErrorState(errors)
 	const session = checkoutSession(checkoutQuery.data)
@@ -192,8 +191,8 @@ export function useCheckout(options?: CheckoutHookOptions): CheckoutApi {
 
 	const refresh = useCallback(async () => {
 		clearSettled()
-		await queryClient.refetchQueries({ queryKey: checkoutQueryKey })
-	}, [clearSettled, queryClient])
+		await binding.refreshFields()
+	}, [clearSettled, binding])
 	const rejectAdmission = useCallback(
 		(error: CheckoutLockedError, input: ConfirmCheckoutInput) => {
 			errors.reject(error)
@@ -245,7 +244,7 @@ export function useCheckout(options?: CheckoutHookOptions): CheckoutApi {
 		checkout: checkoutQuery.data ?? null,
 		confirm,
 		confirmAsync,
-		error: binding.confirmationError ?? errorState.error ?? checkoutQuery.error,
+		error: binding.confirmationError ?? errorState.error ?? checkoutQuery.error ?? cartQuery.error,
 		isLoading: checkoutQuery.isPending,
 		isPending,
 		isLocked: lockState.isLocked,

@@ -1,14 +1,15 @@
 // @vitest-environment happy-dom
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
-import { act, renderHook, waitFor } from "@testing-library/react"
+import { act, cleanup, renderHook, waitFor } from "@testing-library/react"
 import { createElement, type ReactNode } from "react"
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { cartQueryKey } from "../cart"
 import { type CheckoutCallbacks, checkoutQueryKey } from "../checkout"
 import { checkoutFormEncode } from "../checkout-form"
 import { fixtures } from "../test/checkout-fields-fixture"
 import type { Checkout, CheckoutError, ConfirmCheckoutInput } from "../types"
+import { useCart } from "./cart"
 import { useCheckout } from "./checkout"
 import { useCheckoutFields } from "./checkout-fields"
 import { WooCommerceProvider } from "./provider"
@@ -44,14 +45,225 @@ function mount(options?: CheckoutCallbacks, mutations?: { retry: number }) {
 	return { queryClient, ...renderHook(() => useCheckout(options), { wrapper }) }
 }
 
+beforeEach(() => {
+	procedures.cartGet.call.mockResolvedValue(fixtures([]).cart)
+})
 afterEach(() => {
-	vi.clearAllMocks()
+	cleanup()
+	vi.resetAllMocks()
+})
+
+describe("independent checkout and cart reads", () => {
+	it("replaces a pending cart read when checkout establishes the session", async () => {
+		const source = fixtures([]),
+			queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+		let resolve!: (cart: typeof source.cart) => void
+		procedures.get.call.mockResolvedValue(source.checkout)
+		procedures.cartGet.call
+			.mockReturnValueOnce(
+				new Promise((yes) => {
+					resolve = yes
+				}),
+			)
+			.mockResolvedValue(source.cart)
+		const wrapper = ({ children }: { children: ReactNode }) =>
+			createElement(QueryClientProvider, { client: queryClient }, createElement(WooCommerceProvider, { children }))
+		const { result, unmount } = renderHook(() => ({ cart: useCart(), checkout: useCheckout() }), { wrapper })
+		await waitFor(() => expect(result.current.checkout.checkout).toEqual(source.checkout))
+		await waitFor(() => expect(result.current.checkout.isLocked).toBe(false))
+		await act(async () => resolve({ ...source.cart, itemCount: 99 }))
+		expect(queryClient.getQueryData(cartQueryKey)).toEqual(source.cart)
+		expect(procedures.cartGet.call).toHaveBeenCalledTimes(2)
+		unmount()
+		queryClient.clear()
+	})
+	it("loads cart from its API, ignoring the embedded snapshot", async () => {
+		const source = fixtures([]),
+			cart = { ...source.cart, itemCount: 9 },
+			checkout = { ...source.checkout, cart: null },
+			queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+		let resolve!: (cart: typeof source.cart) => void
+		procedures.get.call.mockResolvedValue(checkout)
+		procedures.cartGet.call.mockReturnValue(
+			new Promise((yes) => {
+				resolve = yes
+			}),
+		)
+		const wrapper = ({ children }: { children: ReactNode }) =>
+			createElement(QueryClientProvider, { client: queryClient }, createElement(WooCommerceProvider, { children }))
+		const { result, unmount } = renderHook(() => useCheckout(), { wrapper })
+		await waitFor(() => expect(procedures.cartGet.call).toHaveBeenCalledTimes(1))
+		expect(result.current.checkout).toEqual(checkout)
+		expect(result.current.isLocked).toBe(true)
+		expect(queryClient.getQueryData(cartQueryKey)).toBeUndefined()
+		await act(async () => resolve(cart))
+		await waitFor(() => expect(result.current.isLocked).toBe(false))
+		expect(queryClient.getQueryData(cartQueryKey)).toEqual(cart)
+		unmount()
+		queryClient.clear()
+	})
+
+	it("keeps a cart refresh failure visible and locked until explicit retry", async () => {
+		const source = fixtures([]),
+			error = Object.assign(new Error("Cart unavailable"), { code: "INTERNAL_SERVER_ERROR" })
+		procedures.get.call.mockResolvedValue(source.checkout)
+		procedures.cartGet.call.mockRejectedValue(error)
+		const { result, queryClient, unmount } = mount()
+		await waitFor(() => expect(result.current.error).toBe(error))
+		expect(result.current.checkout).toEqual(source.checkout)
+		expect(result.current.isLocked).toBe(true)
+		procedures.cartGet.call.mockResolvedValue(source.cart)
+		await act(async () => result.current.refresh())
+		await waitFor(() => expect(result.current.isLocked).toBe(false))
+		expect(result.current.error).toBeNull()
+		expect(queryClient.getQueryData(cartQueryKey)).toEqual(source.cart)
+		expect(procedures.confirm.call).not.toHaveBeenCalled()
+		unmount()
+		queryClient.clear()
+	})
+
+	it("refreshes cart after a hydrated checkout without publishing its embedded cart", async () => {
+		const source = fixtures([]),
+			cart = { ...source.cart, itemCount: 9 },
+			queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
+		queryClient.setQueryData(checkoutQueryKey, source.checkout)
+		procedures.cartGet.call.mockResolvedValue(cart)
+		const wrapper = ({ children }: { children: ReactNode }) =>
+			createElement(QueryClientProvider, { client: queryClient }, createElement(WooCommerceProvider, { children }))
+		const { result, unmount } = renderHook(() => useCheckout(), { wrapper })
+		await waitFor(() => expect(result.current.isLocked).toBe(false))
+		expect(queryClient.getQueryData(cartQueryKey)).toEqual(cart)
+		expect(procedures.cartGet.call).toHaveBeenCalledTimes(1)
+		expect(procedures.get.call).not.toHaveBeenCalled()
+		unmount()
+		queryClient.clear()
+	})
+
+	it("overlapping checkout refreshes cannot overwrite the cart API snapshot", async () => {
+		const source = fixtures([]),
+			cart = { ...source.cart, itemCount: 9 },
+			newer = { ...source.checkout, customerNote: "newer", cart: { ...source.cart, itemCount: 5 } }
+		procedures.get.call.mockResolvedValue(source.checkout)
+		procedures.cartGet.call.mockResolvedValue(cart)
+		const { result, queryClient, unmount } = mount()
+		await waitFor(() => expect(result.current.isLocked).toBe(false))
+		let resolveOld!: (checkout: Checkout) => void
+		procedures.get.call
+			.mockReturnValueOnce(
+				new Promise((yes) => {
+					resolveOld = yes
+				}),
+			)
+			.mockResolvedValueOnce(newer)
+		let older!: Promise<void>
+		act(() => {
+			older = result.current.refresh()
+		})
+		await waitFor(() => expect(procedures.get.call).toHaveBeenCalledTimes(2))
+		await act(async () => result.current.refresh())
+		await act(async () => {
+			resolveOld({ ...source.checkout, cart: { ...source.cart, itemCount: 3 } })
+			await older
+		})
+		expect(queryClient.getQueryData(checkoutQueryKey)).toEqual(newer)
+		expect(queryClient.getQueryData(cartQueryKey)).toEqual(cart)
+		expect(procedures.cartGet.call).toHaveBeenCalled()
+		unmount()
+		queryClient.clear()
+	})
+})
+
+describe("pending checkout reads", () => {
+	it("reuses a pending checkout across Strict Mode remounts and refreshes cart after unmount", async () => {
+		let resolve!: (checkout: Checkout) => void
+		const request = new Promise<Checkout>((yes) => {
+			resolve = yes
+		})
+		const checkout = storeCheckout(null, 2),
+			queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } })
+		procedures.get.call.mockReturnValueOnce(request)
+		const wrapper = ({ children }: { children: ReactNode }) =>
+			createElement(QueryClientProvider, { client: queryClient }, createElement(WooCommerceProvider, { children }))
+		const first = renderHook(() => useCheckout(), { wrapper, reactStrictMode: true })
+		expect(first.result.current.isLoading).toBe(true)
+		expect(procedures.get.call).toHaveBeenCalledTimes(1)
+		first.unmount()
+		const second = renderHook(() => useCheckout(), { wrapper, reactStrictMode: true })
+		expect(procedures.get.call).toHaveBeenCalledTimes(1)
+		second.unmount()
+		resolve(checkout)
+		await waitFor(() => expect(queryClient.getQueryData(checkoutQueryKey)).toEqual(checkout))
+		await waitFor(() => expect(queryClient.getQueryData(cartQueryKey)).toEqual(fixtures([]).cart))
+		expect(procedures.cartGet.call).toHaveBeenCalledTimes(1)
+		expect(procedures.get.call).toHaveBeenCalledTimes(1)
+		queryClient.clear()
+	})
 })
 
 describe("useCheckout confirmation", () => {
-	it("seeds the checkout and the cart, and reports where the browser goes next", async () => {
+	it("keeps a successful confirmation successful when its cart refresh fails, without replaying the POST", async () => {
+		const source = fixtures([]),
+			confirmed = { ...source.checkout, cart: null },
+			error = Object.assign(new Error("Cart unavailable"), { code: "INTERNAL_SERVER_ERROR" }),
+			onSuccess = vi.fn(),
+			onError = vi.fn(),
+			onSettled = vi.fn()
+		procedures.get.call.mockResolvedValue(source.checkout)
+		procedures.confirm.call.mockResolvedValue(confirmed)
+		const { result, queryClient, unmount } = mount({ onSuccess, onError, onSettled }, { retry: 3 })
+		await waitFor(() => expect(result.current.isLocked).toBe(false))
+		procedures.cartGet.call.mockRejectedValue(error)
+		await act(async () => expect(result.current.confirmAsync(input)).resolves.toBe(confirmed))
+		await waitFor(() => expect(result.current.error).toBe(error))
+		expect(result.current.isLocked).toBe(true)
+		expect(queryClient.getQueryData(checkoutQueryKey)).toEqual(confirmed)
+		expect(queryClient.getQueryData(cartQueryKey)).toEqual(source.cart)
+		expect(onSuccess).toHaveBeenCalledTimes(1)
+		expect(onSettled).toHaveBeenCalledTimes(1)
+		expect(onError).not.toHaveBeenCalled()
+		procedures.cartGet.call.mockResolvedValue(source.cart)
+		procedures.get.call.mockResolvedValue(confirmed)
+		await act(async () => result.current.refresh())
+		await waitFor(() => expect(result.current.isLocked).toBe(false))
+		expect(result.current.error).toBeNull()
+		expect(procedures.confirm.call).toHaveBeenCalledTimes(1)
+		unmount()
+		queryClient.clear()
+	})
+	it("settles one confirmation and publishes its result after unmount", async () => {
+		let resolve!: (checkout: Checkout) => void
+		procedures.get.call.mockResolvedValue(storeCheckout(null, 2))
+		procedures.confirm.call.mockReturnValueOnce(
+			new Promise<Checkout>((yes) => {
+				resolve = yes
+			}),
+		)
+		const onSettled = vi.fn(),
+			confirmed = storeCheckout(42, 0),
+			cart = { ...fixtures([]).cart, items: [], itemCount: 0 }
+		const { result, queryClient, unmount } = mount({ onSettled }, { retry: 3 })
+		await waitFor(() => expect(result.current.isLocked).toBe(false))
+		procedures.cartGet.call.mockResolvedValue(cart)
+		let pending!: Promise<Checkout>
+		act(() => {
+			pending = result.current.confirmAsync(input)
+		})
+		await waitFor(() => expect(procedures.confirm.call).toHaveBeenCalledTimes(1))
+		unmount()
+		resolve(confirmed)
+		await expect(pending).resolves.toBe(confirmed)
+		expect(queryClient.getQueryData(checkoutQueryKey)).toEqual(confirmed)
+		await waitFor(() => expect(queryClient.getQueryData(cartQueryKey)).toEqual(cart))
+		expect(procedures.cartGet.call).toHaveBeenCalledTimes(2)
+		expect(procedures.confirm.call).toHaveBeenCalledTimes(1)
+		expect(onSettled).toHaveBeenCalledTimes(1)
+		queryClient.clear()
+	})
+
+	it("publishes checkout, refreshes cart through its API, and reports where the browser goes next", async () => {
 		const fetched = storeCheckout(null, 2)
 		const confirmed = storeCheckout(42, 0)
+		const cart = { ...fixtures([]).cart, items: [], itemCount: 0 }
 		procedures.get.call.mockResolvedValue(fetched)
 		procedures.confirm.call.mockResolvedValue(confirmed)
 		const redirects: (string | null)[] = []
@@ -60,11 +272,12 @@ describe("useCheckout confirmation", () => {
 		await waitFor(() => expect(result.current.checkout).not.toBeNull())
 
 		await waitFor(() => expect(result.current.isLocked).toBe(false))
+		procedures.cartGet.call.mockResolvedValue(cart)
 		act(() => result.current.confirm(input))
 
 		await waitFor(() => expect(queryClient.getQueryData(checkoutQueryKey)).toStrictEqual(confirmed))
 		expect(procedures.confirm.call).toHaveBeenCalledWith({ body: input })
-		expect(queryClient.getQueryData(cartQueryKey)).toStrictEqual(confirmed.cart)
+		await waitFor(() => expect(queryClient.getQueryData(cartQueryKey)).toStrictEqual(cart))
 		expect(redirects).toEqual(["/checkout/order-received?order_id=42&key=wc_order_abc"])
 	})
 
@@ -125,6 +338,7 @@ describe("awaitable checkout", () => {
 	it.each([false, true])("awaits submission settlement (failure: %s) and retries", async (fails) => {
 		const fetched = storeCheckout(null, 2)
 		const confirmed = storeCheckout(42, 0)
+		const cart = { ...fixtures([]).cart, items: [], itemCount: 0 }
 		const error = storeError("CHECKOUT_PAYMENT_FAILED")
 		procedures.get.call.mockResolvedValue(fetched)
 		let answer!: (checkout: Checkout) => void
@@ -148,7 +362,8 @@ describe("awaitable checkout", () => {
 			},
 			{ retry: 2 },
 		)
-		await waitFor(() => expect(result.current.checkout).not.toBeNull())
+		await waitFor(() => expect(result.current.isLocked).toBe(false))
+		procedures.cartGet.call.mockResolvedValue(cart)
 		// A form library's submission contract without adding a dependency to the package.
 		const submission = { pending: false, error: null as unknown }
 		const submit = async () => {
@@ -190,7 +405,7 @@ describe("awaitable checkout", () => {
 			await act(async () => expect(await result.current.confirmAsync(input)).toBe(confirmed))
 		}
 		expect(queryClient.getQueryData(checkoutQueryKey)).toEqual(confirmed)
-		expect(queryClient.getQueryData(cartQueryKey)).toEqual(confirmed.cart)
+		await waitFor(() => expect(queryClient.getQueryData(cartQueryKey)).toEqual(cart))
 	})
 
 	it("returns immediately from the legacy handler", async () => {
@@ -204,7 +419,7 @@ describe("awaitable checkout", () => {
 })
 
 describe("reviewed checkout total conflicts", () => {
-	function setup(cartEnabled = true, callbacks?: CheckoutCallbacks) {
+	function setup(callbacks?: CheckoutCallbacks) {
 		const source = fixtures()
 		const values = { ...checkoutFormEncode(source.values), customerNote: "keep my edits" }
 		procedures.get.call.mockResolvedValue(source.checkout)
@@ -212,7 +427,7 @@ describe("reviewed checkout total conflicts", () => {
 		procedures.storefrontGet.call.mockResolvedValue(source.storefront)
 		const client = new QueryClient({ defaultOptions: { mutations: { retry: 3 }, queries: { retry: false, gcTime: Infinity } } })
 		const wrapper = ({ children }: { children: ReactNode }) =>
-			createElement(QueryClientProvider, { client }, createElement(WooCommerceProvider, { cartEnabled, children }))
+			createElement(QueryClientProvider, { client }, createElement(WooCommerceProvider, { children }))
 		return {
 			source,
 			values,
@@ -230,7 +445,7 @@ describe("reviewed checkout total conflicts", () => {
 	it("publishes current evidence, retains the draft and callbacks, and submits the reviewed total only on explicit retry", async () => {
 		const onError = vi.fn(),
 			onSettled = vi.fn()
-		const env = setup(false, { onError, onSettled })
+		const env = setup({ onError, onSettled })
 		await waitFor(() => expect(env.result.current.fields.isReady && !env.result.current.checkout.isLocked).toBe(true))
 		const defaults = env.result.current.fields.defaultValues
 		const cart = { ...env.source.cart, totals: { ...env.source.cart.totals, total: 54321 } }
@@ -249,7 +464,8 @@ describe("reviewed checkout total conflicts", () => {
 		expect(onError).toHaveBeenCalledWith(expect.objectContaining({ error, input: request }))
 		expect(onSettled).toHaveBeenCalledWith(expect.objectContaining({ error }))
 		expect(procedures.confirm.call).toHaveBeenCalledTimes(1)
-		expect(procedures.cartGet.call).not.toHaveBeenCalled()
+		expect(procedures.cartGet.call).toHaveBeenCalledTimes(1)
+		procedures.cartGet.call.mockResolvedValue(cart)
 		procedures.confirm.call.mockResolvedValueOnce({ ...env.source.checkout, cart })
 		await act(async () => {
 			await env.result.current.checkout.confirmAsync(env.result.current.fields.toCheckout())
@@ -257,12 +473,11 @@ describe("reviewed checkout total conflicts", () => {
 		expect(procedures.confirm.call.mock.calls[1]?.[0].body.expectedTotal).toBe("54321")
 		expect(env.result.current.checkout.error).toBeNull()
 	})
-	it.each([true, false])("reconciles absent evidence after settlement (standalone cart enabled: %s)", async (cartEnabled) => {
-		const env = setup(cartEnabled)
+	it("reconciles absent evidence after settlement", async () => {
+		const env = setup()
 		await waitFor(() => expect(env.result.current.fields.isReady && !env.result.current.checkout.isLocked).toBe(true))
 		const cart = { ...env.source.cart, totals: { ...env.source.cart.totals, total: 54321 } }
 		procedures.cartGet.call.mockResolvedValueOnce(cart)
-		procedures.get.call.mockResolvedValueOnce({ ...env.source.checkout, cart })
 		const error = mismatch(null)
 		procedures.confirm.call.mockRejectedValueOnce(error)
 		await act(async () => {
@@ -272,11 +487,11 @@ describe("reviewed checkout total conflicts", () => {
 		expect(env.result.current.fields.isReady).toBe(true)
 		expect(env.values.customerNote).toBe("keep my edits")
 		expect(procedures.confirm.call).toHaveBeenCalledTimes(1)
-		if (cartEnabled) expect(procedures.cartGet.call).toHaveBeenCalledTimes(1)
-		else expect(procedures.cartGet.call).not.toHaveBeenCalled()
+		expect(procedures.cartGet.call).toHaveBeenCalledTimes(2)
+		expect(procedures.get.call).toHaveBeenCalledTimes(1)
 	})
 	it.each(["session", "cart", "refresh"] as const)("refuses old conflict evidence after a newer %s", async (change) => {
-		const env = setup(false)
+		const env = setup()
 		await waitFor(() => expect(env.result.current.fields.isReady && !env.result.current.checkout.isLocked).toBe(true))
 		let reject!: (error: unknown) => void
 		procedures.confirm.call.mockReturnValueOnce(
@@ -291,16 +506,17 @@ describe("reviewed checkout total conflicts", () => {
 		})
 		await waitFor(() => expect(env.result.current.checkout.isPending).toBe(true))
 		const newest = { ...env.source.cart, totals: { ...env.source.cart.totals, total: 99999 } }
+		if (change === "session") procedures.cartGet.call.mockResolvedValue(newest)
 		if (change === "session")
 			act(() => env.client.setQueryData(checkoutQueryKey, { ...env.source.checkout, orderId: 99, orderKey: "new-session", cart: newest }))
 		if (change === "refresh") {
-			procedures.get.call.mockResolvedValueOnce({ ...env.source.checkout, cart: newest })
+			procedures.cartGet.call.mockResolvedValueOnce(newest)
 			await act(async () => env.result.current.fields.refresh())
 		} else act(() => env.client.setQueryData(cartQueryKey, newest))
-		const reads = procedures.get.call.mock.calls.length
-		let resolveRead!: (checkout: Checkout) => void
+		const reads = procedures.cartGet.call.mock.calls.length
+		let resolveRead!: (cart: typeof newest) => void
 		if (change !== "session")
-			procedures.get.call.mockReturnValueOnce(
+			procedures.cartGet.call.mockReturnValueOnce(
 				new Promise((yes) => {
 					resolveRead = yes
 				}),
@@ -313,12 +529,12 @@ describe("reviewed checkout total conflicts", () => {
 		expect(procedures.confirm.call).toHaveBeenCalledTimes(1)
 		if (change === "session") {
 			expect(env.result.current.checkout.error).toBeNull()
-			expect(procedures.get.call).toHaveBeenCalledTimes(reads)
+			expect(procedures.cartGet.call).toHaveBeenCalledTimes(reads)
 		} else {
-			expect(procedures.get.call).toHaveBeenCalledTimes(reads + 1)
+			expect(procedures.cartGet.call).toHaveBeenCalledTimes(reads + 1)
 			expect(env.result.current.checkout.isLocked).toBe(true)
 			const current = { ...newest, totals: { ...newest.totals, total: 11111 } }
-			await act(async () => resolveRead({ ...env.source.checkout, cart: current }))
+			await act(async () => resolveRead(current))
 			await waitFor(() => expect(env.result.current.checkout.isLocked).toBe(false))
 			expect(env.result.current.fields.toCheckout().expectedTotal).toBe("11111")
 		}

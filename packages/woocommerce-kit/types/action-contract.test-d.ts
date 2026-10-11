@@ -2,9 +2,12 @@ import type { ActiveKizloClient, InferClientData, InferClientInput } from "kizlo
 import { expectTypeOf } from "vitest"
 import type { CartAddressApi, CartCouponApi, CartItemApi, CartItemQuantity, CartShippingRatesApi } from "../src/react/cart"
 import type { CheckoutApi } from "../src/react/checkout"
-import type { Cart, CartAddressSnapshotInput, Checkout } from "../src/types"
+import type { WooCommerceProviderProps } from "../src/react/provider"
+import type { Cart, CartAddressSnapshotInput, CartError, Checkout, CheckoutError } from "../src/types"
 
 type Procedures = ActiveKizloClient["woocommerce"]
+expectTypeOf<"cartEnabled" extends keyof WooCommerceProviderProps ? true : false>().toEqualTypeOf<false>()
+expectTypeOf<CheckoutApi["error"]>().toEqualTypeOf<CheckoutError | CartError | null>()
 expectTypeOf<ReturnType<CheckoutApi["confirmAsync"]>>().toEqualTypeOf<Promise<InferClientData<Procedures["checkout"]["confirm"]>>>()
 expectTypeOf<Parameters<CheckoutApi["confirmAsync"]>[0]>().toEqualTypeOf<InferClientInput<Procedures["checkout"]["confirm"]>["body"]>()
 expectTypeOf<Parameters<CartItemApi["addItemAsync"]>>().toEqualTypeOf<Parameters<CartItemApi["addItem"]>>()

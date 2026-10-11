@@ -106,6 +106,11 @@ to mount, and **no cart provider**. Three mounts, all app-level: your `QueryClie
 **browser** Kizlo client, and `WooCommerceProvider` for this kit's configuration. Sharing your query client is deliberate — it
 keeps the cart in one cache entry your own code can read and seed — and the kit never creates a client or sets a global default.
 
+Pending cart, checkout, and reconciliation reads continue when their last component unmounts. Remounting with the same
+`QueryClient` and query key reuses a still-pending request, and valid results can populate the cache without mounted consumers.
+Completed data still follows the existing staleness and refetch rules. Cart writes, confirmation, session/client replacement,
+and cache removal continue to prevent obsolete reads from publishing data; dispatched mutations also settle after unmount.
+
 ```tsx
 // app/providers.tsx
 "use client"
@@ -126,10 +131,12 @@ export function Providers({ children }) {
 }
 ```
 
-`WooCommerceProvider` carries configuration and nothing else — `locale`, the `cartEnabled` gate for a route that seeds the
-cache itself, and your `QueryClient`, read once from `QueryClientProvider` — which is why its context value does not change as
+`WooCommerceProvider` carries configuration and nothing else — `locale` and your `QueryClient`, read once from
+`QueryClientProvider` — which is why its context value does not change as
 the cart does. There is no provider per feature: the hooks below read the Kizlo client from `KizloProvider` and the query client
 from `WooCommerceProvider`.
+
+Cart hooks fetch automatically. When upgrading, remove the obsolete `cartEnabled` prop from `WooCommerceProvider`.
 
 Then each component reads the slice it needs. A product page has no line yet, so it calls `useCartItem()` without a key:
 
@@ -402,10 +409,10 @@ Checkout loads the store's checkout snapshot, confirms an order and keeps the ca
 form state and performs no navigation: validation, copy, fields, routes and payment redirects stay in the storefront. Needs
 `KizloProvider` and `WooCommerceProvider` above it, which takes your query client from `QueryClientProvider`.
 
-On the checkout route, disable the cart's own fetch through `WooCommerceProvider` so checkout can seed `cartQueryKey` without
-racing a second request. Then use the live cart alongside it: `useCart()` for the totals, and the address, rate and coupon hooks
-for the parts the shopper still changes — each reporting only its own save, so one pending request does not disable the rest of
-the form:
+Checkout and cart use separate API responses. Checkout bootstrap, successful confirmation and `refresh()` refresh
+`cartQueryKey` through the cart API; Kit never consumes the embedded `checkout.cart`. Kit manages bootstrap sequencing
+internally. Use the live cart alongside checkout: `useCart()` for the totals, and the address, rate and coupon hooks for the
+parts the shopper still changes — each reporting only its own save, so one pending request does not disable the rest of the form:
 
 ```tsx
 "use client"
@@ -470,7 +477,8 @@ export function CheckoutForm({ values, isFormValid, onAddressValuesChange }: {
 
 `confirm(input)` returns immediately. `confirmAsync(input)` returns the acknowledged `Checkout`, and rejects on failure.
 Both report where to send the browser through the success event's `redirectUrl`; the hook performs no navigation. The last
-fetch or confirmation failure is on `error`, including its store code and validation data. `reset()` clears a settled failure.
+checkout/cart fetch or confirmation failure is on `error` (`CheckoutError | CartError | null`), including its store code and
+validation data. `reset()` clears a settled confirmation failure; `refresh()` retries failed reads.
 
 ```tsx
 import type { ConfirmCheckoutInput } from "@kizlo/woocommerce-kit"
@@ -494,10 +502,12 @@ Confirmation uses the cart callback lifecycle: `onStart` → `onSuccess` | `onEr
 itself. A throwing listener does not suppress a later phase or fail the confirmation:
 
 ```tsx
-<WooCommerceProvider cartEnabled={!checkoutSeedsCart}>{children}</WooCommerceProvider>
+<WooCommerceProvider>{children}</WooCommerceProvider>
 ```
 
-The checkout fetch and `refresh()` do not emit action callbacks. Only confirmation does.
+The checkout fetch and `refresh()` do not emit action callbacks. Only confirmation does. `refresh()` waits for checkout and
+cart reads; their errors remain visible. Successful confirmation starts a cart refresh after settlement, even after unmount;
+cart refresh failure does not turn the successful order submission into a failed confirmation or replay it.
 
 Navigate from the success event's `redirectUrl` rather than from `checkout.paymentResult`. It is the gateway's own
 destination when there is one, and the store's return URL rebuilt from your `successPath` when the gateway names none —
@@ -540,7 +550,7 @@ Both queued address edits and keyed quantity edits block before HTTP, including 
 and do not block checkout. Queue-to-request handoff and autosave unmount flush stay protected.
 An autosave flushed on unmount restores refused quantities through the same recovery policy as a mounted save.
 
-Cart and checkout snapshots are required, including in `cartEnabled: false` mode. Routine background fetches, pauses and
+Cart and checkout snapshots are required. Routine background fetches, pauses and
 failures leave a trustworthy acknowledged checkout usable, while their hook errors remain visible. Cached presence alone
 does not establish trust after a failed bootstrap, eviction, mismatched session replacement or unresolved write. An idle
 optional query or unused historical parameter does not block.
@@ -548,8 +558,9 @@ Manually republishing cached data after an untrusted required-read failure canno
 Kit cart response can establish a new acknowledged cart snapshot.
 
 Overlapping full-cart writes and uncertain outcomes (timeouts or unknown error codes, including coupon writes) trigger an
-authoritative recovery read after pending/queued work drains. Seeded mode refreshes checkout instead of launching a separate
-cart read. Failed recovery remains blocking until a successful refresh; dismissing errors or manually republishing cached
+authoritative cart API recovery read after pending/queued work drains.
+Missing checkout data and uncertain confirmation also require a checkout read. Failed recovery remains blocking until a
+successful refresh; dismissing errors or manually republishing cached
 data does not bypass it. Writes are never replayed automatically. Form validity remains an additional application concern.
 
 Register application work with inclusive prefixes in `useCheckout({ dependencies })`. Use the same app QueryClient and give
@@ -635,7 +646,8 @@ and settled callbacks. Conflicting Kit cart actions and queued edits fail with `
 replaced before an admitted request starts fails with `CHECKOUT_SESSION_CHANGED`; SDK failures retain their original error.
 A known unsuccessful confirmation preserves its error/server-field issues while permitting correction and explicit retry
 after settlement. A timeout or unknown confirmation error remains visible and blocks another POST, including after `reset()`
-or refresh. Recovery reads checkout and, when the original order identity is available, reads that order. A paid order is
+or refresh. Recovery reads checkout and cart independently and, when the original order identity is available, reads that
+order. A paid order is
 reported as already placed and remains protected against duplicate submission. Draft/unpaid snapshots cannot prove that the
 original POST failed; when the available contracts cannot establish its outcome, checkout remains blocked. No confirmation
 is replayed automatically.
@@ -831,7 +843,7 @@ timing and submission.
 | `toCheckout({ values?, input? })` | Synchronously validate and prepare `ConfirmCheckoutInput` from an explicit candidate or the bound form’s current `getValues()`. Apply effective addresses, preserve caller input and capture the reviewed total. Throw `CheckoutPreparationError` with field-path issues on failure. |
 | `canUseShippingAsBilling` | Whether native address sharing is available: shipping is needed and the store does not force separate billing. |
 | `unsupported` | Field diagnostics for unsupported widgets, invalid schemas/bindings and unavailable condition dependencies. |
-| `isLoading`, `isFetching`, `refresh()` | Initial required-source loading, any background source reads, and an aggregate retry through the shared queries. Checkout seeds the cart; disabled standalone cart queries stay disabled. |
+| `isLoading`, `isFetching`, `refresh()` | Initial required-source loading, any background source reads, and an aggregate retry through the shared queries. Cart is refreshed through its own API. |
 | `error` | `CheckoutFieldsAcquisitionError` retains every failed source in `failures`, with each original SDK error. `source`, `cause`, `code` and `data` describe the first failure. Cached usable data remains ready after a background failure. |
 | `syncError`, `isRepricing` | Address-save failure, separately from acquisition, and validation/queued/request or rate-selection activity. Drafts survive either failure. |
 | `errors` | General, unresolved and unplaceable local preparation or server submission issues. Field issues reach the same adapter error channel as server validation. |
@@ -1132,9 +1144,9 @@ including encoded-looking IDs. Native validation preserves encoded values on suc
 adapter values or accepts an explicit candidate, then decodes and validates without changing form values or starting remote actions.
 Pure `encode`/`decode` remain available for manual integrations. You may validate a candidate and retain it for a review step before confirming separately.
 
-Checkout bootstrap seeds the existing cart cache. A fields-only consumer waits for this seed before enabling its own cart
-fetch; `cartEnabled: false` still permits cache subscriptions and forbids that fetch. Existing cart consumers keep their own
-configuration. Refreshes invalidate metadata against the draft without replacing defaults, overwriting edits or running
+Checkout bootstrap refreshes the existing cart cache through the cart API after checkout loads, including for fields-only
+consumers. Cart hooks share the same query and cache. Refreshes invalidate metadata against the draft without replacing
+defaults, overwriting edits or running
 country-reset dependencies. During repricing, conditions use acknowledged totals and selected methods. Failed refreshes
 expose their error while retained source data remains usable.
 

@@ -1,7 +1,7 @@
 "use client"
 
 import { isServer, skipToken, useQuery } from "@tanstack/react-query"
-import { useCallback, useId } from "react"
+import { useCallback, useId, useLayoutEffect } from "react"
 import { cartStaleTime } from "../cart"
 import {
 	addressMutationKey,
@@ -14,7 +14,6 @@ import {
 } from "../session-keys"
 import type { Cart, CartError, Checkout, CheckoutError } from "../types"
 import { useCheckoutLockStore, useCheckoutReadiness } from "./checkout-lock-store"
-import { useWooCommerceContext } from "./context"
 
 export { addressMutationKey, addressQueueKey, cartMutationKey } from "../session-keys"
 
@@ -26,20 +25,20 @@ export function useAddressQueueActivity() {
 
 export function useCheckoutQuery() {
 	const binding = useCheckoutLockStore()
+	useLayoutEffect(() => binding.enableCheckout(), [binding])
 	return useQuery<Checkout, CheckoutError>({
 		enabled: !isServer,
-		queryFn: ({ signal }) => binding.readCheckout(signal),
+		queryFn: () => binding.readCheckout(),
 		queryKey: checkoutQueryKey,
 	})
 }
 
-/** A disabled observer still reads cart updates while checkout owns bootstrap. */
+/** A disabled observer still reads cart API updates initiated by checkout. */
 export function useCartQuery(bootstrapped = true) {
-	const { cartEnabled } = useWooCommerceContext()
 	const binding = useCheckoutLockStore()
 	return useQuery<Cart, CartError>({
-		enabled: bootstrapped && cartEnabled && !isServer,
-		queryFn: ({ signal }) => binding.readCart(signal),
+		enabled: bootstrapped && !isServer,
+		queryFn: () => binding.readCart(),
 		queryKey: cartQueryKey,
 		staleTime: (query) => (query.state.data == null ? 0 : cartStaleTime),
 	})

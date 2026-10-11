@@ -32,11 +32,11 @@ vi.mock("kizlo/react", () => {
 	return { useKizloContext: () => ({ client }) }
 })
 const clients: QueryClient[] = []
-function mount<T>(hook: () => T, options: { cartEnabled?: boolean; client?: QueryClient } = {}) {
+function mount<T>(hook: () => T, options: { client?: QueryClient } = {}) {
 	const client = options.client ?? new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } })
 	clients.push(client)
 	const wrapper = ({ children }: { children: ReactNode }) =>
-		createElement(QueryClientProvider, { client }, createElement(WooCommerceProvider, { cartEnabled: options.cartEnabled, children }))
+		createElement(QueryClientProvider, { client }, createElement(WooCommerceProvider, { children }))
 	return { client, ...renderHook(hook, { wrapper }) }
 }
 function deferred<T>() {
@@ -65,7 +65,7 @@ afterEach(() => {
 })
 
 describe("useCheckoutFields shared sources", () => {
-	it("waits for checkout-seeded cart with nullable initialization and no competing cart fetch", async () => {
+	it("waits for checkout and then reads cart from its own API", async () => {
 		const checkout = deferred<Checkout>()
 		procedures.checkout.get.call.mockReturnValue(checkout.promise)
 		const source = fixtures()
@@ -80,7 +80,7 @@ describe("useCheckoutFields shared sources", () => {
 		expect(result.current.defaultValues).toMatchObject(result.current.encode(source.values))
 		expect(result.current.order.fields[0]?.required).toBe(true)
 		expect(client.getQueryData(cartQueryKey)).toEqual(source.cart)
-		expect(procedures.cart.get.call).not.toHaveBeenCalled()
+		expect(procedures.cart.get.call).toHaveBeenCalledTimes(1)
 		expect(result.current.isLoading).toBe(false)
 	})
 	it("shares queries with mounted checkout/cart hooks and preserves confirmation behavior", async () => {
@@ -108,9 +108,9 @@ describe("useCheckoutFields shared sources", () => {
 		await act(async () => checkout.resolve(source.checkout))
 		await waitFor(() => expect(result.current.schema).not.toBeNull())
 	})
-	it("respects cartEnabled false and still subscribes to later cart data", async () => {
+	it("reacts to cart cache updates after checkout bootstrap", async () => {
 		const source = fixtures()
-		const { result, client } = mount(() => useCheckoutFields({ getValues: () => source.values }), { cartEnabled: false })
+		const { result, client } = mount(() => useCheckoutFields({ getValues: () => source.values }))
 		await waitFor(() => expect(result.current.schema).not.toBeNull())
 		const captured = result.current.schema
 		if (!captured) throw new Error("Expected checkout schema")
@@ -119,15 +119,13 @@ describe("useCheckoutFields shared sources", () => {
 		act(() => client.setQueryData(cartQueryKey, { ...source.cart, extensions: { qaConditions: { "reference.required": false } } }))
 		await waitFor(() => expect(result.current.order.fields[0]?.required).toBe(false))
 		expect(captured["~standard"].validate(empty)).toHaveProperty("value", empty)
-		expect(procedures.cart.get.call).not.toHaveBeenCalled()
+		expect(procedures.cart.get.call).toHaveBeenCalledTimes(1)
 	})
 	it("reacts to cart mutations/refetch and exposes acknowledged facts during rate selection", async () => {
 		const source = fixtures()
 		const selected = deferred<Cart>()
 		procedures.cart.selectShippingRate.call.mockReturnValue(selected.promise)
-		const { result } = mount(() => ({ fields: useCheckoutFields({ getValues: () => source.values }), shipping: useCartShippingRates() }), {
-			cartEnabled: false,
-		})
+		const { result } = mount(() => ({ fields: useCheckoutFields({ getValues: () => source.values }), shipping: useCartShippingRates() }))
 		await waitFor(() => expect(result.current.fields.schema).not.toBeNull())
 		const captured = result.current.fields.schema
 		if (!captured) throw new Error("Expected checkout schema")
@@ -144,9 +142,7 @@ describe("useCheckoutFields shared sources", () => {
 		const source = fixtures()
 		const pending = deferred<Cart>()
 		procedures.cart.update.call.mockReturnValue(pending.promise)
-		const { result, client } = mount(() => ({ fields: useCheckoutFields({ getValues: () => source.values }), address: useCartAddress() }), {
-			cartEnabled: false,
-		})
+		const { result, client } = mount(() => ({ fields: useCheckoutFields({ getValues: () => source.values }), address: useCartAddress() }))
 		await waitFor(() => expect(result.current.fields.schema).not.toBeNull())
 		act(() => client.setQueryData(addressQueueKey, ["pending-owner"]))
 		await waitFor(() => expect(result.current.fields.isRepricing).toBe(true))
@@ -189,7 +185,7 @@ describe("useCheckoutFields shared sources", () => {
 		await waitFor(() => expect(result.current.schema).not.toBeNull())
 		expect(result.current.error).toBeNull()
 	})
-	it("fetches cart only after completed bootstrap when checkout cannot seed it; reports cart failure", async () => {
+	it("reports an independent cart failure after checkout loads and recovers through cart API retry", async () => {
 		const source = fixtures()
 		const checkout = deferred<Checkout>()
 		procedures.checkout.get.call.mockReturnValue(checkout.promise)
@@ -210,17 +206,14 @@ describe("useCheckoutFields shared sources", () => {
 		const source = fixtures()
 		const empty = { ...source.values, additionalFields: {} }
 		const checks: boolean[] = []
-		const { result, client } = mount(
-			() => {
-				const fields = useCheckoutFields({ getValues: () => empty })
-				const required = fields.order.fields[0]?.required
-				useLayoutEffect(() => {
-					if (required !== undefined && fields.schema) checks.push("issues" in fields.schema["~standard"].validate(empty))
-				}, [fields.schema, required])
-				return fields
-			},
-			{ cartEnabled: false },
-		)
+		const { result, client } = mount(() => {
+			const fields = useCheckoutFields({ getValues: () => empty })
+			const required = fields.order.fields[0]?.required
+			useLayoutEffect(() => {
+				if (required !== undefined && fields.schema) checks.push("issues" in fields.schema["~standard"].validate(empty))
+			}, [fields.schema, required])
+			return fields
+		})
 		await waitFor(() => expect(result.current.schema).not.toBeNull())
 		expect(checks.at(-1)).toBe(true)
 		act(() => client.setQueryData(cartQueryKey, { ...source.cart, shippingPackages: [] }))
@@ -258,7 +251,8 @@ describe("useCheckoutFields shared sources", () => {
 		const values = Object.freeze({ ...remaining, additionalFields: { custom: false } })
 		procedures.storefront.get.call.mockResolvedValue(source.storefront)
 		procedures.checkout.get.call.mockResolvedValue(source.checkout)
-		const { result, client } = mount(() => useCheckoutFields({ getValues: () => values }), { cartEnabled: false })
+		procedures.cart.get.call.mockResolvedValue(source.cart)
+		const { result, client } = mount(() => useCheckoutFields({ getValues: () => values }))
 		await waitFor(() => expect(result.current.schema).not.toBeNull())
 		const captured = result.current.schema
 		if (!captured) throw new Error("Expected checkout schema")
@@ -281,7 +275,7 @@ describe("useCheckoutFields shared sources", () => {
 		expect(captured["~standard"].validate(values)).toHaveProperty("issues")
 		expect(captured["~standard"].validate({ ...values, additionalFields: { custom: true } })).toHaveProperty("value")
 	})
-	it("remounts from the shared cache without a separate cart copy or bootstrap request", async () => {
+	it("shares independent cart and checkout caches across remounts", async () => {
 		const first = mount(() => useCheckoutFields())
 		await waitFor(() => expect(first.result.current.schema).not.toBeNull())
 		first.unmount()
@@ -289,7 +283,7 @@ describe("useCheckoutFields shared sources", () => {
 		expect(second.result.current.defaultValues).not.toBeNull()
 		await waitFor(() => expect(procedures.checkout.get.call).toHaveBeenCalledTimes(2))
 		expect(procedures.storefront.get.call).toHaveBeenCalledTimes(1)
-		expect(procedures.cart.get.call).not.toHaveBeenCalled()
+		await waitFor(() => expect(procedures.cart.get.call).toHaveBeenCalledTimes(2))
 	})
 })
 
@@ -829,7 +823,7 @@ describe("fields availability and preparation", () => {
 		const source = fixtures()
 		const gate = deferred<Checkout>()
 		procedures.checkout.get.call.mockReturnValue(gate.promise)
-		const { result, client } = mount(() => useCheckoutFields(), { cartEnabled: false })
+		const { result, client } = mount(() => useCheckoutFields())
 		expect(result.current).toMatchObject({ isReady: false, reason: "loading", isLoading: true })
 		await act(async () => gate.resolve(source.checkout))
 		await waitFor(() => expect(result.current.isReady).toBe(true))
@@ -863,12 +857,12 @@ describe("fields availability and preparation", () => {
 		expect(result.current.error).toBeNull()
 		expect(procedures.checkout.get.call).toHaveBeenCalledTimes(2)
 		expect(procedures.storefront.get.call).toHaveBeenCalledTimes(2)
-		expect(procedures.cart.get.call).not.toHaveBeenCalled()
+		expect(procedures.cart.get.call).toHaveBeenCalledTimes(1)
 	})
-	it.each([true, false])("keeps cached sources ready through a refresh failure (cart enabled: %s)", async (cartEnabled) => {
+	it("keeps cached sources ready through a refresh failure", async () => {
 		const source = fixtures()
 		let values = checkoutFormEncode(source.values)
-		const { result } = mount(() => useCheckoutFields({ getValues: () => values }), { cartEnabled })
+		const { result } = mount(() => useCheckoutFields({ getValues: () => values }))
 		await waitFor(() => expect(result.current.isReady).toBe(true))
 		const defaults = result.current.defaultValues
 		values = { ...values, customerNote: "unsaved edit" }
@@ -887,12 +881,12 @@ describe("fields availability and preparation", () => {
 		expect(result.current.defaultValues).toBe(defaults)
 		expect(result.current.toCheckout().customerNote).toBe("unsaved edit")
 		expect(result.current.syncError).toBeNull()
-		expect(procedures.cart.get.call).not.toHaveBeenCalled()
+		expect(procedures.cart.get.call).toHaveBeenCalledTimes(2)
 	})
 	it("reads current adapter edits, supports explicit candidates, and performs no remote operation", async () => {
 		const source = fixtures()
 		let values = checkoutFormEncode(source.values)
-		const { result, client } = mount(() => useCheckoutFields({ getValues: () => values }), { cartEnabled: false })
+		const { result, client } = mount(() => useCheckoutFields({ getValues: () => values }))
 		await waitFor(() => expect(result.current.isReady).toBe(true))
 		const captured = result.current.toCheckout
 		values = { ...values, customerNote: "latest" }
@@ -903,7 +897,7 @@ describe("fields availability and preparation", () => {
 		await waitFor(() => expect(result.current.toCheckout().expectedTotal).toBe("54321"))
 		expect(request.expectedTotal).toBe("12345")
 		expect(procedures.checkout.get.call).toHaveBeenCalledTimes(1)
-		expect(procedures.cart.get.call).not.toHaveBeenCalled()
+		expect(procedures.cart.get.call).toHaveBeenCalledTimes(1)
 		expect(procedures.cart.update.call).not.toHaveBeenCalled()
 		expect(procedures.checkout.confirm.call).not.toHaveBeenCalled()
 	})

@@ -16,11 +16,6 @@ import { type ReactNode, useMemo } from "react"
 import { WooCommerceContext, type WooCommerceContextValue } from "./context"
 
 export type WooCommerceProviderProps = {
-	/**
-	 * Whether the cart fetches itself. Set it false on a route that seeds `cartQueryKey` from its own request — a checkout
-	 * snapshot, for instance — so the two do not race.
-	 */
-	cartEnabled?: boolean
 	children: ReactNode
 	/** Locale for money formatting. Decides grouping and symbol placement, never the currency, which comes from the store. */
 	locale?: string
@@ -67,11 +62,11 @@ function useAppQueryClient() {
  * }
  * ```
  */
-export function WooCommerceProvider({ cartEnabled = true, children, locale }: WooCommerceProviderProps) {
+export function WooCommerceProvider({ children, locale }: WooCommerceProviderProps) {
 	const queryClient = useAppQueryClient()
 
 	// Only the configuration is in the value, so it changes when the app changes it and not when the cart does.
-	const value = useMemo<WooCommerceContextValue>(() => ({ cartEnabled, locale, queryClient }), [cartEnabled, locale, queryClient])
+	const value = useMemo<WooCommerceContextValue>(() => ({ locale, queryClient }), [locale, queryClient])
 
 	return <WooCommerceContext.Provider value={value}>{children}</WooCommerceContext.Provider>
 }

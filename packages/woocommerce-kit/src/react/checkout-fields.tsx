@@ -29,7 +29,6 @@ import type {
 import { useCartAddressTransport } from "./cart-address"
 import { useCheckoutErrorState, useCheckoutErrorStore } from "./checkout-error-store"
 import { useCheckoutLockStore } from "./checkout-lock-store"
-import { useWooCommerceContext } from "./context"
 import { useAddressQueueActivity, useCartActivity, useCartQuery, useCheckoutQuery } from "./session-queries"
 import { useStorefront } from "./storefront"
 
@@ -71,7 +70,6 @@ export function useCheckoutFields(options: CheckoutFieldsOptions = {}): Checkout
 		isFetching: storefrontFetching,
 		refresh: refreshStorefront,
 	} = useStorefront()
-	const { cartEnabled } = useWooCommerceContext()
 	const binding = useCheckoutLockStore()
 	const checkoutQuery = useCheckoutQuery()
 	const cartQuery = useCartQuery(checkoutQuery.data !== undefined)
@@ -315,7 +313,7 @@ export function useCheckoutFields(options: CheckoutFieldsOptions = {}): Checkout
 	const isLoading =
 		(!storefront && storefrontLoading) ||
 		(!sources.checkout && checkoutQuery.isPending) ||
-		(!sources.cart && !!sources.checkout && cartEnabled && cartQuery.isPending)
+		(!sources.cart && !!sources.checkout && cartQuery.isPending)
 	const ready = !!storefront && !!renderedDefaults && !!sources.checkout && !sources.checkout.isPaid && !!sources.cart && !!session
 	const common = {
 		billing: { fields: state.fields.billing, errors: projection.sections.billing },
