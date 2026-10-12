@@ -1,13 +1,8 @@
-import { type CollectionSearchParams, loadProductCollection, parseCollectionQuery, productCollectionQueryKey } from "@kizlo/woocommerce-kit"
-import {
-	BrowserProductCollection,
-	type BrowserProductCollectionProps,
-	collectionSearchParams,
-	useProductCollection,
-} from "@kizlo/woocommerce-kit/react/collection"
-import { dehydrate, HydrationBoundary, QueryClient } from "@tanstack/react-query"
+import type { CollectionProduct, CollectionSearchParams } from "@kizlo/woocommerce-kit"
+import { useProductCollection } from "@kizlo/woocommerce-kit/react/collection"
+import { ProductCollection } from "@kizlo/woocommerce-kit/react/collection/server"
+import { useInView } from "@kizlo/woocommerce-kit/react/in-view"
 import type { ActiveKizloClient } from "kizlo"
-import { parseAsString, useQueryState, useQueryStates } from "nuqs"
 import type { ReactNode } from "react"
 
 export async function ServerCollection({
@@ -19,36 +14,34 @@ export async function ServerCollection({
 	searchParams: CollectionSearchParams
 	children: ReactNode
 }) {
-	const query = parseCollectionQuery(searchParams)
-	const attributeTaxonomies = ["pa_color"]
-	const queryClient = new QueryClient()
-	await queryClient.prefetchQuery({
-		queryKey: productCollectionQueryKey({ query, attributeTaxonomies }),
-		queryFn: () => loadProductCollection({ client, query, attributeTaxonomies }),
+	return (
+		<ProductCollection
+			attributeTaxonomies={["pa_color"]}
+			client={client}
+			searchParams={searchParams}
+			scopeQuery={{ taxonomy: "product_cat", parameter: "category" }}
+		>
+			{children}
+		</ProductCollection>
+	)
+}
+
+export function Grid() {
+	const { products, filters, ref, loadMore, setSort, toggleAttribute, setScope, getScopeLinkProps, formatPrice } = useProductCollection({
+		infiniteScroll: { rootMargin: "200px 0px", onChange: (_visible, entry) => void entry.target },
 	})
+	const items: readonly CollectionProduct[] = products.items
+	// @ts-expect-error actions are not embedded in data records
+	products.setPage(2)
+	// @ts-expect-error actions are not embedded in filter records
+	filters.clearAll()
+	// @ts-expect-error observer options belong inside infiniteScroll
+	useProductCollection({ rootMargin: "200px" })
+	const { ref: independentRef } = useInView({ threshold: [0, 0.5], skip: true })
+	void [setSort, toggleAttribute, setScope, getScopeLinkProps, formatPrice, independentRef, loadMore]
 	return (
-		<HydrationBoundary state={dehydrate(queryClient)}>
-			<BrowserProductCollection attributeTaxonomies={attributeTaxonomies} initialQuery={query}>
-				{children}
-			</BrowserProductCollection>
-		</HydrationBoundary>
+		<output ref={ref} aria-busy={products.isPending}>
+			{items.map(({ id }) => id).join(",")}
+		</output>
 	)
-}
-
-export function QueryScopeCollection(props: Omit<BrowserProductCollectionProps, "scope">) {
-	const [category] = useQueryState("category", parseAsString)
-	const [query] = useQueryStates(collectionSearchParams)
-	const scope = category ? { taxonomy: "product_cat", term: category } : undefined
-	const resetKey = JSON.stringify(productCollectionQueryKey({ ...props, scope, query: { ...query, page: 1 } }))
-	return (
-		<BrowserProductCollection {...props} scope={scope}>
-			<Grid key={resetKey} />
-		</BrowserProductCollection>
-	)
-}
-
-function Grid() {
-	const { products, filters } = useProductCollection()
-	const ids: readonly number[] = products.items.map(({ id }) => id)
-	return <output aria-busy={products.isPending || filters.isPending}>{ids.join(",")}</output>
 }

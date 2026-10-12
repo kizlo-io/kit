@@ -100,6 +100,18 @@
 				"types": "./dist/react/checkout-fields/react-hook-form.d.ts",
 				"default": "./dist/react/checkout-fields/react-hook-form.js"
 			}
+		},
+		"./react/collection/server": {
+			"import": {
+				"types": "./dist/react/collection/server.d.ts",
+				"default": "./dist/react/collection/server.js"
+			}
+		},
+		"./react/in-view": {
+			"import": {
+				"types": "./dist/react/in-view.d.ts",
+				"default": "./dist/react/in-view.js"
+			}
 		}
 	},
 	"files": [

@@ -54,17 +54,18 @@ Then read everything from one hook in your own client components:
 
 ```tsx
 "use client"
+import { type CollectionStockStatus } from "@kizlo/woocommerce-kit"
 import { useProductCollection } from "@kizlo/woocommerce-kit/react"
 
 export function Filters() {
-	const { filters } = useProductCollection()
+	const { filters, toggleAttribute, toggleStock } = useProductCollection()
 
 	return filters.groups.map((group) => (
 		<fieldset key={group.id}>
 			<legend>{group.label}</legend>
 			{group.terms.map((term) => (
 				<label key={term.value}>
-					<input checked={term.selected} onChange={() => term.toggle()} type="checkbox" />
+					<input checked={term.selected} onChange={() => group.kind === "stock" ? toggleStock(term.slug as CollectionStockStatus) : toggleAttribute(term.value)} type="checkbox" />
 					{term.label} ({term.count})
 				</label>
 			))}
@@ -73,7 +74,7 @@ export function Filters() {
 }
 ```
 
-`useProductCollection()` returns `{ filters, products, scope, sort }`. Filter changes write the URL with `shallow: false`,
+`useProductCollection()` returns `{ filters, products, scope, sort }` plus top-level actions. Data records contain no action closures. Filter changes write the URL with `shallow: false`,
 which re-runs the server component, so the next result set is fetched there and arrives as props. `filters.isPending` and
 `products.isPending` cover that round trip.
 
@@ -82,107 +83,123 @@ hands you the counted tree around the current term for rendering as links.
 
 ### Browser collection
 
-Import `BrowserProductCollection` from `@kizlo/woocommerce-kit/react/collection` when URL changes should fetch in the browser
-instead of requesting another server render. Existing `ProductCollection` and `ProductCollectionProvider` consumers keep
-their server-navigation behavior, and their entry points still import no React Query.
-
-Prefetch the initial URL into an app-owned server QueryClient and pass its dehydrated state through `HydrationBoundary`:
+Mount `ProductCollection` from `@kizlo/woocommerce-kit/react/collection/server` when the initial URL should load on the
+server and later selections should fetch in the browser. Configure the collection once:
 
 ```tsx
-// app/collections/[slug]/page.tsx
-import { dehydrate, HydrationBoundary, QueryClient } from "@tanstack/react-query"
-import { loadProductCollection, parseCollectionQuery, productCollectionQueryKey, serializeCollectionQuery } from "@kizlo/woocommerce-kit"
-import { BrowserProductCollection } from "@kizlo/woocommerce-kit/react/collection"
+// Lazoey: src/app/collections/page.tsx
+import { ProductCollection } from "@kizlo/woocommerce-kit/react/collection/server"
+import { CollectionPageContent } from "@/components/collection-page-content"
+import { collectionConfig } from "@/lib/collections"
 import { client } from "@/lib/kizlo/server"
 
-export default async function CollectionPage({ params, searchParams }) {
-	const { slug } = await params
-	const query = parseCollectionQuery(await searchParams)
-	const config = {
-		attributeTaxonomies: ["pa_color", "pa_size"],
-		perPage: 12,
-		scope: { taxonomy: "product_cat", term: slug },
-	}
-	const queryClient = new QueryClient()
-	await queryClient.prefetchQuery({
-		queryKey: productCollectionQueryKey({ ...config, query }),
-		queryFn: () => loadProductCollection({ ...config, client, query }),
-	})
-
+export default function CollectionsPage({ searchParams }) {
 	return (
-		<HydrationBoundary state={dehydrate(queryClient)}>
-			<BrowserProductCollection
-				{...config}
-				initialQuery={query}
-				key={`${slug}:${serializeCollectionQuery(query)}`}
-			>
-				<Filters />
-				<Sort />
-				<Grid />
-			</BrowserProductCollection>
-		</HydrationBoundary>
+		<ProductCollection
+			{...collectionConfig}
+			client={client}
+			searchParams={searchParams}
+			scopeQuery={{ taxonomy: "product_cat", parameter: "category" }}
+		>
+			<CollectionPageContent />
+		</ProductCollection>
 	)
 }
 ```
 
-Mount your framework's nuqs adapter, `QueryClientProvider`, `KizloProvider` with the **browser** client, and
-`WooCommerceProvider` above it, as in the [provider example](#cart). The server client is used only by the loader; it must
-never be passed across the client boundary. Use a new QueryClient per server request and one shared cache in the browser.
-Use the same query, scope and request configuration for the prefetch key and the collection. Dehydration carries the data,
-cache key and update timestamp; it does not serialize the server client or query function. The collection has no
-`initialData` prop: React Query owns the data and hydration.
+Keep the app's nuqs adapter, `QueryClientProvider`, `KizloProvider` with its **browser** client, and `WooCommerceProvider`
+above the collection. Kit creates a request-local server QueryClient only for prefetch/dehydration, then clears it. Native
+`HydrationBoundary` restores data and update timestamps into the app's browser cache without another request. Newer browser
+cache data wins over an older server snapshot. Clients, credentials and query functions never cross the client boundary.
+The existing `react/server` and `react` entries keep server-navigation behavior and need no React Query.
 
-Your controls still call `useProductCollection()` from either the existing React entry or the new collection entry. Filter,
-sort, search and page writes use `history: "push"` and `shallow: true`, preserving other URL parameters. Back/Forward reads
-the URL again and refreshes the matching cache entry. Filters and sort reset page to 1; pagination changes only page.
-
-`HydrationBoundary` restores the prefetched data into the shared cache with no hydration request. It merges a newer server
-snapshot into older cached data and preserves a browser cache entry that is newer than the server snapshot. Each later selection fetches products and facet
-counts together, including when revisiting a cached URL. Pending requests set `filters.isPending` and `products.isPending`.
-A new uncached selection shows no previous collection while loading; late responses can fill their own cache entries but
-never replace the current selection. A failed listing yields empty products with `products.unavailable`; failed facets
-fall back to the current products. A subsequent selection can fetch again.
-
-`initialQuery` describes the URL loaded on the server; after hydration, the collection reads the live URL. The example's
-server-computed key starts a new query observer for a new server-rendered page, avoiding an extra browser fetch of that
-page's prefetched data. Shallow browser edits keep the same observer mounted so cached selections revalidate.
-
-For a scope stored in an application-owned query parameter, read that parameter reactively and pass the resulting scope.
-Use the same resolution on the server for the initial loader. The kit does not prescribe the parameter's name:
+The wrapper defaults to `currencyMinorUnit="auto"`. Ordinary product and facet requests run together, without
+`storefront.get()`. A direct price-filtered link first discovers precision through unpriced product-filter metadata, then
+loads matching products and facets together. Discovery failure reports unavailable results; it never guesses two decimals.
+Browser price changes reuse the discovered precision. Explicit numeric configuration is still supported; the legacy core
+loader and server-navigation entry continue to default to two decimals. Prices in URLs and `formatPrice()` are major units.
 
 ```tsx
 "use client"
-import { productCollectionQueryKey } from "@kizlo/woocommerce-kit"
-import { BrowserProductCollection, collectionSearchParams } from "@kizlo/woocommerce-kit/react/collection"
-import { parseAsString, useQueryState, useQueryStates } from "nuqs"
+import { useProductCollection } from "@kizlo/woocommerce-kit/react/collection"
 
-export function ScopedCollection(props) {
-	const [category, setCategory] = useQueryState("category", parseAsString)
-	const [query, setQuery] = useQueryStates(collectionSearchParams)
-	const scope = category ? { taxonomy: "product_cat", term: category } : undefined
-	const resetKey = JSON.stringify(productCollectionQueryKey({ ...props, query: { ...query, page: 1 }, scope }))
-
-	return (
-		<BrowserProductCollection {...props} scope={scope}>
-			<CategoryPicker value={category} onChange={(next) => {
-				void setQuery({ page: null }, { shallow: true, history: "push" })
-				void setCategory(next, { shallow: true, history: "push" })
-			}} />
-			<AccumulatingGrid key={resetKey} />
-		</BrowserProductCollection>
-	)
+export function CollectionPageContent() {
+	const { products, ref, isLoading, isRefreshing, error, loadMoreError, refresh, loadMore } =
+		useProductCollection({ infiniteScroll: { rootMargin: "200px 0px" } })
+	// Render products.items through your existing grid and product cards.
+	// Use refresh for replacement failures and loadMore for append failures.
+	// Attach ref to your grid's sentinel; initial loading and refreshing are separate.
+	return <CollectionGrid products={products.items} sentinelRef={ref} isLoading={isLoading}
+		isRefreshing={isRefreshing} error={error} loadMoreError={loadMoreError}
+		onRetry={refresh} onRetryMore={loadMore} />
 }
 ```
 
-`CategoryPicker` and `AccumulatingGrid` are your components. The kit returns one page and never appends pages. If your grid
-accumulates them, reset its local pages when any filter, sort or scope changes; the key above resets it while excluding
-pagination. Keep the collection component itself mounted so it continues to refresh cached selections. Pathname navigation
-can use normal routing.
+`CollectionGrid` is the application's component, not a Kit export. Infinite loading is enabled only by the nested
+`infiniteScroll` object. Omitting it disables observation. It supports `root`, `rootMargin`, `scrollMargin`, `threshold`,
+`skip`, `onChange(inView, entry)`, `initialInView`, `fallbackInView`, `triggerOnce`, `trackVisibility` and `delay`. Consumer
+callbacks run alongside automatic loading; a throwing callback is reported separately and cannot stop the append.
 
-`productCollectionQueryKey` includes normalized URL state, scope, page size, currency units, attribute taxonomies and sort
-configuration. It is exported for cache inspection/invalidation and collection reset identity. The URL grammar is unchanged.
-This feature supplies fetching behavior; deployment caching and authentication remain the app's responsibility. Arbitrary
-server `searchParams` are request-dependent, so server seeding alone does not make every URL variant build-time static.
+`loadMore()` appends products without changing the URL or requesting facets. Multiple consumers share one runtime and
+cannot start duplicate appends. IDs are deduplicated. Automatic loading pauses during collection or append requests, an
+unresolved/failed replacement, an append error, or the end of results. `loadMore()` retries a failed append's same next page.
+`setPage()` instead writes the URL and replaces the listing.
+
+Filter, sort, search, scope, page, Back/Forward and explicit `refresh()` requests retain the entire displayed collection,
+including appended pages and its facet data. Controls reflect the requested URL immediately. `isRefreshing` marks an active
+replacement request; `isPlaceholderData` also marks retained results after failure. A matching successful batch switches
+products and facets together and resets accumulation. Late responses stay under their own cache identity. An initial
+failure sets `products.unavailable`; a refresh failure keeps the last successful display and exposes `error` for retry.
+Facet failure degrades counts from the matching products as before.
+
+### Collection data and action migration
+
+The derived model now contains data only. Actions returned by the hook are top-level:
+
+| Before | Now |
+| --- | --- |
+| `products.setPage(page)` | `setPage(page)` |
+| `sort.set(value)` | `setSort(value)` |
+| `filters.search.set(value)` / `.clear()` | `setSearch(value)` / `setSearch("")` |
+| `filters.price.set(min, max)` / `.reset()` | `setPriceRange(min, max)` / `setPriceRange(null, null)` |
+| `term.toggle(selected)` | `toggleAttribute(term.value, selected)` or `toggleStock(term.slug, selected)` |
+| `group.clear()` | `clearFilters(group.taxonomy)` |
+| `filters.clearAll()` | `clearFilters()` |
+
+`formatPrice(price)` formats a major-unit amount using collection responses and the provider locale. Browser collections
+also return `loadMore`, `refresh`, `setScope` and `getScopeLinkProps`, plus `hasMore`, `isLoadingMore` and `loadMoreError`.
+Use the hook from `react/collection` for these browser features. The `react` hook returns data and URL actions for either
+provider, without pulling in the browser runtime or query peer.
+
+`scopeQuery` chooses the application's query parameter and taxonomy. Use `setScope(term)` or spread
+`getScopeLinkProps(term)` onto an anchor (pass `null` for all products). Links preserve refinements, repeated attributes and
+unrelated parameters, reset pagination, and retain keyboard activation, modified clicks, middle clicks, download links and
+new tabs. Scope and refinement writes use shallow history pushes, so Back/Forward restores choices. Static pathname scopes
+use normal application routing instead of these query-scope actions.
+
+Lazoey adoption can remove its server prefetch/cache wiring, repeated browser configuration, custom category links,
+storefront precision dependency, local page accumulation, observer dependency and manual query retries. Keep its existing
+markup and shared design-system controls. This package change documents that adoption; it does not change the app.
+
+### Standalone visibility
+
+`useInView` also works independently of collections, with React as its only framework peer:
+
+```tsx
+import { useInView } from "@kizlo/woocommerce-kit/react/in-view"
+const { ref, inView, entry } = useInView({ threshold: 0.5 })
+// Tuple form is supported too: const [ref, inView, entry] = useInView(options)
+```
+
+It uses IntersectionObserver, skips the initial false notification unless `initialInView` is explicit, keeps callbacks
+current, and cleans up node/option changes and unmounts. It is inert during SSR. Supply `fallbackInView` or a polyfill when
+IntersectionObserver is unavailable. Visibility tracking falls back to the computed intersection when `isVisible` is absent.
+
+`BrowserProductCollection` remains available for apps that intentionally own native hydration; pass `initialQuery` and,
+for complete server-rendered scope links, `initialSearchParams`. Do not seed a second cache or copy hydrated results into
+consumer state. `productCollectionQueryKey` remains the normalized cache key and includes every request-affecting input.
+Deployment caching and authentication remain the app's responsibility. Arbitrary server `searchParams` are request-dependent;
+server seeding does not make every URL variant build-time static.
 
 ## URL contract
 
@@ -1344,7 +1361,9 @@ client from `QueryClientProvider`.
 | --- | --- |
 | `@kizlo/woocommerce-kit` | The core. Collection grammar and model, cart and checkout cache keys and events, search request, href and cache helpers, quantity, money and address helpers, and every type. No framework. |
 | `@kizlo/woocommerce-kit/react` | `ProductCollectionProvider`, `useProductCollection`, and the model types it returns. Carries `"use client"`. |
-| `@kizlo/woocommerce-kit/react/collection` | `BrowserProductCollection`, `useProductCollection`, and `collectionSearchParams`. Reads the app cache hydrated by `HydrationBoundary`; needs React Query, nuqs, and the existing app providers. Carries `"use client"`. |
+| `@kizlo/woocommerce-kit/react/collection` | Shared browser runtime, `useProductCollection`, and `collectionSearchParams`. Needs React Query, nuqs and existing app providers. Carries `"use client"`. |
+| `@kizlo/woocommerce-kit/react/collection/server` | `ProductCollection`, the server-initialized browser collection wrapper. |
+| `@kizlo/woocommerce-kit/react/in-view` | Standalone `useInView`, tuple/object response and observer options. Needs only React; carries `"use client"`. |
 | `@kizlo/woocommerce-kit/react/cart` | `useCart`, `useCartAddress`, `useCartShippingRates`, `useCartItem`, `useCartCoupon`. Carries `"use client"`. Needs `@tanstack/react-query`. |
 | `@kizlo/woocommerce-kit/react/checkout-fields` | `useCheckoutFields` and its form values, field bindings, updates, result and diagnostic types. Carries `"use client"`. Needs `@tanstack/react-query`. |
 | `@kizlo/woocommerce-kit/react/checkout-fields/tanstack-form` | Optional `tanstackFormAdapter(form)` factory, typed field accessors and Kit error formatter. Carries `"use client"`. Needs `@tanstack/react-form`. |
@@ -1365,12 +1384,13 @@ The core is the whole component minus the rendering, so an adapter is small. It 
 and supplies a writer:
 
 ```ts
-import { buildCollectionModel, loadProductCollection, parseCollectionQuery } from "@kizlo/woocommerce-kit"
+import { buildCollectionModel, createCollectionActions, loadProductCollection, parseCollectionQuery } from "@kizlo/woocommerce-kit"
 
 const query = parseCollectionQuery(url.searchParams)
 const collection = await loadProductCollection({ attributeTaxonomies, client, query, scope })
-const model = buildCollectionModel({ ...collection, query, scope, write: (patch) => navigate(patch) })
+const model = buildCollectionModel({ ...collection, query, scope })
+const actions = createCollectionActions({ model, query, write: (patch) => navigate(patch) })
 ```
 
-`write` receives a patch where `null` clears a parameter. How that reaches the URL is the framework's business; the rule
+`createCollectionActions` keeps actions separate from the data-only model. `write` receives a patch where `null` clears a parameter. How that reaches the URL is the framework's business; the rule
 that any refinement resets paging is the core's, and it is already applied.

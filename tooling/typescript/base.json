@@ -41,6 +41,12 @@
 			],
 			"@kizlo/woocommerce-kit/react/checkout-fields/react-hook-form": [
 				"${configDir}/../woocommerce-kit/src/react/checkout-fields-react-hook-form.tsx"
+			],
+			"@kizlo/woocommerce-kit/react/collection/server": [
+				"${configDir}/../woocommerce-kit/src/react/collection-server.tsx"
+			],
+			"@kizlo/woocommerce-kit/react/in-view": [
+				"${configDir}/../woocommerce-kit/src/react/in-view.ts"
 			]
 		}
 	}

@@ -101,8 +101,8 @@ Before adding a component, check it against these:
   did not need.
 - **Fetch where the data lives.** Collections render the initial URL on the server. The existing server-navigation path
   uses `shallow: false` writes to reload that data. The optional browser-fetch path uses shallow URL writes and the app's
-  browser client/cache after hydrating the server-prefetched data with `HydrationBoundary`. The app owns the request-scoped
-  server QueryClient and its dehydration; the kit reads that cache directly. Keep query-library imports in a separate feature entry so the
+  browser client/cache after hydrating the server-prefetched data with `HydrationBoundary`. The collection server wrapper owns a request-local
+  QueryClient solely for prefetch/dehydration; its browser runtime uses the app cache. Keep query-library imports in a separate feature entry so the
   server-navigation path needs no query-library peer. Browser-session and ephemeral state is fetched in the client — the
   cart, the search typeahead. Every path is headless and fails soft.
 - **One hook per subject.** One provider value means every consumer re-renders together anyway, so slicing it into several
@@ -120,8 +120,10 @@ The Kizlo client reaches client components through `KizloProvider` (`kizlo/react
 because a server component cannot read React context. The browser client and the server client are different instances,
 so neither half may hold the other's. A hook never takes a client: one client per app is what the provider is for.
 
-The app owns `QueryClientProvider`. No kit creates a `QueryClient` or sets global react-query defaults: one cache per app
+The app owns `QueryClientProvider`. No kit creates a browser `QueryClient` or sets global react-query defaults: one cache per app
 is what lets a checkout seed the cart's own cache entry instead of racing a second copy of it.
+The collection server wrapper is the narrow exception: it creates and clears a request-local QueryClient only for
+prefetch/dehydration. It never replaces the browser provider or serializes clients or query functions.
 
 ## Code style
 

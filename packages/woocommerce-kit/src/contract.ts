@@ -202,3 +202,23 @@ export function serializeCollectionQuery(query: Partial<CollectionQuery>): strin
 	// for the same collection would be two different strings.
 	return searchParams.toString().replaceAll("%3A", ":")
 }
+
+/** Application-owned query parameter for classification navigation. */
+export type CollectionScopeQuery = { taxonomy: string; parameter: string }
+
+export function resolveCollectionScope(
+	searchParams: CollectionSearchParams,
+	scopeQuery: CollectionScopeQuery,
+): CollectionScope | undefined {
+	const term = readOne(searchParams, scopeQuery.parameter)
+	return term ? { taxonomy: scopeQuery.taxonomy, term } : undefined
+}
+
+/** Preserves refinements and unrelated parameters while resetting pagination. */
+export function collectionScopeHref(searchParams: URLSearchParams, scopeQuery: CollectionScopeQuery, term: string | null): string {
+	const params = new URLSearchParams(searchParams)
+	params.delete("page")
+	if (term) params.set(scopeQuery.parameter, term)
+	else params.delete(scopeQuery.parameter)
+	return `?${params.toString().replaceAll("%3A", ":")}`
+}
