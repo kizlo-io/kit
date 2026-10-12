@@ -16,6 +16,7 @@
 
 import { useQueryStates } from "nuqs"
 import { type ReactNode, useContext, useMemo, useTransition } from "react"
+import { type CollectionActions, createCollectionActions } from "../collection-actions"
 import {
 	type CollectionScope,
 	type CollectionSortPreset,
@@ -32,6 +33,7 @@ import { collectionSearchParams } from "./params"
  * The model's types, re-exported so a component reads its hook and the types it returns from one specifier. Type-only, so
  * nothing reaches the bundle.
  */
+export type { CollectionActions } from "../collection-actions"
 export type {
 	CollectionFilterGroup,
 	CollectionFilterGroupKind,
@@ -48,7 +50,7 @@ export type {
 } from "../model"
 
 /** @deprecated Use `CollectionModel`. */
-export type ProductCollectionContextValue = CollectionModel
+export type ProductCollectionContextValue = CollectionModel & CollectionActions
 
 export type ProductCollectionProviderProps = {
 	children: ReactNode
@@ -124,12 +126,17 @@ export function ProductCollectionProvider({
 				stockLabel,
 				stockLabels,
 				unavailable,
-				write: (patch) => void setQuery(patch),
 			}),
-		[filters, isPending, navigationTaxonomy, products, query, scope, setQuery, sortPresets, stockLabel, stockLabels, unavailable],
+		[filters, isPending, navigationTaxonomy, products, query, scope, sortPresets, stockLabel, stockLabels, unavailable],
 	)
 
-	return <ProductCollectionContext.Provider value={model}>{children}</ProductCollectionContext.Provider>
+	return (
+		<ProductCollectionContext.Provider
+			value={{ ...model, ...createCollectionActions({ query, model, sortPresets, write: (patch) => void setQuery(patch) }) }}
+		>
+			{children}
+		</ProductCollectionContext.Provider>
+	)
 }
 
 /**
@@ -145,14 +152,14 @@ export function ProductCollectionProvider({
  * import { useProductCollection } from "@kizlo/woocommerce-kit/react"
  *
  * export function Filters() {
- * 	const { filters } = useProductCollection()
+ * 	const { filters, toggleAttribute, toggleStock } = useProductCollection()
  *
  * 	return filters.groups.map((group) => (
  * 		<fieldset key={group.id}>
  * 			<legend>{group.label}</legend>
  * 			{group.terms.map((term) => (
  * 				<label key={term.value}>
- * 					<input checked={term.selected} onChange={() => term.toggle()} type="checkbox" />
+ * 					<input checked={term.selected} onChange={() => group.kind === "stock" ? toggleStock(term.slug as CollectionStockStatus) : toggleAttribute(term.value)} type="checkbox" />
  * 					{term.label} ({term.count})
  * 				</label>
  * 			))}
@@ -161,7 +168,7 @@ export function ProductCollectionProvider({
  * }
  * ```
  */
-export function useProductCollection(): CollectionModel {
+export function useProductCollection(): CollectionModel & CollectionActions {
 	const value = useContext(ProductCollectionContext)
 	if (!value) {
 		throw new Error("useProductCollection must be used inside <ProductCollection>.")

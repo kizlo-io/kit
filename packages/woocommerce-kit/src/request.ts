@@ -186,10 +186,12 @@ export type LoadProductCollectionInput = {
 	/**
 	 * The store's currency minor unit, the number of decimal places, 2 for most currencies.
 	 *
-	 * URL prices are major units and the store wants minor units. This is a store constant, so taking it as configuration
-	 * keeps the conversion from depending on a response.
+	 * URL prices are major units and the store wants minor units. Pass `"auto"` to discover it from product/filter responses.
+	 * Omission preserves the legacy two-decimal default.
 	 */
-	currencyMinorUnit?: number
+	currencyMinorUnit?: number | "auto"
+	/** Navigation taxonomy when the collection has no selected scope. */
+	navigationTaxonomy?: string
 	/** Products per page. */
 	perPage?: number
 	/** The current URL state. */
@@ -214,16 +216,27 @@ export type LoadedProductCollection = {
 function resolveCollectionRequest({
 	attributeTaxonomies,
 	currencyMinorUnit = 2,
+	navigationTaxonomy,
 	perPage = 12,
 	query,
 	scope,
 	sortPresets = defaultCollectionSortPresets,
 }: Omit<LoadProductCollectionInput, "client">) {
-	const factor = 10 ** currencyMinorUnit
+	const factor = 10 ** (currencyMinorUnit === "auto" ? 0 : currencyMinorUnit)
 	const request: ProductRequest = {
 		attributes: groupSelectedTerms(query.attribute),
-		maxPrice: query.maxPrice === null ? undefined : Math.round(query.maxPrice * factor).toString(),
-		minPrice: query.minPrice === null ? undefined : Math.round(query.minPrice * factor).toString(),
+		maxPrice:
+			query.maxPrice === null
+				? undefined
+				: currencyMinorUnit === "auto"
+					? String(query.maxPrice)
+					: Math.round(query.maxPrice * factor).toString(),
+		minPrice:
+			query.minPrice === null
+				? undefined
+				: currencyMinorUnit === "auto"
+					? String(query.minPrice)
+					: Math.round(query.minPrice * factor).toString(),
 		page: Math.max(1, query.page),
 		perPage,
 		search: query.q.trim() || undefined,
@@ -232,18 +245,24 @@ function resolveCollectionRequest({
 		stock: query.stock,
 	}
 
-	return { attributeTaxonomies, navigationTaxonomy: scope?.taxonomy ?? defaultNavigationTaxonomy, request, sortPresets }
+	return {
+		attributeTaxonomies,
+		navigationTaxonomy: scope?.taxonomy ?? navigationTaxonomy ?? defaultNavigationTaxonomy,
+		request,
+		sortPresets,
+	}
 }
 
 /** The shared cache identity for a collection, including every input that affects its requests. */
 export function productCollectionQueryKey(input: Omit<LoadProductCollectionInput, "client">) {
-	const { attributeTaxonomies, request, sortPresets } = resolveCollectionRequest(input)
+	const { attributeTaxonomies, navigationTaxonomy, request, sortPresets } = resolveCollectionRequest(input)
 	return [
 		"kizlo",
 		"woocommerce",
 		"product-collection",
 		{
 			attributeTaxonomies: [...new Set(attributeTaxonomies)].sort(),
+			navigationTaxonomy,
 			currencyMinorUnit: input.currencyMinorUnit ?? 2,
 			request: {
 				...request,
@@ -276,17 +295,33 @@ export function productCollectionQueryKey(input: Omit<LoadProductCollectionInput
  * ```
  */
 export async function loadProductCollection({ client, ...input }: LoadProductCollectionInput): Promise<LoadedProductCollection> {
-	const { attributeTaxonomies, navigationTaxonomy, request } = resolveCollectionRequest(input)
-
+	let resolved = input
+	if (input.currencyMinorUnit === "auto" && (input.query.minPrice !== null || input.query.maxPrice !== null)) {
+		const discovery = resolveCollectionRequest({ ...input, query: { ...input.query, minPrice: null, maxPrice: null } })
+		const metadata = await fetchFilters(client, discovery.request, discovery.attributeTaxonomies, discovery.navigationTaxonomy)
+		if (!metadata)
+			return {
+				filters: null,
+				navigationTaxonomy: discovery.navigationTaxonomy,
+				products: emptyListing(discovery.request.page),
+				unavailable: true,
+			}
+		resolved = { ...input, currencyMinorUnit: metadata.currencyFormat.currencyMinorUnit }
+	}
+	const { attributeTaxonomies, navigationTaxonomy, request } = resolveCollectionRequest(resolved)
 	const [listing, filters] = await Promise.all([
 		fetchProducts(client, request),
 		fetchFilters(client, request, attributeTaxonomies, navigationTaxonomy),
 	])
+	return { filters, navigationTaxonomy, products: listing ?? emptyListing(request.page), unavailable: listing === null }
+}
 
-	return {
-		filters,
-		navigationTaxonomy,
-		products: listing ?? emptyListing(request.page),
-		unavailable: listing === null,
+/** Fetches an additional page without reloading facets. Precision must already be known for price-filtered requests. */
+export async function loadProductCollectionPage({ client, ...input }: LoadProductCollectionInput): Promise<ProductList> {
+	if (input.currencyMinorUnit === "auto" && (input.query.minPrice !== null || input.query.maxPrice !== null)) {
+		throw new Error("Resolve collection currency before loading additional pages.")
 	}
+	const listing = await fetchProducts(client, resolveCollectionRequest(input).request)
+	if (!listing) throw new Error("Product collection page unavailable.")
+	return listing
 }

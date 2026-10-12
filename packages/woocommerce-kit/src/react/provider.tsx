@@ -36,7 +36,7 @@ function useAppQueryClient() {
 /**
  * Configures the WooCommerce kit for the tree below it.
  *
- * Needs the app's `QueryClientProvider` above it: the kit uses the app's own `QueryClient` and never creates one.
+ * Needs the app's `QueryClientProvider` above it: every browser feature uses the app's own cache.
  *
  * Configuration and nothing else. An action reports itself through the callbacks on the hook that performs it, which is where
  * a listener goes — a storefront-wide concern wires the same listener on each hook it cares about.

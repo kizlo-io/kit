@@ -2,14 +2,12 @@
  * The collection's derived model: the facet groups, the scope tree, the sort options and the paging, built from one pair of
  * store responses plus the current query.
  *
- * Framework-agnostic and pure. Every control the model hands back is a closure over `write`, which the framework adapter
- * supplies, so this file knows how the collection behaves without knowing what renders it or how a URL gets written.
+ * Framework-agnostic data only. URL actions live separately in collection-actions.ts.
  */
 
 import { decodeHtmlEntities } from "@kizlo/kit"
 import {
 	type CollectionQuery,
-	type CollectionQueryPatch,
 	type CollectionScope,
 	type CollectionSortPreset,
 	type CollectionStockStatus,
@@ -43,8 +41,6 @@ export type CollectionFilterTerm = {
 	slug: string
 	/** A colour, or an image URL when `type` is `"image"`. */
 	swatch?: string | null
-	/** Flip this term. No argument inverts; pass a boolean to set it outright. */
-	toggle: (selected?: boolean) => void
 	type?: "color" | "image" | "text"
 	/** Unique within the collection. Use it as the React key. */
 	value: string
@@ -54,8 +50,6 @@ export type CollectionFilterGroupKind = "attribute" | "stock"
 
 export type CollectionFilterGroup = {
 	activeCount: number
-	/** Deselect every term in this group. */
-	clear: () => void
 	/** Whether any term carries a colour or image swatch. */
 	hasSwatches: boolean
 	id: string
@@ -69,13 +63,11 @@ export type CollectionFilterGroup = {
 
 export type CollectionPriceFilter = {
 	currencySymbol: string
+	currencyFormat: NonNullable<ProductFilters>["currencyFormat"] | null
 	/** True once the range is narrower than the collection's bounds. */
 	isActive: boolean
 	maximum: number
 	minimum: number
-	reset: () => void
-	/** Writes the range, clearing it when it spans the full bounds. */
-	set: (minimum: number, maximum: number) => void
 	/** Selected range, clamped to the bounds. Equals them when unfiltered. */
 	value: readonly [number, number]
 }
@@ -83,12 +75,11 @@ export type CollectionPriceFilter = {
 export type CollectionFiltersApi = {
 	/** Selected terms across every group, plus one for an active price range. */
 	activeCount: number
-	clearAll: () => void
 	groups: readonly CollectionFilterGroup[]
 	/** True while the next result set is being fetched. */
 	isPending: boolean
 	price: CollectionPriceFilter
-	search: { clear: () => void; set: (value: string) => void; value: string }
+	search: { value: string }
 }
 
 export type CollectionScopeTerm = {
@@ -128,7 +119,6 @@ export type CollectionSortOption = {
 
 export type CollectionSortApi = {
 	options: readonly CollectionSortOption[]
-	set: (sort: string) => void
 	/** The active preset's URL token. Always one of `options`, even on a stale link. */
 	value: string
 }
@@ -140,7 +130,6 @@ export type CollectionProductsApi = {
 	isPending: boolean
 	items: readonly CollectionProduct[]
 	page: number
-	setPage: (page: number) => void
 	totalItems: number
 	totalPages: number
 	/** The store request failed. `items` is empty and the facets are degraded. */
@@ -239,36 +228,9 @@ export type CollectionModelInput = {
 	stockLabels?: Partial<Record<CollectionStockStatus, string>>
 	/** The product request failed. */
 	unavailable?: boolean
-	/**
-	 * Writes the collection's query parameters, clearing any set to `null`.
-	 *
-	 * The adapter decides how: a router push, a history entry, a nuqs transition. The model only decides what, including the
-	 * rule that any refinement resets paging.
-	 */
-	write: (patch: CollectionQueryPatch) => void
 }
 
-/**
- * Builds the collection's model: the facet groups, the scope tree, the sort options and the paging, each control wired to
- * `write`.
- *
- * The React adapter calls this inside a memo. Any other framework calls it wherever its state lives; nothing here is
- * React-specific.
- *
- * @example
- * ```ts
- * const model = buildCollectionModel({
- * 	...collection, // what loadProductCollection returned
- * 	query,
- * 	scope,
- * 	write: (patch) => router.push(`?${serializeCollectionQuery({ ...query, ...patch })}`),
- * })
- *
- * model.filters.groups[0].terms[0].toggle()
- * model.sort.set("price-asc")
- * model.products.setPage(2)
- * ```
- */
+/** Derives collection data from matching responses and the requested URL. */
 export function buildCollectionModel({
 	filters,
 	isPending = false,
@@ -280,19 +242,7 @@ export function buildCollectionModel({
 	stockLabel = "Availability",
 	stockLabels,
 	unavailable = false,
-	write,
 }: CollectionModelInput): CollectionModel {
-	function commit(next: CollectionQueryPatch) {
-		// Page 3 of the old result set means nothing in the new one.
-		write({ page: null, ...next })
-	}
-
-	function toggleAttribute(value: string, selected: boolean) {
-		const current = query.attribute
-		const next = selected ? (current.includes(value) ? current : [...current, value]) : current.filter((item) => item !== value)
-		commit({ attribute: next.length > 0 ? next : null })
-	}
-
 	const items = products.items
 	// Resolved rather than read raw: an unknown token must still highlight a real option.
 	const activeSort = resolveSortPreset(sortPresets, query.sort)
@@ -332,7 +282,6 @@ export function buildCollectionModel({
 					selected,
 					slug: term.slug,
 					swatch: term.swatch,
-					toggle: (next?: boolean) => toggleAttribute(value, next ?? !selected),
 					type: term.type,
 					value,
 				}
@@ -340,10 +289,6 @@ export function buildCollectionModel({
 
 			return {
 				activeCount: terms.filter((term) => term.selected).length,
-				clear: () => {
-					const kept = selectedValues.filter((item) => !item.startsWith(`${taxonomy}:`))
-					commit({ attribute: kept.length > 0 ? kept : null })
-				},
 				hasSwatches: terms.some((term) => term.type === "color" || term.type === "image"),
 				id: `attribute:${taxonomy}`,
 				kind: "attribute" as const,
@@ -398,15 +343,6 @@ export function buildCollectionModel({
 				label: stockLabels?.[item.status] ?? defaultStockLabels[item.status],
 				selected,
 				slug: item.status,
-				toggle: (next?: boolean) => {
-					const wanted = next ?? !selected
-					const nextStock = wanted
-						? query.stock.includes(item.status)
-							? query.stock
-							: [...query.stock, item.status]
-						: query.stock.filter((status) => status !== item.status)
-					commit({ stock: nextStock.length > 0 ? nextStock : null })
-				},
 				value: item.status,
 			}
 		})
@@ -414,7 +350,6 @@ export function buildCollectionModel({
 	const groups: CollectionFilterGroup[] = [
 		{
 			activeCount: stockTerms.filter((term) => term.selected).length,
-			clear: () => commit({ stock: null }),
 			hasSwatches: false,
 			id: "stock",
 			kind: "stock" as const,
@@ -438,34 +373,17 @@ export function buildCollectionModel({
 		},
 		filters: {
 			activeCount: groups.reduce((total, group) => total + group.activeCount, 0) + (hasPriceFilter ? 1 : 0),
-			clearAll: () =>
-				commit({
-					attribute: null,
-					maxPrice: null,
-					minPrice: null,
-					q: null,
-					stock: null,
-				}),
 			groups,
 			isPending,
 			price: {
-				currencySymbol: filters?.currencyFormat.currencySymbol ?? "$",
+				currencySymbol: filters?.currencyFormat.currencySymbol ?? items[0]?.currencyFormat.currencySymbol ?? "$",
+				currencyFormat: filters?.currencyFormat ?? items[0]?.currencyFormat ?? null,
 				isActive: hasPriceFilter,
 				maximum: boundsMaximum,
 				minimum: boundsMinimum,
-				reset: () => commit({ maxPrice: null, minPrice: null }),
-				set: (nextMinimum, nextMaximum) =>
-					commit({
-						maxPrice: nextMaximum >= boundsMaximum ? null : nextMaximum,
-						minPrice: nextMinimum <= boundsMinimum ? null : nextMinimum,
-					}),
 				value: [selectedMinimum, selectedMaximum],
 			},
-			search: {
-				clear: () => commit({ q: null }),
-				set: (next) => commit({ q: next.trim() || null }),
-				value: query.q,
-			},
+			search: { value: query.q },
 		},
 		products: {
 			hasNextPage: products.meta.hasNextPage,
@@ -473,8 +391,6 @@ export function buildCollectionModel({
 			isPending,
 			items,
 			page: products.meta.page,
-			// Paging is the one write that must not reset the page.
-			setPage: (page) => write({ page: page > 1 ? page : null }),
 			totalItems: products.meta.totalItems,
 			totalPages: products.meta.totalPages,
 			unavailable,
@@ -485,8 +401,6 @@ export function buildCollectionModel({
 				selected: preset.value === activeSort.value,
 				value: preset.value,
 			})),
-			// The first preset is the default order, so it stays out of the URL.
-			set: (next) => commit({ sort: next === sortPresets[0]?.value ? null : next }),
 			value: activeSort.value,
 		},
 	}

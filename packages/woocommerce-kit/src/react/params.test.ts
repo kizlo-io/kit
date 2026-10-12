@@ -1,6 +1,13 @@
 import { createLoader, createSerializer } from "nuqs/server"
 import { describe, expect, it } from "vitest"
-import { type CollectionQuery, emptyCollectionQuery, parseCollectionQuery, serializeCollectionQuery } from "../contract"
+import {
+	type CollectionQuery,
+	collectionScopeHref,
+	emptyCollectionQuery,
+	parseCollectionQuery,
+	resolveCollectionScope,
+	serializeCollectionQuery,
+} from "../contract"
 import { collectionSearchParams } from "./params"
 
 /**
@@ -39,5 +46,24 @@ describe.each(Object.entries(cases))("%s", (_name, query) => {
 	it("parses identically through both implementations", () => {
 		const searchParams = new URLSearchParams(serializeCollectionQuery(query))
 		expect(load(searchParams)).toEqual(parseCollectionQuery(searchParams))
+	})
+})
+
+describe("scope links", () => {
+	it("preserves both URL encodings, repeated attributes, refinements and unrelated parameters", () => {
+		const scopeQuery = { taxonomy: "product_brand", parameter: "brand" }
+		const original = new URLSearchParams(
+			"attribute=pa_color:blue&attribute=pa_size:l&stock=instock&minPrice=10.5&q=bag&sort=newest&page=4&brand=old&campaign=summer",
+		)
+		const href = collectionScopeHref(original, scopeQuery, "new")
+		const next = new URLSearchParams(href)
+		expect(resolveCollectionScope(next, scopeQuery)).toEqual({ taxonomy: "product_brand", term: "new" })
+		expect(next.get("page")).toBeNull()
+		expect(next.get("campaign")).toBe("summer")
+		expect(next.getAll("attribute")).toEqual(["pa_color:blue", "pa_size:l"])
+		expect(load(next)).toEqual(parseCollectionQuery(next))
+		expect(original.get("page")).toBe("4")
+		expect(new URLSearchParams(collectionScopeHref(next, scopeQuery, null)).get("brand")).toBeNull()
+		expect(resolveCollectionScope({ brand: ["new", "old"] }, scopeQuery)?.term).toBe("new")
 	})
 })

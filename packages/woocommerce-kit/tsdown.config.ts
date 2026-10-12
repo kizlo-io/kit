@@ -10,6 +10,8 @@ import { defineConfig } from "tsdown"
  */
 const clientModules = [
 	"src/react/collection.tsx",
+	"src/react/in-view.ts",
+	"src/react/notify.ts",
 	"src/react/collection-context.tsx",
 	"src/react/checkout-lock-store.ts",
 	"src/react/checkout-lock-cache.ts",
@@ -42,6 +44,8 @@ export default defineConfig({
 	entry: {
 		index: "src/index.ts",
 		"react/collection": "src/react/collection.tsx",
+		"react/collection/server": "src/react/collection-server.tsx",
+		"react/in-view": "src/react/in-view.ts",
 		"react/cart": "src/react/cart.tsx",
 		"react/checkout": "src/react/checkout.tsx",
 		"react/checkout-fields": "src/react/checkout-fields.tsx",
