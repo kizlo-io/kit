@@ -14,7 +14,7 @@ pnpm add @kizlo/woocommerce-kit
 ```
 
 Peer dependencies: `kizlo` ^0.26.0 always, plus `react` 19+ if you import a React entry, `nuqs`
-2.10+ for the collection and `@tanstack/react-query` 5.102+ for `WooCommerceProvider`, the cart, checkout, search and store settings. Those last three are optional
+2.10+ for the collection and `@tanstack/react-query` 5.102+ for browser collections, `WooCommerceProvider`, the cart, checkout, search and store settings. Those last three are optional
 peers, so a different framework's adapter does not drag React in and a collection-only storefront installs no query library.
 The storefront field contract requires the matching WooCommerce SDK and plugin release; `@kizlo/woocommerce` is a development contract dependency of this kit, supplied by your app through its Kizlo client.
 Your app supplies the Kizlo client, through `KizloProvider` from [`kizlo/react`](https://www.npmjs.com/package/kizlo) for
@@ -22,8 +22,8 @@ client components and as a prop for server components.
 
 ## Product collection
 
-A filterable, sortable, paginated product listing. Two store requests per render, both server-side, no client fetching and
-nothing to hydrate.
+A filterable, sortable, paginated product listing. The default path makes two store requests per render, both server-side.
+For server-rendered initial results followed by browser fetching, use the [browser collection](#browser-collection) entry.
 
 Mount the server half on the page and pass it your Kizlo server client:
 
@@ -79,6 +79,110 @@ which re-runs the server component, so the next result set is fetched there and 
 
 Classifications are `scope`, not facets: the page is its taxonomy term, and moving between terms is navigation. `scope`
 hands you the counted tree around the current term for rendering as links.
+
+### Browser collection
+
+Import `BrowserProductCollection` from `@kizlo/woocommerce-kit/react/collection` when URL changes should fetch in the browser
+instead of requesting another server render. Existing `ProductCollection` and `ProductCollectionProvider` consumers keep
+their server-navigation behavior, and their entry points still import no React Query.
+
+Prefetch the initial URL into an app-owned server QueryClient and pass its dehydrated state through `HydrationBoundary`:
+
+```tsx
+// app/collections/[slug]/page.tsx
+import { dehydrate, HydrationBoundary, QueryClient } from "@tanstack/react-query"
+import { loadProductCollection, parseCollectionQuery, productCollectionQueryKey, serializeCollectionQuery } from "@kizlo/woocommerce-kit"
+import { BrowserProductCollection } from "@kizlo/woocommerce-kit/react/collection"
+import { client } from "@/lib/kizlo/server"
+
+export default async function CollectionPage({ params, searchParams }) {
+	const { slug } = await params
+	const query = parseCollectionQuery(await searchParams)
+	const config = {
+		attributeTaxonomies: ["pa_color", "pa_size"],
+		perPage: 12,
+		scope: { taxonomy: "product_cat", term: slug },
+	}
+	const queryClient = new QueryClient()
+	await queryClient.prefetchQuery({
+		queryKey: productCollectionQueryKey({ ...config, query }),
+		queryFn: () => loadProductCollection({ ...config, client, query }),
+	})
+
+	return (
+		<HydrationBoundary state={dehydrate(queryClient)}>
+			<BrowserProductCollection
+				{...config}
+				initialQuery={query}
+				key={`${slug}:${serializeCollectionQuery(query)}`}
+			>
+				<Filters />
+				<Sort />
+				<Grid />
+			</BrowserProductCollection>
+		</HydrationBoundary>
+	)
+}
+```
+
+Mount your framework's nuqs adapter, `QueryClientProvider`, `KizloProvider` with the **browser** client, and
+`WooCommerceProvider` above it, as in the [provider example](#cart). The server client is used only by the loader; it must
+never be passed across the client boundary. Use a new QueryClient per server request and one shared cache in the browser.
+Use the same query, scope and request configuration for the prefetch key and the collection. Dehydration carries the data,
+cache key and update timestamp; it does not serialize the server client or query function. The collection has no
+`initialData` prop: React Query owns the data and hydration.
+
+Your controls still call `useProductCollection()` from either the existing React entry or the new collection entry. Filter,
+sort, search and page writes use `history: "push"` and `shallow: true`, preserving other URL parameters. Back/Forward reads
+the URL again and refreshes the matching cache entry. Filters and sort reset page to 1; pagination changes only page.
+
+`HydrationBoundary` restores the prefetched data into the shared cache with no hydration request. It merges a newer server
+snapshot into older cached data and preserves a browser cache entry that is newer than the server snapshot. Each later selection fetches products and facet
+counts together, including when revisiting a cached URL. Pending requests set `filters.isPending` and `products.isPending`.
+A new uncached selection shows no previous collection while loading; late responses can fill their own cache entries but
+never replace the current selection. A failed listing yields empty products with `products.unavailable`; failed facets
+fall back to the current products. A subsequent selection can fetch again.
+
+`initialQuery` describes the URL loaded on the server; after hydration, the collection reads the live URL. The example's
+server-computed key starts a new query observer for a new server-rendered page, avoiding an extra browser fetch of that
+page's prefetched data. Shallow browser edits keep the same observer mounted so cached selections revalidate.
+
+For a scope stored in an application-owned query parameter, read that parameter reactively and pass the resulting scope.
+Use the same resolution on the server for the initial loader. The kit does not prescribe the parameter's name:
+
+```tsx
+"use client"
+import { productCollectionQueryKey } from "@kizlo/woocommerce-kit"
+import { BrowserProductCollection, collectionSearchParams } from "@kizlo/woocommerce-kit/react/collection"
+import { parseAsString, useQueryState, useQueryStates } from "nuqs"
+
+export function ScopedCollection(props) {
+	const [category, setCategory] = useQueryState("category", parseAsString)
+	const [query, setQuery] = useQueryStates(collectionSearchParams)
+	const scope = category ? { taxonomy: "product_cat", term: category } : undefined
+	const resetKey = JSON.stringify(productCollectionQueryKey({ ...props, query: { ...query, page: 1 }, scope }))
+
+	return (
+		<BrowserProductCollection {...props} scope={scope}>
+			<CategoryPicker value={category} onChange={(next) => {
+				void setQuery({ page: null }, { shallow: true, history: "push" })
+				void setCategory(next, { shallow: true, history: "push" })
+			}} />
+			<AccumulatingGrid key={resetKey} />
+		</BrowserProductCollection>
+	)
+}
+```
+
+`CategoryPicker` and `AccumulatingGrid` are your components. The kit returns one page and never appends pages. If your grid
+accumulates them, reset its local pages when any filter, sort or scope changes; the key above resets it while excluding
+pagination. Keep the collection component itself mounted so it continues to refresh cached selections. Pathname navigation
+can use normal routing.
+
+`productCollectionQueryKey` includes normalized URL state, scope, page size, currency units, attribute taxonomies and sort
+configuration. It is exported for cache inspection/invalidation and collection reset identity. The URL grammar is unchanged.
+This feature supplies fetching behavior; deployment caching and authentication remain the app's responsibility. Arbitrary
+server `searchParams` are request-dependent, so server seeding alone does not make every URL variant build-time static.
 
 ## URL contract
 
@@ -1240,6 +1344,7 @@ client from `QueryClientProvider`.
 | --- | --- |
 | `@kizlo/woocommerce-kit` | The core. Collection grammar and model, cart and checkout cache keys and events, search request, href and cache helpers, quantity, money and address helpers, and every type. No framework. |
 | `@kizlo/woocommerce-kit/react` | `ProductCollectionProvider`, `useProductCollection`, and the model types it returns. Carries `"use client"`. |
+| `@kizlo/woocommerce-kit/react/collection` | `BrowserProductCollection`, `useProductCollection`, and `collectionSearchParams`. Reads the app cache hydrated by `HydrationBoundary`; needs React Query, nuqs, and the existing app providers. Carries `"use client"`. |
 | `@kizlo/woocommerce-kit/react/cart` | `useCart`, `useCartAddress`, `useCartShippingRates`, `useCartItem`, `useCartCoupon`. Carries `"use client"`. Needs `@tanstack/react-query`. |
 | `@kizlo/woocommerce-kit/react/checkout-fields` | `useCheckoutFields` and its form values, field bindings, updates, result and diagnostic types. Carries `"use client"`. Needs `@tanstack/react-query`. |
 | `@kizlo/woocommerce-kit/react/checkout-fields/tanstack-form` | Optional `tanstackFormAdapter(form)` factory, typed field accessors and Kit error formatter. Carries `"use client"`. Needs `@tanstack/react-form`. |

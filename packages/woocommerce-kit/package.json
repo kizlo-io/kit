@@ -41,6 +41,12 @@
 				"default": "./dist/react/client.js"
 			}
 		},
+		"./react/collection": {
+			"import": {
+				"types": "./dist/react/collection.d.ts",
+				"default": "./dist/react/collection.js"
+			}
+		},
 		"./react/cart": {
 			"import": {
 				"types": "./dist/react/cart.d.ts",
