@@ -1,5 +1,11 @@
 # @kizlo/woocommerce-kit
 
+## 0.14.0
+
+### Minor Changes
+
+- [#49](https://github.com/kizlo-io/kit/pull/49) [`a12ae19`](https://github.com/kizlo-io/kit/commit/a12ae191e2379dcfb93ad468bd5fec69d21022a2) Thanks [@IDJGILL](https://github.com/IDJGILL)! - Simplify collection setup and retain complete results during refreshes and retries.
+
 ## 0.13.0
 
 ### Minor Changes
