@@ -54,7 +54,7 @@ function groupSelectedTerms(values: readonly string[]): SelectedTermGroup[] {
 	return Array.from(groups, ([taxonomy, terms]) => ({ taxonomy, terms }))
 }
 
-const emptyListing = (page: number): ProductList =>
+export const emptyListing = (page: number): ProductList =>
 	({
 		items: [],
 		meta: {
@@ -181,7 +181,7 @@ export type LoadProductCollectionInput = {
 	 * Knowing it up front is also what lets both requests go out together.
 	 */
 	attributeTaxonomies: readonly string[]
-	/** A Kizlo server client with the WooCommerce integration installed. */
+	/** A Kizlo client with the WooCommerce integration installed. */
 	client: ActiveKizloClient
 	/**
 	 * The store's currency minor unit, the number of decimal places, 2 for most currencies.
@@ -211,6 +211,52 @@ export type LoadedProductCollection = {
 	unavailable: boolean
 }
 
+function resolveCollectionRequest({
+	attributeTaxonomies,
+	currencyMinorUnit = 2,
+	perPage = 12,
+	query,
+	scope,
+	sortPresets = defaultCollectionSortPresets,
+}: Omit<LoadProductCollectionInput, "client">) {
+	const factor = 10 ** currencyMinorUnit
+	const request: ProductRequest = {
+		attributes: groupSelectedTerms(query.attribute),
+		maxPrice: query.maxPrice === null ? undefined : Math.round(query.maxPrice * factor).toString(),
+		minPrice: query.minPrice === null ? undefined : Math.round(query.minPrice * factor).toString(),
+		page: Math.max(1, query.page),
+		perPage,
+		search: query.q.trim() || undefined,
+		scope,
+		sort: resolveSortPreset(sortPresets, query.sort),
+		stock: query.stock,
+	}
+
+	return { attributeTaxonomies, navigationTaxonomy: scope?.taxonomy ?? defaultNavigationTaxonomy, request, sortPresets }
+}
+
+/** The shared cache identity for a collection, including every input that affects its requests. */
+export function productCollectionQueryKey(input: Omit<LoadProductCollectionInput, "client">) {
+	const { attributeTaxonomies, request, sortPresets } = resolveCollectionRequest(input)
+	return [
+		"kizlo",
+		"woocommerce",
+		"product-collection",
+		{
+			attributeTaxonomies: [...new Set(attributeTaxonomies)].sort(),
+			currencyMinorUnit: input.currencyMinorUnit ?? 2,
+			request: {
+				...request,
+				attributes: request.attributes
+					.map(({ taxonomy, terms }) => ({ taxonomy, terms: [...terms].sort() }))
+					.sort((a, b) => a.taxonomy.localeCompare(b.taxonomy)),
+				stock: [...new Set(request.stock)].sort(),
+			},
+			sortPresets,
+		},
+	] as const
+}
+
 /**
  * Runs both store requests for one collection view.
  *
@@ -229,33 +275,8 @@ export type LoadedProductCollection = {
  * // { filters, navigationTaxonomy, products, unavailable }
  * ```
  */
-export async function loadProductCollection({
-	attributeTaxonomies,
-	client,
-	currencyMinorUnit = 2,
-	perPage = 12,
-	query,
-	scope,
-	sortPresets = defaultCollectionSortPresets,
-}: LoadProductCollectionInput): Promise<LoadedProductCollection> {
-	const page = Math.max(1, query.page)
-	const search = query.q.trim()
-	const factor = 10 ** currencyMinorUnit
-
-	const request: ProductRequest = {
-		attributes: groupSelectedTerms(query.attribute),
-		maxPrice: query.maxPrice === null ? undefined : Math.round(query.maxPrice * factor).toString(),
-		minPrice: query.minPrice === null ? undefined : Math.round(query.minPrice * factor).toString(),
-		page,
-		perPage,
-		search: search || undefined,
-		scope,
-		sort: resolveSortPreset(sortPresets, query.sort),
-		stock: query.stock,
-	}
-
-	// A scoped page shows its own taxonomy's tree; an unscoped one falls back to categories.
-	const navigationTaxonomy = scope?.taxonomy ?? defaultNavigationTaxonomy
+export async function loadProductCollection({ client, ...input }: LoadProductCollectionInput): Promise<LoadedProductCollection> {
+	const { attributeTaxonomies, navigationTaxonomy, request } = resolveCollectionRequest(input)
 
 	const [listing, filters] = await Promise.all([
 		fetchProducts(client, request),
@@ -265,7 +286,7 @@ export async function loadProductCollection({
 	return {
 		filters,
 		navigationTaxonomy,
-		products: listing ?? emptyListing(page),
+		products: listing ?? emptyListing(request.page),
 		unavailable: listing === null,
 	}
 }

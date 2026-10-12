@@ -85,7 +85,7 @@ export type CollectionFiltersApi = {
 	activeCount: number
 	clearAll: () => void
 	groups: readonly CollectionFilterGroup[]
-	/** True while the server is producing the next result set. */
+	/** True while the next result set is being fetched. */
 	isPending: boolean
 	price: CollectionPriceFilter
 	search: { clear: () => void; set: (value: string) => void; value: string }
@@ -136,7 +136,7 @@ export type CollectionSortApi = {
 export type CollectionProductsApi = {
 	hasNextPage: boolean
 	hasPreviousPage: boolean
-	/** True while the server is producing the next result set. */
+	/** True while the next result set is being fetched. */
 	isPending: boolean
 	items: readonly CollectionProduct[]
 	page: number

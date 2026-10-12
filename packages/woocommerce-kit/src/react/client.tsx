@@ -15,7 +15,7 @@
  */
 
 import { useQueryStates } from "nuqs"
-import { createContext, type ReactNode, useContext, useMemo, useTransition } from "react"
+import { type ReactNode, useContext, useMemo, useTransition } from "react"
 import {
 	type CollectionScope,
 	type CollectionSortPreset,
@@ -25,6 +25,7 @@ import {
 } from "../contract"
 import { buildCollectionModel, type CollectionModel } from "../model"
 import type { ProductFilters, ProductList } from "../types"
+import { ProductCollectionContext } from "./collection-context"
 import { collectionSearchParams } from "./params"
 
 /**
@@ -48,8 +49,6 @@ export type {
 
 /** @deprecated Use `CollectionModel`. */
 export type ProductCollectionContextValue = CollectionModel
-
-const ProductCollectionContext = createContext<CollectionModel | null>(null)
 
 export type ProductCollectionProviderProps = {
 	children: ReactNode

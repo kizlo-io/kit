@@ -9,6 +9,8 @@ import { defineConfig } from "tsdown"
  * happened to come from.
  */
 const clientModules = [
+	"src/react/collection.tsx",
+	"src/react/collection-context.tsx",
 	"src/react/checkout-lock-store.ts",
 	"src/react/checkout-lock-cache.ts",
 	"src/react/checkout-watch.ts",
@@ -39,6 +41,7 @@ export default defineConfig({
 	format: ["esm"],
 	entry: {
 		index: "src/index.ts",
+		"react/collection": "src/react/collection.tsx",
 		"react/cart": "src/react/cart.tsx",
 		"react/checkout": "src/react/checkout.tsx",
 		"react/checkout-fields": "src/react/checkout-fields.tsx",

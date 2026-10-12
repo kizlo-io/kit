@@ -99,10 +99,12 @@ Before adding a component, check it against these:
 
 - **Headless.** Render `children` and expose state through a hook. No Tailwind classes, no design decisions, no `div` you
   did not need.
-- **Fetch where the data lives.** Page data is server-rendered: an RSC reads the URL, loads the payload and passes it
-  down, and the client half re-runs that component with a `shallow: false` URL write rather than fetching itself — the
-  product collection. Browser-session and ephemeral state has no page to hang off, so it is fetched in the client through
-  an optional query-library peer — the cart, the search typeahead. Both shapes are still headless and still fail soft.
+- **Fetch where the data lives.** Collections render the initial URL on the server. The existing server-navigation path
+  uses `shallow: false` writes to reload that data. The optional browser-fetch path uses shallow URL writes and the app's
+  browser client/cache after hydrating the server-prefetched data with `HydrationBoundary`. The app owns the request-scoped
+  server QueryClient and its dehydration; the kit reads that cache directly. Keep query-library imports in a separate feature entry so the
+  server-navigation path needs no query-library peer. Browser-session and ephemeral state is fetched in the client — the
+  cart, the search typeahead. Every path is headless and fails soft.
 - **One hook per subject.** One provider value means every consumer re-renders together anyway, so slicing it into several
   hooks is only naming sugar. A feature whose hooks address different things — the cart, one of its lines, its coupons —
   gets one per thing, because a per-entity hook takes the key and does the lookup its consumer would otherwise repeat.
@@ -184,7 +186,7 @@ Entry points follow that split:
 | `kizlo/react` (upstream, not this repo) | `KizloProvider`, `useKizloContext` | react |
 | `@kizlo/<integration>-kit/react/provider` | the kit's one configuration provider | react |
 | `@kizlo/<integration>-kit/react` | page-scoped, URL-driven features | react, nuqs |
-| `@kizlo/<integration>-kit/react/<feature>` | client-data features | react, a query library |
+| `@kizlo/<integration>-kit/react/<feature>` | client-data features (browser collections also use nuqs) | react, a query library |
 
 `.` is the core and `./react/server` is the server component. Add every new entry to `tsdown.config.ts`, the `exports`
 map and `tooling/typescript/base.json` together.

@@ -12,6 +12,9 @@
 			"@kizlo/woocommerce-kit/react": [
 				"${configDir}/../woocommerce-kit/src/react/client.tsx"
 			],
+			"@kizlo/woocommerce-kit/react/collection": [
+				"${configDir}/../woocommerce-kit/src/react/collection.tsx"
+			],
 			"@kizlo/woocommerce-kit/react/cart": [
 				"${configDir}/../woocommerce-kit/src/react/cart.tsx"
 			],
