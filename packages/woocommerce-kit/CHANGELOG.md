@@ -1,5 +1,11 @@
 # @kizlo/woocommerce-kit
 
+## 0.13.0
+
+### Minor Changes
+
+- [#47](https://github.com/kizlo-io/kit/pull/47) [`cddb226`](https://github.com/kizlo-io/kit/commit/cddb2266a9c44d5cb5a3360a804583a83de8b254) Thanks [@IDJGILL](https://github.com/IDJGILL)! - Add server-seeded product collections that fetch URL changes in the browser.
+
 ## 0.12.0
 
 ### Minor Changes
