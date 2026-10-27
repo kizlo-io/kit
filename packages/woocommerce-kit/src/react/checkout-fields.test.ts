@@ -22,7 +22,7 @@ const { procedures } = vi.hoisted(() => {
 	return {
 		procedures: {
 			checkout: { get: procedure(), confirm: procedure() },
-			cart: { get: procedure(), update: procedure(), selectShippingRate: procedure() },
+			cart: { get: procedure(), updateAddress: procedure(), selectShippingRate: procedure() },
 			storefront: { get: procedure() },
 		},
 	}
@@ -141,7 +141,7 @@ describe("useCheckoutFields shared sources", () => {
 	it("reports queued/address repricing without saving controlled values", async () => {
 		const source = fixtures()
 		const pending = deferred<Cart>()
-		procedures.cart.update.call.mockReturnValue(pending.promise)
+		procedures.cart.updateAddress.call.mockReturnValue(pending.promise)
 		const { result, client } = mount(() => ({ fields: useCheckoutFields({ getValues: () => source.values }), address: useCartAddress() }))
 		await waitFor(() => expect(result.current.fields.schema).not.toBeNull())
 		act(() => client.setQueryData(addressQueueKey, ["pending-owner"]))
@@ -168,7 +168,7 @@ describe("useCheckoutFields shared sources", () => {
 		values = source.values
 		rerender()
 		expect(result.current.schema).toBe(captured)
-		expect(procedures.cart.update.call).not.toHaveBeenCalled()
+		expect(procedures.cart.updateAddress.call).not.toHaveBeenCalled()
 		expect(procedures.cart.selectShippingRate.call).not.toHaveBeenCalled()
 		expect(procedures.checkout.confirm.call).not.toHaveBeenCalled()
 	})
@@ -193,7 +193,7 @@ describe("useCheckoutFields shared sources", () => {
 		procedures.cart.get.call.mockRejectedValue(error)
 		const { result, client } = mount(() => useCheckoutFields())
 		expect(procedures.cart.get.call).not.toHaveBeenCalled()
-		await act(async () => checkout.resolve({ ...source.checkout, cart: null }))
+		await act(async () => checkout.resolve(source.checkout))
 		await waitFor(() => expect(result.current.error?.cause).toBe(error))
 		expect(result.current.schema).toBeNull()
 		expect(result.current.defaultValues).toBeNull()
@@ -345,7 +345,7 @@ describe("checkout field events", () => {
 		act(() => client.setQueryData(checkoutQueryKey, { ...source.checkout, customerNote: "refresh" }))
 		expect(values.billingAddress?.postcode).toBe("NEW")
 		expect(setter).toHaveBeenCalledTimes(1)
-		expect(procedures.cart.update.call).not.toHaveBeenCalled()
+		expect(procedures.cart.updateAddress.call).not.toHaveBeenCalled()
 		expect(procedures.checkout.confirm.call).not.toHaveBeenCalled()
 	})
 	it("requires both accessors and a shipping draft before any write", async () => {
@@ -413,7 +413,7 @@ describe("checkout field events", () => {
 		await waitFor(() => expect(result.current.shipping.fields).toEqual([]))
 		expect(output(values).shippingAddress).toEqual(source.checkout.shippingAddress)
 		expect(writes).not.toHaveBeenCalled()
-		expect(procedures.cart.update.call).not.toHaveBeenCalled()
+		expect(procedures.cart.updateAddress.call).not.toHaveBeenCalled()
 		expect(procedures.checkout.confirm.call).not.toHaveBeenCalled()
 	})
 	function addressSource() {
@@ -462,7 +462,7 @@ describe("checkout field events", () => {
 		expect(setter).toHaveBeenCalledTimes(1)
 		expect(getter).toHaveBeenCalledTimes(2)
 		expect(result.current.billing.fields.find((field) => field.id === "state")).toMatchObject({ type: "text", label: "County" })
-		expect(procedures.cart.update.call).not.toHaveBeenCalled()
+		expect(procedures.cart.updateAddress.call).not.toHaveBeenCalled()
 		expect(procedures.checkout.confirm.call).not.toHaveBeenCalled()
 	})
 	it("ignores accessor identities/rerenders and uses the latest accessors on the next event", async () => {
@@ -588,7 +588,7 @@ async function syncingForm(validate = vi.fn<(name: CheckoutFormFieldName) => boo
 	client.setQueryData(storefrontQueryKey, source.storefront)
 	procedures.cart.get.call.mockResolvedValue(source.cart)
 	procedures.checkout.get.call.mockResolvedValue(source.checkout)
-	procedures.cart.update.call.mockImplementation(async ({ body }) => ({ ...client.getQueryData<Cart>(cartQueryKey), ...body }))
+	procedures.cart.updateAddress.call.mockImplementation(async ({ body }) => ({ ...client.getQueryData<Cart>(cartQueryKey), ...body }))
 	const setValues = (updates: readonly CheckoutFieldUpdate[]) => {
 		for (const { name, value } of updates) {
 			const [root, key] = name.split(".")
@@ -625,15 +625,17 @@ describe("validated automatic checkout address syncing", () => {
 		const env = await syncingForm()
 		act(() => env.result.current.fields.handleFieldBlur("billingAddress.address1"))
 		await env.tick()
-		expect(procedures.cart.update.call).not.toHaveBeenCalled()
+		expect(procedures.cart.updateAddress.call).not.toHaveBeenCalled()
 		await env.edit("billingAddress.address1", "New road")
 		expect(env.result.current.cart.isRepricing).toBe(true)
 		await env.tick(1490)
-		expect(procedures.cart.update.call).not.toHaveBeenCalled()
+		expect(procedures.cart.updateAddress.call).not.toHaveBeenCalled()
 		await env.tick(30)
-		expect(procedures.cart.update.call).toHaveBeenCalledTimes(1)
-		expect(procedures.cart.update.call.mock.calls[0]?.[0].body).toMatchObject({ billingAddress: { address1: "New road", country: "IN" } })
-		expect(procedures.cart.update.call.mock.calls[0]?.[0].body).not.toHaveProperty("shippingAddress")
+		expect(procedures.cart.updateAddress.call).toHaveBeenCalledTimes(1)
+		expect(procedures.cart.updateAddress.call.mock.calls[0]?.[0].body).toMatchObject({
+			billingAddress: { address1: "New road", country: "IN" },
+		})
+		expect(procedures.cart.updateAddress.call.mock.calls[0]?.[0].body).not.toHaveProperty("shippingAddress")
 		expect(env.validate.mock.calls).toEqual([["billingAddress.address1"]])
 	})
 	it("cancels queued valid edits when a changed postcode is invalid", async () => {
@@ -641,19 +643,19 @@ describe("validated automatic checkout address syncing", () => {
 		await env.edit("billingAddress.address1", "New road")
 		await env.edit("billingAddress.postcode", "INVALID")
 		await env.tick()
-		expect(procedures.cart.update.call).not.toHaveBeenCalled()
+		expect(procedures.cart.updateAddress.call).not.toHaveBeenCalled()
 		expect(env.result.current.cart.isRepricing).toBe(false)
 		await env.edit("billingAddress.postcode", "560002")
 		act(() => env.result.current.fields.handleFieldBlur("billingAddress.postcode"))
 		await env.tick(20)
-		expect(procedures.cart.update.call).toHaveBeenCalledTimes(1)
+		expect(procedures.cart.updateAddress.call).toHaveBeenCalledTimes(1)
 	})
 	it("flushes country changes immediately and exempts only empty dependent resets", async () => {
 		const env = await syncingForm()
 		await env.edit("billingAddress.country", "GB")
 		await env.tick(20)
 		expect(env.values.billingAddress).toMatchObject({ country: "GB", state: "", postcode: "" })
-		expect(procedures.cart.update.call).toHaveBeenCalledTimes(1)
+		expect(procedures.cart.updateAddress.call).toHaveBeenCalledTimes(1)
 		expect(env.validate.mock.calls).toEqual([["billingAddress.country"]])
 	})
 	it("retains country replacements supplied in the same change and rejects invalid ones", async () => {
@@ -663,17 +665,17 @@ describe("validated automatic checkout address syncing", () => {
 		await env.edit("billingAddress.country", "GB")
 		await env.tick()
 		expect(env.values.billingAddress).toMatchObject({ state: "London", postcode: "BAD" })
-		expect(procedures.cart.update.call).not.toHaveBeenCalled()
+		expect(procedures.cart.updateAddress.call).not.toHaveBeenCalled()
 		await env.edit("billingAddress.postcode", "SW1A 1AA")
 		await env.tick(20)
-		expect(procedures.cart.update.call).toHaveBeenCalledTimes(1)
+		expect(procedures.cart.updateAddress.call).toHaveBeenCalledTimes(1)
 	})
 	it("holds both addresses for an application validation failure", async () => {
 		const env = await syncingForm(vi.fn((name) => name !== "shippingAddress.city"))
 		await env.edit("billingAddress.address1", "New road")
 		await env.edit("shippingAddress.city", "Rejected city")
 		await env.tick()
-		expect(procedures.cart.update.call).not.toHaveBeenCalled()
+		expect(procedures.cart.updateAddress.call).not.toHaveBeenCalled()
 		expect(env.validate).toHaveBeenCalledWith("shippingAddress.city")
 	})
 	it("reevaluates queued work against refreshed merchant rules without overwriting the draft", async () => {
@@ -685,7 +687,7 @@ describe("validated automatic checkout address syncing", () => {
 		street.schema = { const: "Different required road" }
 		act(() => env.client.setQueryData(storefrontQueryKey, storefront))
 		await env.tick()
-		expect(procedures.cart.update.call).not.toHaveBeenCalled()
+		expect(procedures.cart.updateAddress.call).not.toHaveBeenCalled()
 		expect(env.values.billingAddress.address1).toBe("Queued road")
 	})
 	it("keeps shared checkout activity during async validation and ignores an older success", async () => {
@@ -698,14 +700,14 @@ describe("validated automatic checkout address syncing", () => {
 		await env.edit("billingAddress.address1", "New invalid draft")
 		await act(async () => old.resolve(true))
 		await env.tick()
-		expect(procedures.cart.update.call).not.toHaveBeenCalled()
+		expect(procedures.cart.updateAddress.call).not.toHaveBeenCalled()
 		expect(env.result.current.cart.isRepricing).toBe(false)
 	})
 	it("blocks confirmation through fresh validation, debounce and the address request", async () => {
 		const validation = deferred<boolean>()
 		const env = await syncingForm(vi.fn(() => validation.promise))
 		const response = deferred<Cart>()
-		procedures.cart.update.call.mockReturnValueOnce(response.promise)
+		procedures.cart.updateAddress.call.mockReturnValueOnce(response.promise)
 		const input = { paymentMethod: "bacs", billingAddress: env.source.checkout.billingAddress }
 		await env.edit("billingAddress.address1", "Validated road")
 		expect(env.result.current.checkout.isLocked).toBe(true)
@@ -716,7 +718,7 @@ describe("validated automatic checkout address syncing", () => {
 		await act(async () => validation.resolve(true))
 		expect(env.result.current.checkout.isLocked).toBe(true)
 		await env.tick()
-		expect(procedures.cart.update.call).toHaveBeenCalledTimes(1)
+		expect(procedures.cart.updateAddress.call).toHaveBeenCalledTimes(1)
 		expect(env.result.current.checkout.isLocked).toBe(true)
 		await act(async () =>
 			response.resolve({ ...env.source.cart, billingAddress: { ...env.source.cart.billingAddress, address1: "Validated road" } }),
@@ -727,26 +729,26 @@ describe("validated automatic checkout address syncing", () => {
 	it("retains a newer draft and flush request while a country save is running", async () => {
 		const env = await syncingForm()
 		const response = deferred<Cart>()
-		procedures.cart.update.call.mockReturnValueOnce(response.promise)
+		procedures.cart.updateAddress.call.mockReturnValueOnce(response.promise)
 		await env.edit("billingAddress.country", "GB")
 		await env.tick(20)
-		expect(procedures.cart.update.call).toHaveBeenCalledTimes(1)
-		const first = procedures.cart.update.call.mock.calls[0]?.[0].body
+		expect(procedures.cart.updateAddress.call).toHaveBeenCalledTimes(1)
+		const first = procedures.cart.updateAddress.call.mock.calls[0]?.[0].body
 		if (!first) throw new Error("Missing first address request")
 		await env.edit("billingAddress.address1", "While saving")
 		act(() => env.result.current.fields.handleFieldBlur("billingAddress.address1"))
 		await env.tick()
-		expect(procedures.cart.update.call).toHaveBeenCalledTimes(1)
+		expect(procedures.cart.updateAddress.call).toHaveBeenCalledTimes(1)
 		await act(async () => response.resolve({ ...env.source.cart, ...first }))
 		await env.tick()
-		expect(procedures.cart.update.call).toHaveBeenCalledTimes(2)
+		expect(procedures.cart.updateAddress.call).toHaveBeenCalledTimes(2)
 		expect(env.values.billingAddress.address1).toBe("While saving")
-		expect(procedures.cart.update.call.mock.calls[1]?.[0].body.billingAddress.address1).toBe("While saving")
+		expect(procedures.cart.updateAddress.call.mock.calls[1]?.[0].body.billingAddress.address1).toBe("While saving")
 	})
 	it("saves a revert after an in-flight acknowledgement changes the comparison baseline", async () => {
 		const env = await syncingForm()
 		const response = deferred<Cart>()
-		procedures.cart.update.call.mockReturnValueOnce(response.promise)
+		procedures.cart.updateAddress.call.mockReturnValueOnce(response.promise)
 		await env.edit("billingAddress.address1", "Temporary")
 		await env.tick()
 		await env.edit("billingAddress.address1", "Road")
@@ -754,40 +756,40 @@ describe("validated automatic checkout address syncing", () => {
 			response.resolve({ ...env.source.cart, billingAddress: { ...env.source.cart.billingAddress, address1: "Temporary" } }),
 		)
 		await env.tick()
-		expect(procedures.cart.update.call).toHaveBeenCalledTimes(2)
-		expect(procedures.cart.update.call.mock.calls[1]?.[0].body.billingAddress.address1).toBe("Road")
+		expect(procedures.cart.updateAddress.call).toHaveBeenCalledTimes(2)
+		expect(procedures.cart.updateAddress.call.mock.calls[1]?.[0].body.billingAddress.address1).toBe("Road")
 	})
 	it("keeps failed drafts retryable without continuously retrying", async () => {
 		const env = await syncingForm()
 		const error = { code: "NETWORK_ERROR", message: "Offline", data: {} }
-		procedures.cart.update.call.mockRejectedValueOnce(error)
+		procedures.cart.updateAddress.call.mockRejectedValueOnce(error)
 		await env.edit("billingAddress.address1", "Retry this")
 		await env.tick()
 		expect(env.result.current.fields.syncError).toBe(error)
 		await env.tick(4000)
 		expect(procedures.cart.get.call).toHaveBeenCalledTimes(1)
-		expect(procedures.cart.update.call).toHaveBeenCalledTimes(1)
+		expect(procedures.cart.updateAddress.call).toHaveBeenCalledTimes(1)
 		act(() => env.result.current.fields.handleFieldBlur("billingAddress.address1"))
 		await env.tick(20)
-		expect(procedures.cart.update.call).toHaveBeenCalledTimes(2)
+		expect(procedures.cart.updateAddress.call).toHaveBeenCalledTimes(2)
 		expect(env.values.billingAddress.address1).toBe("Retry this")
 	})
 	it("clears a settled failure when the draft returns to the acknowledged address", async () => {
 		const env = await syncingForm()
 		const error = { code: "NETWORK_ERROR", message: "Offline", data: {} }
-		procedures.cart.update.call.mockRejectedValueOnce(error)
+		procedures.cart.updateAddress.call.mockRejectedValueOnce(error)
 		await env.edit("billingAddress.address1", "Failed edit")
 		await env.tick()
 		expect(env.result.current.fields.syncError).toBe(error)
 		await env.edit("billingAddress.address1", "Road")
 		await env.tick(20)
 		expect(env.result.current.fields.syncError).toBeNull()
-		expect(procedures.cart.update.call).toHaveBeenCalledTimes(1)
+		expect(procedures.cart.updateAddress.call).toHaveBeenCalledTimes(1)
 	})
 	it("retains a failed save's checkout hold through invalid edits and clears it only on acknowledgement", async () => {
 		const env = await syncingForm()
 		const error = { code: "NETWORK_ERROR", message: "Offline", data: {} }
-		procedures.cart.update.call.mockRejectedValueOnce(error)
+		procedures.cart.updateAddress.call.mockRejectedValueOnce(error)
 		await env.edit("billingAddress.address1", "Failed edit")
 		await env.tick()
 		expect(env.result.current.checkout.isLocked).toBe(true)
@@ -795,14 +797,14 @@ describe("validated automatic checkout address syncing", () => {
 		await env.tick()
 		expect(env.result.current.fields.syncError).toBe(error)
 		expect(env.result.current.checkout.isLocked).toBe(true)
-		expect(procedures.cart.update.call).toHaveBeenCalledTimes(1)
+		expect(procedures.cart.updateAddress.call).toHaveBeenCalledTimes(1)
 		await env.edit("billingAddress.address1", "Road")
 		expect(env.result.current.checkout.isLocked).toBe(true)
 		await env.edit("billingAddress.postcode", env.source.cart.billingAddress.postcode)
 		await env.tick(20)
 		expect(env.result.current.fields.syncError).toBeNull()
 		expect(env.result.current.checkout.isLocked).toBe(false)
-		expect(procedures.cart.update.call).toHaveBeenCalledTimes(1)
+		expect(procedures.cart.updateAddress.call).toHaveBeenCalledTimes(1)
 	})
 	it.each(["session", "unmount"])("discards asynchronous work after %s changes", async (change) => {
 		const validation = deferred<boolean>()
@@ -813,7 +815,7 @@ describe("validated automatic checkout address syncing", () => {
 		else env.unmount()
 		await act(async () => validation.resolve(true))
 		await env.tick()
-		expect(procedures.cart.update.call).not.toHaveBeenCalled()
+		expect(procedures.cart.updateAddress.call).not.toHaveBeenCalled()
 		expect(env.client.getQueryData<string[]>(addressQueueKey)).toEqual([])
 	})
 })
@@ -898,7 +900,7 @@ describe("fields availability and preparation", () => {
 		expect(request.expectedTotal).toBe("12345")
 		expect(procedures.checkout.get.call).toHaveBeenCalledTimes(1)
 		expect(procedures.cart.get.call).toHaveBeenCalledTimes(1)
-		expect(procedures.cart.update.call).not.toHaveBeenCalled()
+		expect(procedures.cart.updateAddress.call).not.toHaveBeenCalled()
 		expect(procedures.checkout.confirm.call).not.toHaveBeenCalled()
 	})
 	it("supports metadata-only candidates and exposes missing-candidate failure as a general issue", async () => {

@@ -36,8 +36,8 @@ export type CartItem = Cart["items"][number]
 /** What `cart.items.add` accepts. */
 export type AddCartItemInput = InferClientInput<CartProcedures["items"]["add"]>["body"]
 
-/** What `cart.update` accepts: the customer's addresses. */
-export type UpdateCartInput = InferClientInput<CartProcedures["update"]>["body"]
+/** What `cart.updateAddress` accepts: the customer's addresses. */
+export type UpdateCartInput = InferClientInput<CartProcedures["updateAddress"]>["body"]
 
 /** Reuse the checkout sharing control for address actions; it is stripped before the SDK request. */
 export type CartAddressInput = UpdateCartInput & { useShippingAsBilling?: boolean }
@@ -67,7 +67,7 @@ export type CartAddressSnapshotInput = Omit<CartAddressInput, "shippingAddress" 
 export type CartError =
 	| CheckoutLockedError
 	| InferClientError<CartProcedures["get"]>
-	| InferClientError<CartProcedures["update"]>
+	| InferClientError<CartProcedures["updateAddress"]>
 	| InferClientError<CartProcedures["selectShippingRate"]>
 	| InferClientError<CartProcedures["items"]["add"]>
 	| InferClientError<CartProcedures["items"]["update"]>

@@ -30,7 +30,7 @@ function cartRequest(procedures: CartProcedures, variables: CartActionPayload): 
 		case "remove_coupon":
 			return procedures.coupons.remove.call({ params: { code: variables.code } })
 		case "update_customer":
-			return procedures.update.call({ body: variables.input })
+			return procedures.updateAddress.call({ body: variables.input })
 		case "select_shipping_rate":
 			return procedures.selectShippingRate.call({ body: { packageId: variables.packageId, rateId: variables.rateId } })
 	}

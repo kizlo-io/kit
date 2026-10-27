@@ -92,7 +92,7 @@ describe("pending Kit reads", () => {
 			binding = env.bind(),
 			gate = deferred<Checkout>(),
 			cart = { ...env.source.cart, itemCount: 9 },
-			checkout = { ...env.source.checkout, cart, orderKey: "new-session" }
+			checkout = { ...env.source.checkout, orderKey: "new-session" }
 		env.procedures.checkout.get.call.mockReturnValue(gate.promise)
 		const read = env.cache.fetchQuery({ queryKey: checkoutQueryKey, staleTime: 0, queryFn: () => binding.readCheckout() }).catch(() => {})
 		if (change === "confirmation") {
@@ -406,14 +406,12 @@ describe("query readiness and publication", () => {
 		env.cache.setQueryData(checkoutQueryKey, {
 			...env.source.checkout,
 			orderKey: "replacement",
-			cart: { ...env.source.cart, itemCount: 7 },
 		})
 		expect(env.cache.getQueryData(cartQueryKey)).toBeTruthy()
 		expect(env.store.state.get().entries.some(({ name }) => name === "cart.read")).toBe(true)
 		env.procedures.checkout.get.call.mockResolvedValue({
 			...env.source.checkout,
 			orderKey: "replacement",
-			cart: { ...env.source.cart, itemCount: 7 },
 		})
 		await env.cache.fetchQuery({ queryKey: checkoutQueryKey, staleTime: 0, queryFn: () => binding.readCheckout() })
 		expect(env.store.state.get().isLocked).toBe(true)
@@ -422,10 +420,10 @@ describe("query readiness and publication", () => {
 		expect(env.store.state.get().isLocked).toBe(false)
 		expect(env.cache.getQueryData<Cart>(cartQueryKey)?.itemCount).toBe(9)
 	})
-	it("retains a cold uncertain confirmation without replaying it", async () => {
+	it.each(["TIMEOUT", "UNAUTHORIZED"])("restores cold confirmation readiness without replaying %s", async (code) => {
 		const env = setup(false),
 			post = vi.fn(async () => {
-				throw { code: "TIMEOUT" }
+				throw { code }
 			})
 		const mutation = env.cache
 			.getMutationCache()
@@ -435,7 +433,11 @@ describe("query readiness and publication", () => {
 		binding.enableCheckout()
 		await drain()
 		expect(binding.isPending).toBe(false)
-		expect(() => binding.reserve("order")).toThrow()
+		if (code === "TIMEOUT") expect(() => binding.reserve("order")).toThrow()
+		else {
+			expect(env.store.state.get().isLocked).toBe(false)
+			binding.discard(binding.reserve("order"))
+		}
 		expect(post).toHaveBeenCalledTimes(1)
 	})
 	it("does not trust cached presence after a cold failed read, or manual publication during recovery", async () => {
@@ -500,7 +502,7 @@ describe("query readiness and publication", () => {
 			],
 		} as Cart
 		env.cache.setQueryData(cartQueryKey, cart)
-		env.cache.setQueryData(checkoutQueryKey, { ...env.source.checkout, cart })
+		env.cache.setQueryData(checkoutQueryKey, env.source.checkout)
 		binding.enableCheckout()
 		const mutation = env.cache.getMutationCache().build(env.cache, {
 			mutationKey: [...cartMutationKey, "shippingRate"],

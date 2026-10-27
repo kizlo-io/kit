@@ -1,4 +1,4 @@
-import type { Checkout } from "../src/types"
+import type { Checkout, UpdateCartInput } from "../src/types"
 
 // The same augmentation emitted by a consumer's registered WordPress schema contract.
 declare module "kizlo" {
@@ -27,6 +27,11 @@ const wrongCheckbox: Checkout["additionalFields"]["consumer/contact-flag"] = "fa
 const wrongReference: Checkout["billingAddress"]["additionalFields"]["consumer/reference"] = true
 const inferredContact: Checkout["additionalFields"]["consumer/contact-flag"] = contact
 void [reference, wrongCheckbox, wrongReference, inferredContact]
+
+const addressPatch: UpdateCartInput = { billingAddress: { additionalFields: { "consumer/reference": "Buyer" } } }
+// @ts-expect-error Registered address text fields remain strings through cart.updateAddress.
+const wrongAddressPatch: UpdateCartInput = { billingAddress: { additionalFields: { "consumer/reference": true } } }
+void [addressPatch, wrongAddressPatch]
 
 import type { CheckoutFieldValues } from "../src/react/checkout-fields"
 

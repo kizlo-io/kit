@@ -27,7 +27,7 @@ const { procedures } = vi.hoisted(() => {
 	return {
 		procedures: {
 			checkout: { get: procedure(), confirm: procedure() },
-			cart: { get: procedure(), update: procedure(), selectShippingRate: procedure() },
+			cart: { get: procedure(), updateAddress: procedure(), selectShippingRate: procedure() },
 			storefront: { get: procedure() },
 		},
 	}
@@ -66,7 +66,7 @@ function setup() {
 	client.setQueryData(cartQueryKey, sources.cart)
 	client.setQueryData(checkoutQueryKey, sources.checkout)
 	client.setQueryData(storefrontQueryKey, sources.storefront)
-	procedures.cart.update.call.mockImplementation(async ({ body }) => {
+	procedures.cart.updateAddress.call.mockImplementation(async ({ body }) => {
 		const cart = client.getQueryData<Cart>(cartQueryKey) ?? sources.cart
 		return { ...cart, ...body }
 	})
@@ -130,14 +130,14 @@ describe("real form libraries", () => {
 				await act(async () => {
 					await vi.advanceTimersByTimeAsync(1600)
 				})
-				expect(procedures.cart.update.call).not.toHaveBeenCalled()
+				expect(procedures.cart.updateAddress.call).not.toHaveBeenCalled()
 				expect(env.result.current.phone.state.meta.errors).toContain("Application rejection")
 				const meta = env.result.current.phone.state.meta
 				act(() => env.result.current.phone.handleChange("allowed"))
 				await act(async () => {
 					await vi.advanceTimersByTimeAsync(1600)
 				})
-				expect(procedures.cart.update.call).toHaveBeenCalledTimes(1)
+				expect(procedures.cart.updateAddress.call).toHaveBeenCalledTimes(1)
 				expect(env.result.current.reference.state.meta.errorMap.onServer).toBe("Unrelated server error")
 				expect(env.result.current.phone.state.meta).toMatchObject({ isDirty: meta.isDirty, isTouched: meta.isTouched })
 			} else {
@@ -192,7 +192,7 @@ describe("real form libraries", () => {
 				await act(async () => {
 					await vi.advanceTimersByTimeAsync(1600)
 				})
-				expect(procedures.cart.update.call).not.toHaveBeenCalled()
+				expect(procedures.cart.updateAddress.call).not.toHaveBeenCalled()
 				expect(env.result.current.phone.fieldState.error?.message).toBe("Application rejection")
 				const meta = env.result.current.phone.fieldState
 				act(() => {
@@ -202,7 +202,7 @@ describe("real form libraries", () => {
 				await act(async () => {
 					await vi.advanceTimersByTimeAsync(1600)
 				})
-				expect(procedures.cart.update.call).toHaveBeenCalledTimes(1)
+				expect(procedures.cart.updateAddress.call).toHaveBeenCalledTimes(1)
 				expect(env.result.current.reference.fieldState.error?.types?.kitServer).toEqual(["Unrelated server error"])
 				expect(env.result.current.phone.fieldState).toMatchObject({ isDirty: meta.isDirty, isTouched: meta.isTouched })
 			}
@@ -256,15 +256,15 @@ describe("real form libraries", () => {
 			await act(async () => {
 				await vi.advanceTimersByTimeAsync(1600)
 			})
-			expect(procedures.cart.update.call).not.toHaveBeenCalled()
+			expect(procedures.cart.updateAddress.call).not.toHaveBeenCalled()
 			expect(procedures.checkout.confirm.call).not.toHaveBeenCalled()
 			fireEvent.change(postcode, { target: { value: "560002" } })
 			fireEvent.blur(postcode)
 			await act(async () => {
 				await vi.advanceTimersByTimeAsync(50)
 			})
-			expect(procedures.cart.update.call).toHaveBeenCalledTimes(1)
-			expect(procedures.cart.update.call.mock.calls[0]?.[0].body).toMatchObject({
+			expect(procedures.cart.updateAddress.call).toHaveBeenCalledTimes(1)
+			expect(procedures.cart.updateAddress.call.mock.calls[0]?.[0].body).toMatchObject({
 				shippingAddress: { postcode: "560002" },
 				billingAddress: { postcode: "560002" },
 			})
@@ -392,7 +392,7 @@ describe("real form libraries", () => {
 				expect(result.current.form.getValues("useShippingAsBilling")).toBe(false)
 				expect(result.current.fields.billing.fields.find((field) => field.id === "state")?.label).toBe("County")
 			}
-			expect(procedures.cart.update.call).not.toHaveBeenCalled()
+			expect(procedures.cart.updateAddress.call).not.toHaveBeenCalled()
 			expect(procedures.checkout.confirm.call).not.toHaveBeenCalled()
 		},
 	)
@@ -415,7 +415,7 @@ describe("real form libraries", () => {
 		if (!shippingState) throw new Error("Missing shipping state")
 		fireEvent.change(shippingState, { target: { value: "Later" } })
 		expect(document.querySelector<HTMLInputElement>('input[name="billingAddress.state"]')?.value).toBe("London")
-		await waitFor(() => expect(procedures.cart.update.call).toHaveBeenCalledTimes(1))
+		await waitFor(() => expect(procedures.cart.updateAddress.call).toHaveBeenCalledTimes(1))
 		expect(procedures.checkout.confirm.call).not.toHaveBeenCalled()
 	})
 	it.each([
@@ -525,7 +525,7 @@ describe("real form libraries", () => {
 			})
 			expect(validate).toHaveBeenCalledTimes(1)
 			expect(result.current.state.state.meta).toMatchObject({ isDirty: dirty, isTouched: dirty })
-			expect(procedures.cart.update.call).not.toHaveBeenCalled()
+			expect(procedures.cart.updateAddress.call).not.toHaveBeenCalled()
 		},
 	)
 	it.each([false, true])(
@@ -615,7 +615,7 @@ describe("real form libraries", () => {
 			fireEvent.change(billingCountry, { target: { value: "GB" } })
 			await waitFor(() => expect(document.querySelector('input[name="billingAddress.state"]')).not.toBeNull())
 			expect(document.querySelector<HTMLInputElement>('input[name="billingAddress.state"]')?.value).toBe("")
-			await waitFor(() => expect(procedures.cart.update.call).toHaveBeenCalledTimes(1))
+			await waitFor(() => expect(procedures.cart.updateAddress.call).toHaveBeenCalledTimes(1))
 			await waitFor(() => expect(screen.getByRole("button", { name: "Place order" }).hasAttribute("disabled")).toBe(false))
 			expect(procedures.checkout.confirm.call).not.toHaveBeenCalled()
 			fireEvent.click(screen.getByRole("button", { name: "Place order" }))
@@ -1022,7 +1022,7 @@ it.each([
 it("editing and repricing an incomplete form use draft projection without requiring confirmable output", async () => {
 	const { sources, wrapper } = setup()
 	sources.storefront.checkout.forcedBillingAddress = true
-	procedures.cart.update.call.mockResolvedValue(sources.cart)
+	procedures.cart.updateAddress.call.mockResolvedValue(sources.cart)
 	const defaultValues: CheckoutFormValues = {
 		billingAddress: { country: "IN", state: "KA", city: "Bengaluru", postcode: "" },
 		additionalFields: { "plugin%2Fchoice": "" },
@@ -1059,10 +1059,10 @@ it("editing and repricing an incomplete form use draft projection without requir
 		additionalFields: { "plugin/choice": "" },
 	})
 	act(() => result.current.postcode.handleChange("560002"))
-	await waitFor(() => expect(procedures.cart.update.call).toHaveBeenCalledTimes(1))
+	await waitFor(() => expect(procedures.cart.updateAddress.call).toHaveBeenCalledTimes(1))
 	expect(result.current.fields.unsupported).toEqual([])
 	expect(result.current.form.state.values.billingAddress?.postcode).toBe("560002")
-	expect(procedures.cart.update.call.mock.calls[0]?.[0].body.shippingAddress).toMatchObject({ country: "IN", postcode: "560002" })
+	expect(procedures.cart.updateAddress.call.mock.calls[0]?.[0].body.shippingAddress).toMatchObject({ country: "IN", postcode: "560002" })
 	expect(procedures.checkout.confirm.call).not.toHaveBeenCalled()
 })
 

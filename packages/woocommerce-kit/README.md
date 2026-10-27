@@ -13,10 +13,11 @@ derived model and the cart and checkout contracts, with no React and no URL-stat
 pnpm add @kizlo/woocommerce-kit
 ```
 
-Peer dependencies: `kizlo` ^0.26.0 always, plus `react` 19+ if you import a React entry, `nuqs`
+Peer dependencies: `kizlo` ^0.29.0 always, plus `react` 19+ if you import a React entry, `nuqs`
 2.10+ for the collection and `@tanstack/react-query` 5.102+ for browser collections, `WooCommerceProvider`, the cart, checkout, search and store settings. Those last three are optional
 peers, so a different framework's adapter does not drag React in and a collection-only storefront installs no query library.
 The storefront field contract requires the matching WooCommerce SDK and plugin release; `@kizlo/woocommerce` is a development contract dependency of this kit, supplied by your app through its Kizlo client.
+The supported SDK contract uses `cart.updateAddress`; Kit retains `useCartAddress().update` and the `UpdateCartInput` type.
 Your app supplies the Kizlo client, through `KizloProvider` from [`kizlo/react`](https://www.npmjs.com/package/kizlo) for
 client components and as a prop for server components.
 
@@ -530,8 +531,15 @@ Checkout loads the store's checkout snapshot, confirms an order and keeps the ca
 form state and performs no navigation: validation, copy, fields, routes and payment redirects stay in the storefront. Needs
 `KizloProvider` and `WooCommerceProvider` above it, which takes your query client from `QueryClientProvider`.
 
+`confirm` and `confirmAsync` forward an optional `expectedTotal` unchanged. For manually assembled requests, capture
+`String(cart.totals.total)` from the snapshot the shopper reviewed and retain it until they approve a new amount.
+Omitting it leaves total protection to the store; `fields.toCheckout()` captures it during preparation as described below.
+
+When the store requires sign-in, an `UNAUTHORIZED` confirmation remains a normal submission error. After signing back in,
+call `refresh()` and let the shopper submit again. The same checkout can be retried; Kit never replays the confirmation automatically.
+
 Checkout and cart use separate API responses. Checkout bootstrap, successful confirmation and `refresh()` refresh
-`cartQueryKey` through the cart API; Kit never consumes the embedded `checkout.cart`. Kit manages bootstrap sequencing
+`cartQueryKey` through the cart API; checkout responses contain no cart. Kit manages bootstrap sequencing
 internally. Use the live cart alongside checkout: `useCart()` for the totals, and the address, rate and coupon hooks for the
 parts the shopper still changes — each reporting only its own save, so one pending request does not disable the rest of the form:
 
@@ -1006,7 +1014,7 @@ an unbound form without explicit `values` throw a structured local failure; save
 Keep native validation through `fields.schema`. `encode`/`decode` and manual confirmation assembly remain supported;
 `decode()` alone still returns a draft and performs no submission validation or projection.
 
-Upgrade the registered dev SDK to `@kizlo/woocommerce@^0.15.0` and the browser client to `kizlo@^0.26.1` together.
+Upgrade the registered dev SDK to `@kizlo/woocommerce@^0.17.0` and the browser client to `kizlo@^0.29.0` together.
 On `CHECKOUT_TOTAL_MISMATCH`, Kit publishes current usable cart evidence or safely reloads it, preserves the draft, and
 shows a checkout-level review message. Display the updated total and let the shopper submit again explicitly. Kit never
 retries the POST automatically or changes the old request’s expected total.
