@@ -1,5 +1,11 @@
 # @kizlo/woocommerce-kit
 
+## 0.15.0
+
+### Minor Changes
+
+- [#51](https://github.com/kizlo-io/kit/pull/51) [`47dc991`](https://github.com/kizlo-io/kit/commit/47dc9913111aa07c0bb5049ed17a3d9b0b1becc4) Thanks [@IDJGILL](https://github.com/IDJGILL)! - Support Kizlo 0.29 and WooCommerce SDK 0.17 with the renamed cart address API, separate checkout and cart responses, and retryable authentication refusals.
+
 ## 0.14.0
 
 ### Minor Changes
