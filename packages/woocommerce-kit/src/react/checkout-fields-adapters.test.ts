@@ -27,7 +27,7 @@ const { procedures } = vi.hoisted(() => {
 	const procedure = () => ({ call: vi.fn() })
 	return {
 		procedures: {
-			cart: { get: procedure(), update: procedure() },
+			cart: { get: procedure(), updateAddress: procedure() },
 			checkout: { get: procedure(), confirm: procedure() },
 			storefront: { get: procedure() },
 		},
@@ -58,7 +58,7 @@ function setup() {
 	procedures.checkout.get.call.mockResolvedValue(sources.checkout)
 	procedures.cart.get.call.mockResolvedValue(sources.cart)
 	procedures.storefront.get.call.mockResolvedValue(sources.storefront)
-	procedures.cart.update.call.mockImplementation(async ({ body }) => ({ ...client.getQueryData(cartQueryKey), ...body }))
+	procedures.cart.updateAddress.call.mockImplementation(async ({ body }) => ({ ...client.getQueryData(cartQueryKey), ...body }))
 	const wrapper = ({ children }: { children: ReactNode }) =>
 		createElement(QueryClientProvider, { client }, createElement(WooCommerceProvider, { children }))
 	return { sources, client, wrapper }
@@ -283,7 +283,7 @@ it.each(["TanStack", "React Hook Form"] as const)(
 			await waitFor(() => expect(env.result.current.form.getValues("customerNote")).toBe("new session"))
 			expect(env.result.current.form.getFieldState("customerNote").isDirty).toBe(false)
 		}
-		expect(procedures.cart.update.call).not.toHaveBeenCalled()
+		expect(procedures.cart.updateAddress.call).not.toHaveBeenCalled()
 	},
 )
 
@@ -304,7 +304,7 @@ it.each(["TanStack", "React Hook Form"] as const)(
 			expect(env.result.current.form.getValues("shippingAddress")).toMatchObject({ country: "AE", state: "", postcode: "" })
 			expect(env.result.current.form.getFieldState("shippingAddress.state")).toMatchObject({ isDirty: false, isTouched: false })
 		}
-		await waitFor(() => expect(procedures.cart.update.call).toHaveBeenCalledTimes(1))
+		await waitFor(() => expect(procedures.cart.updateAddress.call).toHaveBeenCalledTimes(1))
 	},
 )
 
@@ -387,7 +387,7 @@ it.each(["TanStack", "React Hook Form"] as const)(
 				paymentMethod: "",
 			})
 		}
-		expect(procedures.cart.update.call).not.toHaveBeenCalled()
+		expect(procedures.cart.updateAddress.call).not.toHaveBeenCalled()
 	},
 )
 
@@ -420,7 +420,7 @@ it.each(["TanStack", "React Hook Form"] as const)(
 				finish()
 				await pending
 			})
-			expect(procedures.cart.update.call).not.toHaveBeenCalled()
+			expect(procedures.cart.updateAddress.call).not.toHaveBeenCalled()
 			act(() => env.result.current.postcode.handleChange("560003"))
 			act(() => env.result.current.postcode.handleBlur())
 		} else {
@@ -445,12 +445,12 @@ it.each(["TanStack", "React Hook Form"] as const)(
 				finish()
 				await pending
 			})
-			expect(procedures.cart.update.call).not.toHaveBeenCalled()
+			expect(procedures.cart.updateAddress.call).not.toHaveBeenCalled()
 			act(() => env.result.current.bind(env.result.current.postcode.field).onValueChange("560003"))
 			act(() => env.result.current.bind(env.result.current.postcode.field).onBlur?.())
 		}
-		await waitFor(() => expect(procedures.cart.update.call).toHaveBeenCalledTimes(1))
-		expect(procedures.cart.update.call.mock.calls[0]?.[0].body.shippingAddress.postcode).toBe("560003")
+		await waitFor(() => expect(procedures.cart.updateAddress.call).toHaveBeenCalledTimes(1))
+		expect(procedures.cart.updateAddress.call.mock.calls[0]?.[0].body.shippingAddress.postcode).toBe("560003")
 	},
 )
 
@@ -506,15 +506,15 @@ it("TanStack form-level async rejection prevents an address save and a correctio
 		await vi.advanceTimersByTimeAsync(1600)
 	})
 	expect(env.result.current.postcode.state.meta.errors).toContain("Application async rejection")
-	expect(procedures.cart.update.call).not.toHaveBeenCalled()
+	expect(procedures.cart.updateAddress.call).not.toHaveBeenCalled()
 	act(() => env.result.current.postcode.handleChange("560003"))
 	act(() => env.result.current.postcode.handleBlur())
 	await act(async () => {
 		await vi.advanceTimersByTimeAsync(1600)
 	})
 	expect(env.result.current.postcode.state.meta.errors).toEqual([])
-	expect(procedures.cart.update.call).toHaveBeenCalledTimes(1)
-	expect(procedures.cart.update.call.mock.calls[0]?.[0].body.shippingAddress.postcode).toBe("560003")
+	expect(procedures.cart.updateAddress.call).toHaveBeenCalledTimes(1)
+	expect(procedures.cart.updateAddress.call.mock.calls[0]?.[0].body.shippingAddress.postcode).toBe("560003")
 })
 
 it.each(["manual", "resolver"] as const)("React Hook Form clears Kit text from a message-less %s error", async (source) => {
@@ -652,7 +652,7 @@ it.each(["TanStack", "React Hook Form"] as const)("%s remounts from cached defau
 	const second = mount()
 	await waitFor(() => expect(second.result.current.fields.defaultValues).not.toBeNull())
 	expect(second.result.current.adapter.getFieldValue("customerNote")).toBe(initial)
-	expect(procedures.cart.update.call).not.toHaveBeenCalled()
+	expect(procedures.cart.updateAddress.call).not.toHaveBeenCalled()
 })
 
 // These assertions protect the external dependency boundary, independent of the app harness.

@@ -8,7 +8,7 @@
  * the drift surfacing in a storefront.
  */
 
-import type { ActiveKizloClient, InferClientError } from "kizlo"
+import type { ActiveKizloClient, InferClientError, InferClientInput } from "kizlo"
 import { describe, expectTypeOf, it } from "vitest"
 import type {
 	AddCartItemInput,
@@ -34,7 +34,10 @@ type CheckoutProcedures = ActiveKizloClient["woocommerce"]["checkout"]
 describe("the registered Kizlo client", () => {
 	it("answers the cart procedures the cart hooks call", () => {
 		expectTypeOf<CartProcedures["get"]>().toBeCallableWith()
+		expectTypeOf<CartProcedures["updateAddress"]>().toBeCallableWith({ body: { shippingAddress: { postcode: "560001" } } })
+		expectTypeOf<UpdateCartInput>().toEqualTypeOf<InferClientInput<CartProcedures["updateAddress"]>["body"]>()
 		expectTypeOf<CartProcedures["items"]["add"]>().toBeCallableWith({ body: { productId: 1 } })
+		expectTypeOf<CartProcedures["items"]["update"]>().toBeCallableWith({ params: { key: "abc" }, body: { quantity: 2 } })
 		expectTypeOf<CartProcedures["items"]["remove"]>().toBeCallableWith({ params: { key: "abc" } })
 		expectTypeOf<CartProcedures["coupons"]["apply"]>().toBeCallableWith({ body: { code: "SAVE10" } })
 		expectTypeOf<CartProcedures["selectShippingRate"]>().toBeCallableWith({ body: { rateId: "flat_rate:1" } })
@@ -80,6 +83,14 @@ describe("the derived types", () => {
 		expectTypeOf<CartItem["quantityLimits"]>().toExtend<{ editable: boolean; maximum: number; minimum: number; multipleOf: number }>()
 	})
 
+	it("keep checkout separate from cart and accept optional reviewed totals", () => {
+		expectTypeOf<"cart">().not.toExtend<keyof Checkout>()
+		expectTypeOf<ConfirmCheckoutInput["expectedTotal"]>().toEqualTypeOf<string | undefined>()
+		expectTypeOf<CheckoutProcedures["confirm"]>().toBeCallableWith({
+			body: { billingAddress: { additionalFields: {} }, paymentMethod: "bacs" },
+		})
+	})
+
 	it("carry the fields the kit reads off a listing", () => {
 		expectTypeOf<ProductList>().toExtend<{ items: readonly Product[] }>()
 		expectTypeOf<ProductList["meta"]>().toExtend<{ page: number; totalPages: number }>()
@@ -115,6 +126,12 @@ describe("the error types", () => {
 	})
 
 	it("narrow their payload with the code", () => {
+		expectTypeOf<Extract<CheckoutError, { code: "CHECKOUT_TOTAL_MISMATCH" }>["data"]>().toExtend<{
+			cart: { totals: { total: number } } | null
+			expectedTotal?: string
+			actualTotal?: string
+		}>()
+		expectTypeOf<"UNAUTHORIZED">().toExtend<CheckoutError["code"]>()
 		expectTypeOf<Extract<CheckoutError, { code: "CHECKOUT_VALIDATION_FAILED" }>["data"]>().toEqualTypeOf<
 			Extract<InferClientError<CheckoutProcedures["confirm"]>, { code: "CHECKOUT_VALIDATION_FAILED" }>["data"]
 		>()

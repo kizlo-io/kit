@@ -73,6 +73,7 @@ const rejectedCartCodes = new Set([
 	"CART_ITEM_NOT_FOUND",
 ])
 const rejectedConfirmationCodes = new Set([
+	"UNAUTHORIZED",
 	"CHECKOUT_ADDRESS_COUNTRY_INVALID",
 	"CHECKOUT_ADDRESS_INVALID",
 	"CHECKOUT_COUPON_INVALID",

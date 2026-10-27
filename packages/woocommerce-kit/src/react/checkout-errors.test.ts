@@ -11,7 +11,7 @@ import { checkoutErrorStore } from "../checkout-errors"
 import { checkoutFormEncode } from "../checkout-form"
 import { validationFailure, validationIssue } from "../test/checkout-errors-fixture"
 import { field, fixtures } from "../test/checkout-fields-fixture"
-import type { Checkout, CheckoutFieldsOptions, CheckoutFieldUpdate, CheckoutFormValues } from "../types"
+import type { Cart, Checkout, CheckoutFieldsOptions, CheckoutFieldUpdate, CheckoutFormValues } from "../types"
 import { useCheckout } from "./checkout"
 import { useCheckoutFields } from "./checkout-fields"
 import { useWooCommerceContext } from "./context"
@@ -334,10 +334,11 @@ describe("automatic checkout error integration", () => {
 		})
 		await waitFor(() => expect(procedures.checkout.confirm.call).toHaveBeenCalledTimes(1))
 		unmount()
-		const revived = { ...env.sources.checkout, orderKey: "revived", cart: { ...env.sources.cart, itemCount: 9 } }
-		procedures.cart.get.call.mockResolvedValue(revived.cart)
+		const revived = { ...env.sources.checkout, orderKey: "revived" }
+		const revivedCart = { ...env.sources.cart, itemCount: 9 }
+		procedures.cart.get.call.mockResolvedValue(revivedCart)
 		env.client.setQueryData(checkoutQueryKey, revived)
-		env.client.setQueryData(cartQueryKey, revived.cart)
+		env.client.setQueryData(cartQueryKey, revivedCart)
 		await act(async () => {
 			if (outcome === "success") {
 				request.resolve({ ...env.sources.checkout, orderKey: "old" })
@@ -348,7 +349,7 @@ describe("automatic checkout error integration", () => {
 			}
 		})
 		expect(env.client.getQueryData<Checkout>(checkoutQueryKey)?.orderKey).toBe("revived")
-		expect(env.client.getQueryData<Checkout["cart"]>(cartQueryKey)?.itemCount).toBe(9)
+		expect(env.client.getQueryData<Cart>(cartQueryKey)?.itemCount).toBe(9)
 		const store = checkoutErrorStore(useKizloContext().client, env.client)
 		expect(store.state.get()).toMatchObject({ error: null, issues: [], pending: 0 })
 		expect(outcome === "success" ? onSuccess : onError).toHaveBeenCalledTimes(1)

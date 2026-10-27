@@ -85,7 +85,6 @@ export function fixtures(
 	} as unknown as Cart
 	const checkout = {
 		...values,
-		cart,
 		customerId: null,
 		orderId: 12,
 		orderKey: "key",
